@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "com.example.punto_venta_flutter"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
