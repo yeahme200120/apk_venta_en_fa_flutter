@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../core/config/app_theme.dart';
+import 'package:flex_color_picker/flex_color_picker.dart';
 import '../../core/network/api_client.dart';
 import '../../core/services/catalog_service.dart';
 import '../../core/services/sync_service.dart';
@@ -9,6 +10,7 @@ import '../auth/login_screen.dart';
 import '../catalog/day_catalog_screen.dart';
 import '../catalog/catalog_admin_screen.dart';
 import 'printer_settings_screen.dart';
+
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
@@ -95,30 +97,55 @@ class SettingsScreen extends StatelessWidget {
   }
 
   Future<void> _editBranding(BuildContext context) async {
-    final controller = TextEditingController(text: AppTheme.seedColor.value.toARGB32().toRadixString(16).padLeft(8, '0').substring(2));
-    final color = await showDialog<Color>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Colores y branding'),
-        content: TextField(
-          controller: controller,
-          decoration: const InputDecoration(labelText: 'Color hexadecimal', prefixText: '#'),
+    final color = await showColorPickerDialog(
+      context,
+      AppTheme.seedColor.value,
+      title: const Text('Colores y branding'),
+      width: 42,
+      height: 42,
+      spacing: 6,
+      runSpacing: 6,
+      borderRadius: 8,
+      wheelDiameter: 220,
+
+      // No mostrar hexadecimal.
+      showColorCode: false,
+
+      // Mostrar nombre del color.
+      showColorName: true,
+      showMaterialName: true,
+
+      heading: const Text(
+        'Selecciona un color',
+        style: TextStyle(
+          fontWeight: FontWeight.bold,
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
-          FilledButton(
-            onPressed: () {
-              final value = int.tryParse(controller.text.replaceFirst('#', ''), radix: 16);
-              if (value != null && controller.text.replaceFirst('#', '').length == 6) Navigator.pop(context, Color(0xFF000000 | value));
-            },
-            child: const Text('Aplicar'),
-          ),
-        ],
       ),
+
+      subheading: const Text(
+        'Colores disponibles',
+      ),
+
+      wheelSubheading: const Text(
+        'Selecciona el tono',
+      ),
+
+      // Selector visual.
+      pickersEnabled: const <ColorPickerType, bool>{
+        ColorPickerType.both: false,
+        ColorPickerType.primary: true,
+        ColorPickerType.accent: true,
+        ColorPickerType.bw: true,
+        ColorPickerType.custom: false,
+        ColorPickerType.wheel: true,
+      },
     );
-    controller.dispose();
-    if (color != null) AppTheme.setSeedColor(color);
+
+    if (context.mounted) {
+      AppTheme.setSeedColor(color);
+    }
   }
+
 
   Future<void> _showCurrentUser(BuildContext context) async {
     try {
