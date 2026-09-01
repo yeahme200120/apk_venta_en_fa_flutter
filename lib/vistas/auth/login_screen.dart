@@ -11,11 +11,16 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final TextEditingController _socioController = TextEditingController();
-  final TextEditingController _passwordController = TextEditingController();
+  final TextEditingController _socioController =
+      TextEditingController();
+
+  final TextEditingController _passwordController =
+      TextEditingController();
+
   final AuthService _authService = AuthService();
 
   bool _mostrarPassword = false;
+  bool _cargando = false;
 
   @override
   void dispose() {
@@ -24,81 +29,163 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
-  Future<void> _acceder() async {
-    final numeroSocio = _socioController.text.trim();
-    final password = _passwordController.text;
+  // ============================================================
+  // ACCEDER
+  // ============================================================
 
-    if (numeroSocio.isEmpty) {
-      _showMessage('Ingresa tu número de socio');
+  Future<void> _acceder() async {
+    if (_cargando) {
+      return;
+    }
+
+    final numeroEmpleado =
+        _socioController.text.trim();
+
+    final password =
+        _passwordController.text;
+
+    // ============================================================
+    // VALIDACIONES
+    // ============================================================
+
+    if (numeroEmpleado.isEmpty) {
+      _showMessage(
+        'Ingresa tu número de empleado.',
+      );
       return;
     }
 
     if (password.isEmpty) {
-      _showMessage('Ingresa tu contraseña');
+      _showMessage(
+        'Ingresa tu contraseña.',
+      );
       return;
     }
 
+    // ============================================================
+    // ACTIVAR CARGA
+    // ============================================================
+
+    setState(() {
+      _cargando = true;
+    });
+
     try {
+      // ==========================================================
+      // LOGIN
+      // ==========================================================
+
       await _authService.login(
-        identifier: numeroSocio,
+        identifier: numeroEmpleado,
         password: password,
       );
 
-      if (!mounted) return;
+      if (!mounted) {
+        return;
+      }
+
+      // ==========================================================
+      // LOGIN CORRECTO
+      // ==========================================================
 
       Navigator.of(context).pushAndRemoveUntil(
-        MaterialPageRoute(builder: (_) => const HomeShell()),
+        MaterialPageRoute(
+          builder: (_) => const HomeShell(),
+        ),
         (route) => false,
       );
     } catch (error) {
-      if (!mounted) return;
-      _showMessage(error.toString().replaceAll('Exception: ', ''));
+      if (!mounted) {
+        return;
+      }
+
+      final message = error
+          .toString()
+          .replaceFirst(
+            'Exception: ',
+            '',
+          )
+          .trim();
+
+      _showMessage(
+        message.isEmpty
+            ? 'No se pudo iniciar sesión.'
+            : message,
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _cargando = false;
+        });
+      }
     }
   }
 
+  // ============================================================
+  // MENSAJE
+  // ============================================================
+
   void _showMessage(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(message),
+        ),
+      );
   }
+
+  // ============================================================
+  // BUILD
+  // ============================================================
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F5F5),
+      backgroundColor:
+          const Color(0xFFF5F5F5),
       body: SafeArea(
         child: Column(
           children: [
-            // ============================================
-            // ENCABEZADO VERDE
-            // ============================================
+            // ======================================================
+            // ENCABEZADO
+            // ======================================================
+
             Container(
               width: double.infinity,
               height: 95,
               color: const Color(0xFF9AC53B),
             ),
 
-            // ============================================
+            // ======================================================
             // CONTENIDO
-            // ============================================
+            // ======================================================
+
             Expanded(
               child: SingleChildScrollView(
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(
+                  padding:
+                      const EdgeInsets.symmetric(
                     horizontal: 24,
                   ),
                   child: ConstrainedBox(
                     constraints: BoxConstraints(
                       minHeight:
-                          MediaQuery.of(context).size.height - 95,
+                          MediaQuery.of(context)
+                                  .size
+                                  .height -
+                              95,
                     ),
                     child: Column(
                       children: [
-                        const SizedBox(height: 34),
+                        const SizedBox(
+                          height: 34,
+                        ),
 
-                        // ========================================
+                        // ==================================================
                         // LOGO
-                        // ========================================
+                        // ==================================================
+
                         SizedBox(
                           width: 100,
                           height: 75,
@@ -108,49 +195,83 @@ class _LoginScreenState extends State<LoginScreen> {
                           ),
                         ),
 
-                        const SizedBox(height: 34),
+                        const SizedBox(
+                          height: 34,
+                        ),
 
-                        // ========================================
-                        // NÚMERO DE SOCIO
-                        // ========================================
+                        // ==================================================
+                        // NÚMERO DE EMPLEADO
+                        // ==================================================
+
                         const Text(
-                          'Ingresa tu numero de socio',
-                          textAlign: TextAlign.center,
+                          'Ingresa tu número de empleado',
+                          textAlign:
+                              TextAlign.center,
                           style: TextStyle(
                             fontSize: 13,
-                            color: Color(0xFF222222),
+                            color:
+                                Color(0xFF222222),
                           ),
                         ),
 
-                        const SizedBox(height: 8),
+                        const SizedBox(
+                          height: 8,
+                        ),
 
                         Container(
                           width: double.infinity,
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFE7DDE8),
-                            borderRadius: BorderRadius.circular(2),
+                          decoration:
+                              BoxDecoration(
+                            color:
+                                const Color(
+                              0xFFE7DDE8,
+                            ),
+                            borderRadius:
+                                BorderRadius
+                                    .circular(
+                              2,
+                            ),
                           ),
                           child: TextField(
-                            controller: _socioController,
-                            keyboardType: TextInputType.number,
-                            textInputAction: TextInputAction.next,
-                            decoration: InputDecoration(
-                              hintText: 'Número de socio',
-                              hintStyle: const TextStyle(
+                            controller:
+                                _socioController,
+                            enabled: !_cargando,
+                            keyboardType:
+                                TextInputType
+                                    .number,
+                            textInputAction:
+                                TextInputAction
+                                    .next,
+                            decoration:
+                                InputDecoration(
+                              hintText:
+                                  'Número de empleado',
+                              hintStyle:
+                                  const TextStyle(
                                 fontSize: 13,
                               ),
-                              suffixIcon: IconButton(
-                                icon: const Icon(
-                                  Icons.cancel_outlined,
+                              suffixIcon:
+                                  IconButton(
+                                icon:
+                                    const Icon(
+                                  Icons
+                                      .cancel_outlined,
                                   size: 16,
                                 ),
-                                onPressed: () {
-                                  _socioController.clear();
-                                },
+                                onPressed:
+                                    _cargando
+                                        ? null
+                                        : () {
+                                            _socioController
+                                                .clear();
+                                          },
                               ),
-                              border: InputBorder.none,
+                              border:
+                                  InputBorder
+                                      .none,
                               contentPadding:
-                                  const EdgeInsets.symmetric(
+                                  const EdgeInsets
+                                      .symmetric(
                                 horizontal: 10,
                                 vertical: 12,
                               ),
@@ -158,55 +279,90 @@ class _LoginScreenState extends State<LoginScreen> {
                           ),
                         ),
 
-                        const SizedBox(height: 20),
+                        const SizedBox(
+                          height: 20,
+                        ),
 
-                        // ========================================
+                        // ==================================================
                         // CONTRASEÑA
-                        // ========================================
+                        // ==================================================
+
                         const Text(
                           'Ingresa tu contraseña',
-                          textAlign: TextAlign.center,
+                          textAlign:
+                              TextAlign.center,
                           style: TextStyle(
                             fontSize: 13,
-                            color: Color(0xFF222222),
+                            color:
+                                Color(0xFF222222),
                           ),
                         ),
 
-                        const SizedBox(height: 8),
+                        const SizedBox(
+                          height: 8,
+                        ),
 
                         Container(
                           width: double.infinity,
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFE7DDE8),
-                            borderRadius: BorderRadius.circular(2),
+                          decoration:
+                              BoxDecoration(
+                            color:
+                                const Color(
+                              0xFFE7DDE8,
+                            ),
+                            borderRadius:
+                                BorderRadius
+                                    .circular(
+                              2,
+                            ),
                           ),
                           child: TextField(
-                            controller: _passwordController,
-                            obscureText: !_mostrarPassword,
-                            textInputAction: TextInputAction.done,
-                            onSubmitted: (_) => _acceder(),
-                            decoration: InputDecoration(
-                              hintText: 'Contraseña',
-                              hintStyle: const TextStyle(
+                            controller:
+                                _passwordController,
+                            enabled: !_cargando,
+                            obscureText:
+                                !_mostrarPassword,
+                            textInputAction:
+                                TextInputAction
+                                    .done,
+                            onSubmitted: (_) =>
+                                _acceder(),
+                            decoration:
+                                InputDecoration(
+                              hintText:
+                                  'Contraseña',
+                              hintStyle:
+                                  const TextStyle(
                                 fontSize: 13,
                               ),
-                              suffixIcon: IconButton(
+                              suffixIcon:
+                                  IconButton(
                                 icon: Icon(
                                   _mostrarPassword
-                                      ? Icons.visibility_off_outlined
-                                      : Icons.visibility_outlined,
+                                      ? Icons
+                                          .visibility_off_outlined
+                                      : Icons
+                                          .visibility_outlined,
                                   size: 18,
                                 ),
-                                onPressed: () {
-                                  setState(() {
-                                    _mostrarPassword =
-                                        !_mostrarPassword;
-                                  });
-                                },
+                                onPressed:
+                                    _cargando
+                                        ? null
+                                        : () {
+                                            setState(
+                                              () {
+                                                _mostrarPassword =
+                                                    !_mostrarPassword;
+                                              },
+                                            );
+                                          },
                               ),
-                              border: InputBorder.none,
+                              border:
+                                  InputBorder
+                                      .none,
                               contentPadding:
-                                  const EdgeInsets.symmetric(
+                                  const EdgeInsets
+                                      .symmetric(
                                 horizontal: 10,
                                 vertical: 12,
                               ),
@@ -214,85 +370,152 @@ class _LoginScreenState extends State<LoginScreen> {
                           ),
                         ),
 
-                        const SizedBox(height: 10),
+                        const SizedBox(
+                          height: 10,
+                        ),
 
-                        // ========================================
-                        // ¿OLVIDASTE TU CONTRASEÑA?
-                        // ========================================
+                        // ==================================================
+                        // OLVIDÉ CONTRASEÑA
+                        // ==================================================
+
                         Align(
-                          alignment: Alignment.centerRight,
-                          child: GestureDetector(
-                            onTap: () {
-                              // Pendiente: recuperación de contraseña.
-                            },
-                            child: const Text(
+                          alignment:
+                              Alignment
+                                  .centerRight,
+                          child:
+                              GestureDetector(
+                            onTap: _cargando
+                                ? null
+                                : () {
+                                    // Pendiente:
+                                    // recuperación de contraseña.
+                                  },
+                            child:
+                                const Text(
                               '¿Olvidaste tu contraseña?',
-                              style: TextStyle(
+                              style:
+                                  TextStyle(
                                 fontSize: 9,
-                                color: Colors.blue,
+                                color:
+                                    Colors.blue,
                               ),
                             ),
                           ),
                         ),
 
-                        const SizedBox(height: 24),
+                        const SizedBox(
+                          height: 24,
+                        ),
 
-                        // ========================================
+                        // ==================================================
                         // BOTÓN ACCEDER
-                        // ========================================
+                        // ==================================================
+
                         SizedBox(
-                          width: 96,
+                          width: 120,
                           height: 42,
-                          child: ElevatedButton(
-                            onPressed: _acceder,
-                            style: ElevatedButton.styleFrom(
+                          child:
+                              ElevatedButton(
+                            onPressed:
+                                _cargando
+                                    ? null
+                                    : _acceder,
+                            style:
+                                ElevatedButton
+                                    .styleFrom(
                               backgroundColor:
-                                  const Color(0xFF303030),
-                              foregroundColor: Colors.white,
+                                  const Color(
+                                0xFF303030,
+                              ),
+                              foregroundColor:
+                                  Colors.white,
+                              disabledBackgroundColor:
+                                  const Color(
+                                0xFF777777,
+                              ),
+                              disabledForegroundColor:
+                                  Colors.white,
                               elevation: 0,
-                              shape: RoundedRectangleBorder(
+                              shape:
+                                  RoundedRectangleBorder(
                                 borderRadius:
-                                    BorderRadius.circular(4),
+                                    BorderRadius
+                                        .circular(
+                                  4,
+                                ),
                               ),
                             ),
-                            child: const Text(
-                              'ACCEDER',
-                              style: TextStyle(
-                                fontSize: 10,
-                              ),
-                            ),
+                            child: _cargando
+                                ? const SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child:
+                                        CircularProgressIndicator(
+                                      strokeWidth:
+                                          2,
+                                      color:
+                                          Colors.white,
+                                    ),
+                                  )
+                                : const Text(
+                                    'ACCEDER',
+                                    style:
+                                        TextStyle(
+                                      fontSize:
+                                          10,
+                                    ),
+                                  ),
                           ),
                         ),
 
-                        const SizedBox(height: 100),
+                        const SizedBox(
+                          height: 100,
+                        ),
 
-                        // ========================================
+                        // ==================================================
                         // REGISTRO
-                        // ========================================
+                        // ==================================================
+
                         RichText(
-                          textAlign: TextAlign.center,
+                          textAlign:
+                              TextAlign.center,
                           text: TextSpan(
-                            style: const TextStyle(
+                            style:
+                                const TextStyle(
                               fontSize: 9,
-                              color: Color(0xFF222222),
+                              color:
+                                  Color(
+                                0xFF222222,
+                              ),
                             ),
                             children: [
                               const TextSpan(
                                 text:
-                                    '¿No tienes un número de socio? ',
+                                    '¿No tienes un número de empleado? ',
                               ),
                               WidgetSpan(
-                                child: GestureDetector(
-                                  onTap: () {
-                                    // Pendiente.
-                                  },
-                                  child: const Text(
+                                child:
+                                    GestureDetector(
+                                  onTap:
+                                      _cargando
+                                          ? null
+                                          : () {
+                                              // Pendiente.
+                                            },
+                                  child:
+                                      const Text(
                                     'Da Click\n'
                                     'aquí',
-                                    textAlign: TextAlign.center,
-                                    style: TextStyle(
-                                      fontSize: 9,
-                                      color: Colors.blue,
+                                    textAlign:
+                                        TextAlign
+                                            .center,
+                                    style:
+                                        TextStyle(
+                                      fontSize:
+                                          9,
+                                      color:
+                                          Colors
+                                              .blue,
                                     ),
                                   ),
                                 ),
@@ -301,7 +524,9 @@ class _LoginScreenState extends State<LoginScreen> {
                           ),
                         ),
 
-                        const SizedBox(height: 28),
+                        const SizedBox(
+                          height: 28,
+                        ),
                       ],
                     ),
                   ),
