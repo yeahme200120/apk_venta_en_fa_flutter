@@ -71,6 +71,19 @@ class AppStorage {
     return decoded is Map ? Map<String, dynamic>.from(decoded) : {};
   }
 
+  Future<void> saveOperationState(Map<String, dynamic> state) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('operation_state', jsonEncode(state));
+  }
+
+  Future<Map<String, dynamic>> getOperationState() async {
+    final prefs = await SharedPreferences.getInstance();
+    final value = prefs.getString('operation_state');
+    if (value == null) return {};
+    final decoded = jsonDecode(value);
+    return decoded is Map ? Map<String, dynamic>.from(decoded) : {};
+  }
+
   Future<bool> isLoggedIn() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getBool('is_logged_in') ?? false;
@@ -83,6 +96,7 @@ class AppStorage {
     await prefs.remove('empresa_id');
     await prefs.remove('user_name');
     await prefs.remove('company_name');
+    await prefs.remove('operation_state');
     await prefs.setBool('is_logged_in', false);
   }
 

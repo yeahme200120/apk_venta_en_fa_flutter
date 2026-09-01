@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 
+// ✅ Importaciones faltantes agregadas
+import '../core/database/local_db.dart';
 import '../core/network/network_monitor.dart';
 import '../core/services/automatic_sync_service.dart';
-import '../core/services/catalog_service.dart';
 import '../core/services/daily_cleanup_service.dart';
 import '../core/services/sync_service.dart';
 import '../core/storage/app_storage.dart';
+
 import 'daily_stats/daily_stats_screen.dart';
 import 'pos/pos_screen.dart';
 import 'settings/settings_screen.dart';
@@ -22,20 +24,20 @@ class _HomeShellState extends State<HomeShell> {
   final AutomaticSyncService _automaticSyncService = AutomaticSyncService();
 
   int _selectedIndex = 0;
+  bool _initialized = false;
+  String? _initError;
 
-  static final List<Widget> _pages = <Widget>[
-    const PosScreen(),
-    const DailyStatsScreen(),
-    const SettingsScreen(),
-  ];
+  List<Widget> get _pages => [
+        const PosScreen(key: ValueKey('pos')),
+        const DailyStatsScreen(key: ValueKey('stats')),
+        const SettingsScreen(key: ValueKey('settings')),
+      ];
 
   @override
   void initState() {
     super.initState();
     _networkMonitor.addListener(_handleNetworkChange);
-    _networkMonitor.initialize();
-    _bootstrapBusinessDay();
-    _startAutomaticSync();
+    _initialize();
   }
 
   @override
@@ -49,65 +51,236 @@ class _HomeShellState extends State<HomeShell> {
     setState(() {});
   }
 
+  // ============================================================
+  // INICIALIZACIÓN SEGURA
+  // ============================================================
+
+  Future<void> _initialize() async {
+    try {
+      await _networkMonitor.initialize();
+      if (!mounted) return;
+
+      await _bootstrapBusinessDay();
+      if (!mounted) return;
+
+      await _startAutomaticSync();
+      if (!mounted) return;
+
+      setState(() {
+        _initialized = true;
+        _initError = null;
+      });
+    } catch (error, stackTrace) {
+      debugPrint('❌ Error en _initialize: $error');
+      debugPrint('$stackTrace');
+      if (mounted) {
+        setState(() {
+          _initialized = true;
+          _initError = 'Error al inicializar: $error';
+        });
+      }
+    }
+  }
+
+  // ============================================================
+  // BOOTSTRAP DEL DÍA (CORREGIDO: usa SyncService)
+  // ============================================================
+
   Future<void> _bootstrapBusinessDay() async {
-    final companyId = await AppStorage().getEmpresaId() ?? 0;
-    final userId = await AppStorage().getUserId() ?? 0;
-    if (companyId == 0 || userId == 0) return;
+    try {
+      final companyId = await AppStorage().getEmpresaId() ?? 0;
+      final userId = await AppStorage().getUserId() ?? 0;
+      if (companyId == 0 || userId == 0) {
+        debugPrint('⚠️ Empresa o usuario no disponibles.');
+        return;
+      }
 
-    final today = DateTime.now();
-    final lastDate = await AppStorage().getLastBusinessDate();
-    final lastBusinessDate = lastDate != null ? DateTime.tryParse(lastDate) : null;
+      final today = DateTime.now();
+      final lastDate = await AppStorage().getLastBusinessDate();
+      final todayStr = today.toIso8601String().substring(0, 10);
+      final isNewDay = lastDate == null || lastDate != todayStr;
 
-    if (lastBusinessDate == null || lastBusinessDate.day != today.day || lastBusinessDate.month != today.month || lastBusinessDate.year != today.year) {
-      await DailyCleanupService().prepareNewBusinessDay(
-        companyId: companyId,
-        userId: userId,
-        businessDate: today,
-      );
-      await AppStorage().saveLastBusinessDate(today);
-      if (_networkMonitor.isOnline) {
-        await CatalogService().downloadCatalogForToday(
+      if (isNewDay) {
+        debugPrint('🔄 Nuevo día detectado: $todayStr');
+
+        await DailyCleanupService().prepareNewBusinessDay(
           companyId: companyId,
           userId: userId,
           businessDate: today,
         );
+        if (!mounted) return;
+
+        await AppStorage().saveLastBusinessDate(today);
+        if (!mounted) return;
+
+        if (_networkMonitor.isOnline) {
+          try {
+            // ✅ Ahora usa SyncService (guarda en LocalDb, no en la base diaria)
+            await SyncService().syncCatalogs();
+            debugPrint('✅ Catálogos sincronizados.');
+          } catch (error) {
+            debugPrint('⚠️ Error sincronizando catálogos: $error');
+          }
+        }
+        return;
       }
-      return;
+
+      // Mismo día: verificar si ya hay productos en LocalDb
+      try {
+        final localDb = LocalDb(); // ✅ Ahora LocalDb está importado
+        final productos = await localDb.getAllProducts();
+        debugPrint('📦 Productos LocalDb: ${productos.length}');
+
+        if (productos.isEmpty && _networkMonitor.isOnline) {
+          try {
+            await SyncService().syncCatalogs();
+          } catch (error) {
+            debugPrint('⚠️ Error descargando catálogo: $error');
+          }
+        }
+      } catch (error) {
+        debugPrint('❌ Error leyendo LocalDb: $error');
+        if (_networkMonitor.isOnline) {
+          try {
+            await SyncService().syncCatalogs();
+          } catch (syncError) {
+            debugPrint('❌ Error en sincronización: $syncError');
+          }
+        }
+      }
+    } catch (error, stackTrace) {
+      debugPrint('❌ Error en _bootstrapBusinessDay: $error');
+      debugPrint('$stackTrace');
     }
+  }
 
-    final db = await CatalogService().downloadCatalogForToday(
-      companyId: companyId,
-      userId: userId,
-      businessDate: today,
-    );
+  // ============================================================
+  // SINCRONIZACIÓN AUTOMÁTICA
+  // ============================================================
 
-    if (db.isEmpty && _networkMonitor.isOnline) {
-      await CatalogService().downloadCatalogForToday(
+  Future<void> _startAutomaticSync() async {
+    if (!mounted) return;
+
+    try {
+      final companyId = await AppStorage().getEmpresaId() ?? 0;
+      final userId = await AppStorage().getUserId() ?? 0;
+      if (companyId == 0 || userId == 0) {
+        debugPrint('⚠️ No se inicia sincronización automática.');
+        return;
+      }
+
+      await _automaticSyncService.start(
+        syncAction: () async {
+          if (!mounted) return;
+          try {
+            await SyncService().syncPendingSales(
+              companyId: companyId,
+              userId: userId,
+              businessDate: DateTime.now(),
+            );
+            if (mounted) setState(() {});
+          } catch (error) {
+            debugPrint('❌ Error sincronizando ventas: $error');
+            rethrow;
+          }
+        },
+      );
+    } catch (error) {
+      debugPrint('❌ Error iniciando sincronización automática: $error');
+    }
+  }
+
+  // ============================================================
+  // SINCRONIZACIÓN MANUAL (botón)
+  // ============================================================
+
+  Future<void> _forceSync() async {
+    try {
+      final companyId = await AppStorage().getEmpresaId() ?? 0;
+      final userId = await AppStorage().getUserId() ?? 0;
+      if (companyId == 0 || userId == 0) {
+        throw Exception('Empresa o usuario no configurado.');
+      }
+
+      await SyncService().syncCatalogs();
+      if (!mounted) return;
+
+      await SyncService().syncPendingSales(
         companyId: companyId,
         userId: userId,
-        businessDate: today,
+        businessDate: DateTime.now(),
+      );
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Sincronización completada.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error: $error', maxLines: 3, overflow: TextOverflow.ellipsis),
+          behavior: SnackBarBehavior.floating,
+        ),
       );
     }
   }
 
-  Future<void> _startAutomaticSync() async {
-    final companyId = await AppStorage().getEmpresaId() ?? 0;
-    final userId = await AppStorage().getUserId() ?? 0;
-    if (companyId == 0 || userId == 0) return;
-
-    await _automaticSyncService.start(
-      syncAction: () async {
-        await SyncService().syncPendingSales(
-          companyId: companyId,
-          userId: userId,
-          businessDate: DateTime.now(),
-        );
-      },
-    );
-  }
+  // ============================================================
+  // BUILD
+  // ============================================================
 
   @override
   Widget build(BuildContext context) {
+    if (!_initialized) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    if (_initError != null) {
+      return Scaffold(
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.error_outline, size: 48, color: Colors.red),
+                const SizedBox(height: 16),
+                Text(
+                  'Error de inicialización',
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  _initError!,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.red),
+                ),
+                const SizedBox(height: 16),
+                ElevatedButton(
+                  onPressed: () async {
+                    setState(() {
+                      _initError = null;
+                      _initialized = false;
+                    });
+                    await _initialize();
+                  },
+                  child: const Text('Reintentar'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
     final connectionStatus = _networkMonitor.status;
     final statusColor = switch (connectionStatus) {
       AppConnectionStatus.online => Colors.green,
@@ -126,6 +299,11 @@ class _HomeShellState extends State<HomeShell> {
       appBar: AppBar(
         title: const Text('Punto de venta'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.sync),
+            tooltip: 'Sincronizar',
+            onPressed: _forceSync,
+          ),
           Padding(
             padding: const EdgeInsets.only(right: 12),
             child: Chip(

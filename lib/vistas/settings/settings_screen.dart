@@ -190,38 +190,10 @@ class SettingsScreen extends StatelessWidget {
   Future<void> _editTicket(BuildContext context) async {
     final local = await AppStorage().getTicketConfig();
     if (!context.mounted) return;
-    final header = TextEditingController(text: local['cabecera']?.toString() ?? '');
-    final footer = TextEditingController(text: local['pie_pagina']?.toString() ?? '');
-    var paper = local['papel']?.toString() ?? '58mm';
     final result = await showDialog<Map<String, dynamic>>(
       context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: const Text('Ticket y formato'),
-          content: SingleChildScrollView(
-            child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              DropdownButtonFormField<String>(
-                initialValue: paper,
-                items: const [DropdownMenuItem(value: '58mm', child: Text('58 mm')), DropdownMenuItem(value: '80mm', child: Text('80 mm'))],
-                onChanged: (value) => setDialogState(() => paper = value ?? '58mm'),
-                decoration: const InputDecoration(labelText: 'Papel'),
-              ),
-              TextField(controller: header, decoration: const InputDecoration(labelText: 'Cabecera')),
-              TextField(controller: footer, decoration: const InputDecoration(labelText: 'Pie de página')),
-            ],
-            ),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
-            FilledButton(onPressed: () => Navigator.pop(context, {'papel': paper, 'cabecera': header.text, 'pie_pagina': footer.text}), child: const Text('Guardar')),
-          ],
-        ),
-      ),
+      builder: (_) => _TicketConfigDialog(initialConfig: local),
     );
-    header.dispose();
-    footer.dispose();
     if (result == null) return;
     await AppStorage().saveTicketConfig(result);
     try {
@@ -320,6 +292,72 @@ class SettingsScreen extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _TicketConfigDialog extends StatefulWidget {
+  const _TicketConfigDialog({required this.initialConfig});
+
+  final Map<String, dynamic> initialConfig;
+
+  @override
+  State<_TicketConfigDialog> createState() => _TicketConfigDialogState();
+}
+
+class _TicketConfigDialogState extends State<_TicketConfigDialog> {
+  late final TextEditingController _header;
+  late final TextEditingController _footer;
+  late String _paper;
+
+  @override
+  void initState() {
+    super.initState();
+    _header = TextEditingController(text: widget.initialConfig['cabecera']?.toString() ?? '');
+    _footer = TextEditingController(text: widget.initialConfig['pie_pagina']?.toString() ?? '');
+    _paper = widget.initialConfig['papel']?.toString() ?? '58mm';
+  }
+
+  @override
+  void dispose() {
+    _header.dispose();
+    _footer.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Ticket y formato'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            DropdownButtonFormField<String>(
+              initialValue: _paper,
+              items: const [
+                DropdownMenuItem(value: '58mm', child: Text('58 mm')),
+                DropdownMenuItem(value: '80mm', child: Text('80 mm')),
+              ],
+              onChanged: (value) => setState(() => _paper = value ?? '58mm'),
+              decoration: const InputDecoration(labelText: 'Papel'),
+            ),
+            TextField(controller: _header, decoration: const InputDecoration(labelText: 'Cabecera')),
+            TextField(controller: _footer, decoration: const InputDecoration(labelText: 'Pie de página')),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, {
+            'papel': _paper,
+            'cabecera': _header.text,
+            'pie_pagina': _footer.text,
+          }),
+          child: const Text('Guardar'),
+        ),
+      ],
     );
   }
 }

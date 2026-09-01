@@ -27,9 +27,16 @@ class PaymentBreakdown {
       .where((item) => item.method.toLowerCase() == 'efectivo')
       .fold(0.0, (sum, item) => sum + item.amount);
 
+  double get nonCashAmount => payments
+      .where((item) => item.method.toLowerCase() != 'efectivo')
+      .fold(0.0, (sum, item) => sum + item.amount);
+
   double get backendCashAmount => cashAmount;
 
-  double get change => cashAmount > total ? cashAmount - total : 0.0;
+  double get change {
+    final cashRequired = (total - nonCashAmount).clamp(0.0, double.infinity).toDouble();
+    return cashAmount > cashRequired ? cashAmount - cashRequired : 0.0;
+  }
 
   double get excess => totalCollected > total ? totalCollected - total : 0.0;
 

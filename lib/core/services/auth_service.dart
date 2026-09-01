@@ -1,4 +1,3 @@
-import '../demo/offline_demo_data.dart';
 import '../network/api_client.dart';
 import '../storage/app_storage.dart';
 
@@ -11,21 +10,7 @@ class AuthService {
     required String identifier,
     required String password,
   }) async {
-    if (OfflineDemoData.isOfflineDemoUser(identifier, password)) {
-      final user = OfflineDemoData.userForIdentifier(identifier)!;
-      final payload = OfflineDemoData.loginPayloadFor(identifier);
-
-      await AppStorage().saveSession(
-        token: payload['token'] as String,
-        userId: user.userId,
-        empresaId: user.companyId,
-        userName: user.name,
-        isLoggedIn: true,
-      );
-
-      return payload;
-    }
-
+    // 🔥 Ya no hay usuarios demo: todos los logins van al backend.
     final payload = await _apiClient.login(
       identifier: identifier,
       password: password,
@@ -42,9 +27,20 @@ class AuthService {
       userName: (user['name'] ?? user['username'] ?? 'Usuario').toString(),
       isLoggedIn: true,
     );
+
     final companyName = empresa['nombre'] ?? empresa['name'];
     if (companyName != null) {
       await AppStorage().saveCompanyName(companyName.toString());
+    }
+
+    final configuration = empresa['configuracion'];
+    if (configuration is Map) {
+      final settings = Map<String, dynamic>.from(configuration);
+      await AppStorage().saveOperationState({
+        'cajas_activas': settings['cajas_activas'] == true,
+        'mesas_activas': settings['mesas_activas'] == true,
+        'caja_abierta': null,
+      });
     }
 
     return payload;

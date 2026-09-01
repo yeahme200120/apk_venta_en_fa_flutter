@@ -44,6 +44,7 @@ dependencies:
   permission_handler: ^13.0.1
   flex_color_picker: ^3.8.0
   bluetooth_print_plus: ^2.4.6
+  uuid: ^4.4.0
 
 dev_dependencies:
   flutter_test:

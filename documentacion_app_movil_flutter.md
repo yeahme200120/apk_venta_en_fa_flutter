@@ -608,3 +608,15 @@ El primer comando prepara la aplicación iOS; el segundo genera el paquete distr
 - Revisar que no se incluyan credenciales demo en una compilación de producción.
 
 El mensaje `packages have newer versions incompatible with dependency constraints` es informativo: indica que existen actualizaciones que no caben en las restricciones actuales de `pubspec.yaml`; no significa por sí mismo que la APK o la preparación iOS fallen. Se puede revisar con `flutter pub outdated` y actualizar de forma controlada después de validar compatibilidad.
+
+## 18. Ajustes recientes del POS (2026-08-31)
+
+- Las ventas en espera se guardan sin descontar existencias y pueden recuperarse, editarse, eliminarse o cobrarse posteriormente. Al cobrarlas, el descuento de inventario y el registro de pago son atómicos.
+- Toda venta pagada se guarda de forma transaccional: ante inventario insuficiente se revierte la operación completa, evitando registros parciales.
+- La pantalla de caja muestra únicamente las ventas de la fecha comercial actual; los indicadores ya no mezclan ventas de días anteriores.
+- El detalle posterior al cobro se abre con la venta exacta que se acaba de persistir.
+- En pagos mixtos, los medios distintos de efectivo se acreditan primero y el cambio se calcula solo contra el efectivo excedente. Un pago no efectivo no puede exceder por sí mismo el total de la venta.
+- La configuración de ticket administra sus controladores dentro del ciclo de vida del diálogo, evitando liberarlos mientras Flutter aún desmonta la interfaz.
+- Cuando la empresa exige caja, el POS consulta el estado operativo y bloquea el guardado o cobro mientras no haya una caja abierta; en modo offline aplica la última instantánea válida almacenada.
+- El módulo **Operación** está disponible desde el estado de Caja en POS. Un usuario con rol `cajero`, `admin` o `superadmin` puede abrir y cerrar caja; con mesas activas también puede crear y editar mesas.
+- Con mesas activas, POS permite elegir una mesa antes de guardar una venta pendiente. La asociación sobrevive al modo offline, aparece en los listados y viaja como `mesa_id` durante la sincronización.

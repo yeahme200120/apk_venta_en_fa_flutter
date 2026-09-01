@@ -5,8 +5,10 @@ class DailyCatalogLoader {
   final ApiClient _apiClient;
   final PosDatabaseService _dbService;
 
-  DailyCatalogLoader({ApiClient? apiClient, PosDatabaseService? dbService})
-      : _apiClient = apiClient ?? ApiClient(),
+  DailyCatalogLoader({
+    ApiClient? apiClient,
+    PosDatabaseService? dbService,
+  })  : _apiClient = apiClient ?? ApiClient(),
         _dbService = dbService ?? PosDatabaseService();
 
   Future<void> loadFirstDayCatalog({
@@ -14,7 +16,24 @@ class DailyCatalogLoader {
     required int userId,
     required DateTime businessDate,
   }) async {
-    final products = await _apiClient.getCatalog();
+    final response = await _apiClient.getCatalog();
+
+    dynamic productsData = response['productos'];
+
+    // Soporte para respuestas envueltas en "data".
+    if (productsData == null && response['data'] is Map) {
+      final data = Map<String, dynamic>.from(response['data'] as Map);
+      productsData = data['productos'];
+    }
+
+    final products = productsData is List
+        ? productsData
+            .whereType<Map>()
+            .map(
+              (item) => Map<String, dynamic>.from(item),
+            )
+            .toList()
+        : <Map<String, dynamic>>[];
 
     final db = await _dbService.open(
       companyId: companyId,
@@ -22,7 +41,10 @@ class DailyCatalogLoader {
       businessDate: businessDate,
     );
 
-    await _dbService.upsertProducts(db, products);
+    await _dbService.upsertProducts(
+      db,
+      products,
+    );
   }
 
   Future<void> clearDailyDatabase({

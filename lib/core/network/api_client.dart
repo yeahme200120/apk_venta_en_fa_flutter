@@ -1,5 +1,4 @@
 import 'package:dio/dio.dart';
-
 import '../config/app_config.dart';
 import '../storage/app_storage.dart';
 
@@ -19,18 +18,27 @@ class ApiClient {
       InterceptorsWrapper(
         onRequest: (options, handler) async {
           final token = await AppStorage().getToken();
-          if ((token ?? '').isNotEmpty) {
+          print('🔑 Token obtenido: $token');
+          if (token != null && token.isNotEmpty) {
             options.headers['Authorization'] = 'Bearer $token';
+            print('🔒 Header Authorization agregado');
+          } else {
+            print('⚠️ Token vacío o nulo');
           }
+          print('🌐 URL completa: ${options.baseUrl}${options.path}');
           handler.next(options);
         },
-        onResponse: (response, handler) async {
+        onResponse: (response, handler) {
+          print('📡 Respuesta: ${response.statusCode} - ${response.data}');
           if (response.statusCode == 401) {
-            await AppStorage().logOut();
+            AppStorage().logOut();
           }
           handler.next(response);
         },
         onError: (DioException error, handler) async {
+          print('❌ Error en API: ${error.message}');
+          print('❌ Código: ${error.response?.statusCode}');
+          print('❌ Data: ${error.response?.data}');
           if (error.response?.statusCode == 401) {
             await AppStorage().logOut();
           }
@@ -181,36 +189,110 @@ class ApiClient {
     }
   }
 
-  Future<List<Map<String, dynamic>>> getCatalog({String? desde}) async {
+  Future<Map<String, dynamic>> getOperationStatus() async {
+    try {
+      final response = await _dio.get('/api/v1/operacion/estado');
+      if (response.statusCode == 200 && response.data is Map) {
+        final payload = Map<String, dynamic>.from(response.data as Map);
+        final data = payload['data'];
+        return data is Map ? Map<String, dynamic>.from(data) : payload;
+      }
+      throw Exception('No se pudo consultar el estado operativo');
+    } on DioException catch (e) {
+      throw Exception(parseApiError(e.response?.data, fallback: 'No se pudo consultar el estado operativo'));
+    }
+  }
+
+  Future<Map<String, dynamic>?> getCurrentCashRegister() async {
+    try {
+      final response = await _dio.get('/api/v1/cajas/actual');
+      if (response.statusCode == 200 && response.data is Map) {
+        final data = (response.data as Map)['data'];
+        return data is Map ? Map<String, dynamic>.from(data) : null;
+      }
+      throw Exception('No se pudo consultar la caja actual');
+    } on DioException catch (e) {
+      throw Exception(parseApiError(e.response?.data, fallback: 'No se pudo consultar la caja actual'));
+    }
+  }
+
+  Future<Map<String, dynamic>> openCashRegister({required double openingAmount, String? notes}) async {
+    return _postOperation('/api/v1/cajas/abrir', {
+      'monto_apertura': openingAmount,
+      if (notes != null && notes.trim().isNotEmpty) 'notas': notes.trim(),
+    });
+  }
+
+  Future<Map<String, dynamic>> closeCashRegister({required int cashRegisterId, required double declaredAmount, String? notes}) async {
+    return _postOperation('/api/v1/cajas/$cashRegisterId/cerrar', {
+      'monto_cierre_declarado': declaredAmount,
+      if (notes != null && notes.trim().isNotEmpty) 'notas': notes.trim(),
+    });
+  }
+
+  Future<List<Map<String, dynamic>>> getTables() async {
+    try {
+      final response = await _dio.get('/api/v1/mesas');
+      final data = response.data is Map ? (response.data as Map)['data'] : null;
+      return data is List ? data.map((item) => Map<String, dynamic>.from(item as Map)).toList() : const [];
+    } on DioException catch (e) {
+      throw Exception(parseApiError(e.response?.data, fallback: 'No se pudieron consultar las mesas'));
+    }
+  }
+
+  Future<Map<String, dynamic>> saveTable({int? id, required String name, int? capacity, String? notes, bool? active}) {
+    final payload = <String, dynamic>{
+      'nombre': name.trim(),
+      if (capacity != null) 'capacidad': capacity,
+      if (notes != null && notes.trim().isNotEmpty) 'notas': notes.trim(),
+      if (active != null) 'activo': active,
+    };
+    return id == null ? _postOperation('/api/v1/mesas', payload) : _putOperation('/api/v1/mesas/$id', payload);
+  }
+
+  Future<Map<String, dynamic>> _postOperation(String path, Map<String, dynamic> payload) async {
+    try {
+      final response = await _dio.post(path, data: payload);
+      if (response.data is Map) return Map<String, dynamic>.from(response.data as Map);
+      throw Exception('Respuesta inválida del servidor');
+    } on DioException catch (e) {
+      throw Exception(parseApiError(e.response?.data, fallback: 'No se pudo completar la operación'));
+    }
+  }
+
+  Future<Map<String, dynamic>> _putOperation(String path, Map<String, dynamic> payload) async {
+    try {
+      final response = await _dio.put(path, data: payload);
+      if (response.data is Map) return Map<String, dynamic>.from(response.data as Map);
+      throw Exception('Respuesta inválida del servidor');
+    } on DioException catch (e) {
+      throw Exception(parseApiError(e.response?.data, fallback: 'No se pudo completar la operación'));
+    }
+  }
+
+  Future<Map<String, dynamic>> getCatalog({String? desde}) async {
     try {
       final response = await _dio.get(
         '/api/v1/catalogos',
         queryParameters: desde == null ? null : {'desde': desde},
       );
 
-      if (response.statusCode == 200) {
-        final raw = response.data;
-        if (raw is List) {
-          return raw.map((item) => Map<String, dynamic>.from(item as Map)).toList();
-        }
-        if (raw is Map && raw['data'] is List) {
-          return (raw['data'] as List)
-              .map((item) => Map<String, dynamic>.from(item as Map))
-              .toList();
-        }
-        if (raw is Map && raw['productos'] is List) {
-          return (raw['productos'] as List)
-              .map((item) => Map<String, dynamic>.from(item as Map))
-              .toList();
-        }
+      if (response.statusCode == 200 && response.data is Map) {
+        return Map<String, dynamic>.from(response.data as Map);
       }
 
-      return const [];
+      throw Exception('Respuesta inválida del catálogo');
     } on DioException catch (e) {
       if (e.response?.statusCode == 401) {
         await AppStorage().logOut();
       }
-      return const [];
+
+      throw Exception(
+        parseApiError(
+          e.response?.data,
+          fallback: 'No se pudo descargar el catálogo',
+        ),
+      );
     }
   }
 
