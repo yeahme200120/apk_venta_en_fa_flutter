@@ -3,2473 +3,417 @@ import 'dart:convert';
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
+/// Base HISTÓRICA y de RESPALDO.
+///
+/// Esta base NO sustituye a PosDatabaseService.
+/// Su responsabilidad es conservar operaciones de días anteriores,
+/// especialmente ventas que todavía no llegaron al servidor.
 class LocalDb {
   static final LocalDb _instance = LocalDb._internal();
-
   factory LocalDb() => _instance;
-
   LocalDb._internal();
 
   static Database? _database;
-
-  /// Incrementar siempre que se modifique la estructura SQLite.
-  static const int _databaseVersion = 6;
-
-  // ============================================================
-  // DATABASE
-  // ============================================================
+  static const int _databaseVersion = 7;
 
   Future<Database> get database async {
-    if (_database != null) {
-      return _database!;
-    }
-
+    if (_database != null) return _database!;
     final directory = await getApplicationDocumentsDirectory();
-
-    final dbPath = '${directory.path}/pos_local.db';
-
+    final path = '${directory.path}/pos_local.db';
     _database = await openDatabase(
-      dbPath,
+      path,
       version: _databaseVersion,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
-
     return _database!;
   }
 
-  // ============================================================
-  // CREATE DATABASE
-  // ============================================================
-
-  Future<void> _onCreate(
-    Database db,
-    int version,
-  ) async {
+  Future<void> _onCreate(Database db, int version) async {
     await _createCompanyTable(db);
     await _createProductsTable(db);
     await _createSalesTables(db);
     await _createCatalogTables(db);
   }
 
-  // ============================================================
-  // COMPANY
-  // ============================================================
-
   Future<void> _createCompanyTable(Database db) async {
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS company (
-        id INTEGER PRIMARY KEY,
-        nombre TEXT,
-        logo TEXT,
-        logo_url TEXT,
-        colores_json TEXT,
-        configuracion_json TEXT,
-        direccion TEXT,
-        telefono TEXT,
-        email_contacto TEXT,
-        rfc TEXT,
-        razon_social TEXT,
-        leyenda_ticket TEXT,
-        whatsapp_numero TEXT,
-        activo INTEGER DEFAULT 1,
-        updated_at TEXT
-      )
-    ''');
+    await db.execute('''CREATE TABLE IF NOT EXISTS company (
+      id INTEGER PRIMARY KEY,
+      nombre TEXT, logo TEXT, logo_url TEXT, colores_json TEXT,
+      configuracion_json TEXT, direccion TEXT, telefono TEXT,
+      email_contacto TEXT, rfc TEXT, razon_social TEXT,
+      leyenda_ticket TEXT, whatsapp_numero TEXT,
+      activo INTEGER DEFAULT 1, updated_at TEXT
+    )''');
   }
-
-  // ============================================================
-  // PRODUCTS
-  // ============================================================
 
   Future<void> _createProductsTable(Database db) async {
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS products (
-        id INTEGER PRIMARY KEY,
-        code TEXT,
-        name TEXT,
-        price REAL DEFAULT 0,
-        stock REAL DEFAULT 0,
-        is_active INTEGER DEFAULT 1,
-        data_json TEXT,
-        updated_at TEXT
-      )
-    ''');
-
-    await db.execute('''
-      CREATE INDEX IF NOT EXISTS idx_products_name
-      ON products(name)
-    ''');
-
-    await db.execute('''
-      CREATE INDEX IF NOT EXISTS idx_products_code
-      ON products(code)
-    ''');
-
-    await db.execute('''
-      CREATE INDEX IF NOT EXISTS idx_products_active
-      ON products(is_active)
-    ''');
+    await db.execute('''CREATE TABLE IF NOT EXISTS products (
+      id INTEGER PRIMARY KEY, code TEXT, name TEXT,
+      price REAL DEFAULT 0, stock REAL DEFAULT 0,
+      is_active INTEGER DEFAULT 1, data_json TEXT, updated_at TEXT
+    )''');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_products_name ON products(name)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_products_code ON products(code)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_products_active ON products(is_active)');
   }
-
-  // ============================================================
-  // SALES
-  // ============================================================
 
   Future<void> _createSalesTables(Database db) async {
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS sales (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        uuid_local TEXT,
-        total REAL DEFAULT 0,
-        status TEXT DEFAULT 'pending',
-        sync_status TEXT DEFAULT 'pending',
-        payment_method TEXT,
-        cash_received REAL DEFAULT 0,
-        change_due REAL DEFAULT 0,
-        mesa_id INTEGER,
-        mesa_nombre TEXT,
-        created_at TEXT,
-        updated_at TEXT,
-        paid_at TEXT
-      )
-    ''');
-
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS sale_items (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sale_id INTEGER,
-        product_id INTEGER,
-        name TEXT,
-        quantity REAL DEFAULT 0,
-        unit_price REAL DEFAULT 0,
-        total REAL DEFAULT 0
-      )
-    ''');
-
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS sale_payments (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sale_id INTEGER,
-        method TEXT,
-        amount REAL DEFAULT 0
-      )
-    ''');
-
-    await db.execute('''
-      CREATE INDEX IF NOT EXISTS idx_sales_status
-      ON sales(status)
-    ''');
-
-    await db.execute('''
-      CREATE INDEX IF NOT EXISTS idx_sales_sync_status
-      ON sales(sync_status)
-    ''');
-
-    await db.execute('''
-      CREATE INDEX IF NOT EXISTS idx_sales_created_at
-      ON sales(created_at)
-    ''');
-
-    await db.execute('''
-      CREATE INDEX IF NOT EXISTS idx_sale_items_sale_id
-      ON sale_items(sale_id)
-    ''');
-
-    await db.execute('''
-      CREATE INDEX IF NOT EXISTS idx_sale_payments_sale_id
-      ON sale_payments(sale_id)
-    ''');
+    await db.execute('''CREATE TABLE IF NOT EXISTS sales (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      uuid_local TEXT NOT NULL,
+      server_id INTEGER,
+      server_folio TEXT,
+      business_date TEXT,
+      total REAL DEFAULT 0,
+      status TEXT DEFAULT 'pending',
+      sync_status TEXT DEFAULT 'pending',
+      payment_method TEXT,
+      cash_received REAL DEFAULT 0,
+      change_due REAL DEFAULT 0,
+      mesa_id INTEGER,
+      mesa_nombre TEXT,
+      cliente_id INTEGER,
+      descuento_global REAL DEFAULT 0,
+      impuesto_global REAL DEFAULT 0,
+      notas TEXT,
+      sync_attempts INTEGER DEFAULT 0,
+      next_retry_at TEXT,
+      last_sync_error TEXT,
+      server_synced_at TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      paid_at TEXT,
+      UNIQUE(uuid_local)
+    )''');
+    await db.execute('''CREATE TABLE IF NOT EXISTS sale_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, sale_id INTEGER,
+      product_id INTEGER, name TEXT, quantity REAL DEFAULT 0,
+      unit_price REAL DEFAULT 0, total REAL DEFAULT 0,
+      descuento REAL DEFAULT 0
+    )''');
+    await db.execute('''CREATE TABLE IF NOT EXISTS sale_payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, sale_id INTEGER,
+      method TEXT, amount REAL DEFAULT 0, referencia TEXT
+    )''');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_sales_status ON sales(status)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_sales_sync_status ON sales(sync_status)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_sales_business_date ON sales(business_date)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_sales_created_at ON sales(created_at)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_sale_items_sale_id ON sale_items(sale_id)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_sale_payments_sale_id ON sale_payments(sale_id)');
   }
-
-  // ============================================================
-  // CATALOG TABLES
-  // ============================================================
 
   Future<void> _createCatalogTables(Database db) async {
-    // CLIENTES
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS clients (
-        id INTEGER PRIMARY KEY,
-        name TEXT,
-        email TEXT,
-        phone TEXT,
-        rfc TEXT,
-        is_active INTEGER DEFAULT 1,
-        data_json TEXT,
-        updated_at TEXT
-      )
-    ''');
-
-    // IMPUESTOS
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS taxes (
-        id INTEGER PRIMARY KEY,
-        name TEXT,
-        code TEXT,
-        rate REAL DEFAULT 0,
-        is_active INTEGER DEFAULT 1,
-        data_json TEXT,
-        updated_at TEXT
-      )
-    ''');
-
-    // FORMAS DE PAGO
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS payment_methods (
-        id INTEGER PRIMARY KEY,
-        name TEXT,
-        code TEXT,
-        is_active INTEGER DEFAULT 1,
-        data_json TEXT,
-        updated_at TEXT
-      )
-    ''');
-
-    // UNIDADES
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS units (
-        id INTEGER PRIMARY KEY,
-        name TEXT,
-        code TEXT,
-        is_active INTEGER DEFAULT 1,
-        data_json TEXT,
-        updated_at TEXT
-      )
-    ''');
-
-    // CATEGORIAS
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS categories (
-        id INTEGER PRIMARY KEY,
-        name TEXT,
-        code TEXT,
-        is_active INTEGER DEFAULT 1,
-        data_json TEXT,
-        updated_at TEXT
-      )
-    ''');
-
-    // PROMOCIONES
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS promotions (
-        id INTEGER PRIMARY KEY,
-        name TEXT,
-        code TEXT,
-        is_active INTEGER DEFAULT 1,
-        data_json TEXT,
-        updated_at TEXT
-      )
-    ''');
-
-    // CUPONES
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS coupons (
-        id INTEGER PRIMARY KEY,
-        name TEXT,
-        code TEXT,
-        is_active INTEGER DEFAULT 1,
-        data_json TEXT,
-        updated_at TEXT
-      )
-    ''');
-
-    // CONTROL DE SINCRONIZACION
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS catalog_sync (
-        catalog TEXT PRIMARY KEY,
-        version TEXT,
-        synced_at TEXT
-      )
-    ''');
+    final definitions = <String, String>{
+      'clients': 'id INTEGER PRIMARY KEY, name TEXT, email TEXT, phone TEXT, rfc TEXT, is_active INTEGER DEFAULT 1, data_json TEXT, updated_at TEXT',
+      'taxes': 'id INTEGER PRIMARY KEY, name TEXT, code TEXT, rate REAL DEFAULT 0, is_active INTEGER DEFAULT 1, data_json TEXT, updated_at TEXT',
+      'payment_methods': 'id INTEGER PRIMARY KEY, name TEXT, code TEXT, is_active INTEGER DEFAULT 1, data_json TEXT, updated_at TEXT',
+      'units': 'id INTEGER PRIMARY KEY, name TEXT, code TEXT, is_active INTEGER DEFAULT 1, data_json TEXT, updated_at TEXT',
+      'categories': 'id INTEGER PRIMARY KEY, name TEXT, code TEXT, is_active INTEGER DEFAULT 1, data_json TEXT, updated_at TEXT',
+      'promotions': 'id INTEGER PRIMARY KEY, name TEXT, code TEXT, is_active INTEGER DEFAULT 1, data_json TEXT, updated_at TEXT',
+      'coupons': 'id INTEGER PRIMARY KEY, name TEXT, code TEXT, is_active INTEGER DEFAULT 1, data_json TEXT, updated_at TEXT',
+    };
+    for (final entry in definitions.entries) {
+      await db.execute('CREATE TABLE IF NOT EXISTS ${entry.key} (${entry.value})');
+    }
+    await db.execute('''CREATE TABLE IF NOT EXISTS catalog_sync (
+      catalog TEXT PRIMARY KEY, version TEXT, cursor TEXT, synced_at TEXT
+    )''');
   }
 
-  // ============================================================
-  // UPGRADE
-  // ============================================================
-
-  Future<void> _onUpgrade(
-    Database db,
-    int oldVersion,
-    int newVersion,
-  ) async {
-    // ==========================================================
-    // VERSION 2
-    // ==========================================================
-
+  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
-      await _addColumnIfNotExists(
-        db,
-        'sales',
-        'sync_status',
-        "TEXT DEFAULT 'pending'",
-      );
-
-      await _addColumnIfNotExists(
-        db,
-        'sales',
-        'payment_method',
-        'TEXT',
-      );
-
-      await _addColumnIfNotExists(
-        db,
-        'sales',
-        'cash_received',
-        'REAL DEFAULT 0',
-      );
-
-      await _addColumnIfNotExists(
-        db,
-        'sales',
-        'change_due',
-        'REAL DEFAULT 0',
-      );
-
-      await _addColumnIfNotExists(
-        db,
-        'sales',
-        'paid_at',
-        'TEXT',
-      );
+      await _addColumnIfNotExists(db, 'sales', 'sync_status', "TEXT DEFAULT 'pending'");
+      await _addColumnIfNotExists(db, 'sales', 'payment_method', 'TEXT');
+      await _addColumnIfNotExists(db, 'sales', 'cash_received', 'REAL DEFAULT 0');
+      await _addColumnIfNotExists(db, 'sales', 'change_due', 'REAL DEFAULT 0');
+      await _addColumnIfNotExists(db, 'sales', 'paid_at', 'TEXT');
     }
-
-    // ==========================================================
-    // VERSION 3
-    // ==========================================================
-
     if (oldVersion < 3) {
-      await _addColumnIfNotExists(
-        db,
-        'sales',
-        'mesa_id',
-        'INTEGER',
-      );
-
-      await _addColumnIfNotExists(
-        db,
-        'sales',
-        'mesa_nombre',
-        'TEXT',
-      );
+      await _addColumnIfNotExists(db, 'sales', 'mesa_id', 'INTEGER');
+      await _addColumnIfNotExists(db, 'sales', 'mesa_nombre', 'TEXT');
     }
-
-    // ==========================================================
-    // VERSION 4
-    // ==========================================================
-
-    if (oldVersion < 4) {
-      await _createCatalogTables(db);
-    }
-
-    // ==========================================================
-    // VERSION 5
-    // ==========================================================
-
+    if (oldVersion < 4) await _createCatalogTables(db);
     if (oldVersion < 5) {
-      await _addColumnIfNotExists(
-        db,
-        'products',
-        'data_json',
-        'TEXT',
-      );
-
-      await _addColumnIfNotExists(
-        db,
-        'products',
-        'updated_at',
-        'TEXT',
-      );
+      await _addColumnIfNotExists(db, 'products', 'data_json', 'TEXT');
+      await _addColumnIfNotExists(db, 'products', 'updated_at', 'TEXT');
     }
-
-    // ==========================================================
-    // VERSION 6
-    // EMPRESA
-    // ==========================================================
-
-    if (oldVersion < 6) {
-      await _createCompanyTable(db);
-    }
-  }
-
-  // ============================================================
-  // ADD COLUMN
-  // ============================================================
-
-  Future<void> _addColumnIfNotExists(
-    Database db,
-    String table,
-    String column,
-    String definition,
-  ) async {
-    final columns = await db.rawQuery(
-      'PRAGMA table_info($table)',
-    );
-
-    final exists = columns.any(
-      (columnInfo) =>
-          columnInfo['name']?.toString() == column,
-    );
-
-    if (!exists) {
-      await db.execute(
-        'ALTER TABLE $table ADD COLUMN $column $definition',
-      );
-    }
-  }
-
-  // ============================================================
-  // CONVERSION HELPERS
-  // ============================================================
-
-  double _toDouble(dynamic value) {
-    if (value is num) {
-      return value.toDouble();
-    }
-
-    return double.tryParse(
-          value?.toString() ?? '',
-        ) ??
-        0;
-  }
-
-  int _toInt(dynamic value) {
-    if (value is int) {
-      return value;
-    }
-
-    if (value is num) {
-      return value.toInt();
-    }
-
-    return int.tryParse(
-          value?.toString() ?? '',
-        ) ??
-        0;
-  }
-
-  String? _stringValue(
-    Map<String, dynamic> data,
-    List<String> keys,
-  ) {
-    for (final key in keys) {
-      if (data.containsKey(key) && data[key] != null) {
-        return data[key].toString();
+    if (oldVersion < 6) await _createCompanyTable(db);
+    if (oldVersion < 7) {
+      final columns = <String, String>{
+        'server_id': 'INTEGER', 'server_folio': 'TEXT', 'business_date': 'TEXT',
+        'cliente_id': 'INTEGER', 'descuento_global': 'REAL DEFAULT 0',
+        'impuesto_global': 'REAL DEFAULT 0', 'notas': 'TEXT',
+        'sync_attempts': 'INTEGER DEFAULT 0', 'next_retry_at': 'TEXT',
+        'last_sync_error': 'TEXT', 'server_synced_at': 'TEXT',
+      };
+      for (final e in columns.entries) {
+        await _addColumnIfNotExists(db, 'sales', e.key, e.value);
       }
+      await _addColumnIfNotExists(db, 'sale_items', 'descuento', 'REAL DEFAULT 0');
+      await _addColumnIfNotExists(db, 'sale_payments', 'referencia', 'TEXT');
+      await _addColumnIfNotExists(db, 'catalog_sync', 'cursor', 'TEXT');
+      await db.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_uuid_local ON sales(uuid_local)');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_sales_business_date ON sales(business_date)');
     }
+  }
 
+  Future<void> _addColumnIfNotExists(Database db, String table, String column, String definition) async {
+    final columns = await db.rawQuery('PRAGMA table_info($table)');
+    if (!columns.any((c) => c['name']?.toString() == column)) {
+      await db.execute('ALTER TABLE $table ADD COLUMN $column $definition');
+    }
+  }
+
+  double _toDouble(dynamic value) => value is num
+      ? value.toDouble()
+      : double.tryParse((value ?? '').toString().replaceAll(',', '.')) ?? 0;
+
+  int _toInt(dynamic value) => value is int
+      ? value
+      : value is num
+          ? value.toInt()
+          : int.tryParse((value ?? '').toString()) ?? 0;
+
+  int? _nullableInt(dynamic value) {
+    final n = _toInt(value);
+    return n > 0 ? n : null;
+  }
+
+  String? _stringValue(Map<String, dynamic> data, List<String> keys) {
+    for (final key in keys) {
+      final value = data[key];
+      if (value != null && value.toString().trim().isNotEmpty) return value.toString();
+    }
     return null;
   }
 
-  int _activeValue(
-    Map<String, dynamic> data,
-  ) {
-    final value =
-        data['is_active'] ??
-        data['activo'] ??
-        data['active'] ??
-        1;
-
-    if (value is bool) {
-      return value ? 1 : 0;
-    }
-
-    if (value is num) {
-      return value == 0 ? 0 : 1;
-    }
-
-    final text =
-        value.toString().trim().toLowerCase();
-
-    if (text == 'false' ||
-        text == '0' ||
-        text == 'no' ||
-        text == 'inactive' ||
-        text == 'inactivo') {
-      return 0;
-    }
-
-    return 1;
+  int _activeValue(Map<String, dynamic> data) {
+    final value = data['is_active'] ?? data['activo'] ?? data['active'] ?? 1;
+    if (value is bool) return value ? 1 : 0;
+    if (value is num) return value == 0 ? 0 : 1;
+    final s = value.toString().trim().toLowerCase();
+    return const {'false', '0', 'no', 'inactive', 'inactivo'}.contains(s) ? 0 : 1;
   }
 
-  List<Map<String, dynamic>> _asList(
-    dynamic value,
-  ) {
-    if (value is! List) {
-      return [];
-    }
+  List<Map<String, dynamic>> _asList(dynamic value) => value is List
+      ? value.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList()
+      : <Map<String, dynamic>>[];
 
-    return value
-        .whereType<Map>()
-        .map(
-          (item) =>
-              Map<String, dynamic>.from(item),
-        )
-        .toList();
-  }
+  // ---------------------------------------------------------------------------
+  // COMPANY / CATALOGS
+  // ---------------------------------------------------------------------------
 
-  // ============================================================
-  // COMPANY
-  // ============================================================
-
-  Future<void> upsertCompany(
-    Map<String, dynamic> data,
-  ) async {
+  Future<void> upsertCompany(Map<String, dynamic> data) async {
     final db = await database;
+    await db.transaction((txn) => _upsertCompanyWithExecutor(txn, data));
+  }
 
+  Future<void> _upsertCompanyWithExecutor(dynamic executor, Map<String, dynamic> data) async {
     final id = _toInt(data['id']);
-
-    if (id <= 0) {
-      return;
-    }
-
-    Map<String, dynamic>? colores;
-
-    final rawColores = data['colores'];
-
-    if (rawColores is Map) {
-      colores =
-          Map<String, dynamic>.from(rawColores);
-    } else if (rawColores is String) {
-      try {
-        final decoded = jsonDecode(rawColores);
-
-        if (decoded is Map) {
-          colores =
-              Map<String, dynamic>.from(decoded);
-        }
-      } catch (_) {}
-    }
-
-    Map<String, dynamic>? configuracion;
-
-    final rawConfiguracion =
-        data['configuracion'];
-
-    if (rawConfiguracion is Map) {
-      configuracion =
-          Map<String, dynamic>.from(
-        rawConfiguracion,
-      );
-    } else if (rawConfiguracion is String) {
-      try {
-        final decoded =
-            jsonDecode(rawConfiguracion);
-
-        if (decoded is Map) {
-          configuracion =
-              Map<String, dynamic>.from(decoded);
-        }
-      } catch (_) {}
-    }
-
-    await db.insert(
-      'company',
-      {
-        'id': id,
-        'nombre': data['nombre']?.toString(),
-        'logo': data['logo']?.toString(),
-        'logo_url': data['logo_url']?.toString(),
-        'colores_json':
-            colores == null ? null : jsonEncode(colores),
-        'configuracion_json':
-            configuracion == null
-                ? null
-                : jsonEncode(configuracion),
-        'direccion':
-            data['direccion']?.toString(),
-        'telefono':
-            data['telefono']?.toString(),
-        'email_contacto':
-            data['email_contacto']?.toString(),
-        'rfc': data['rfc']?.toString(),
-        'razon_social':
-            data['razon_social']?.toString(),
-        'leyenda_ticket':
-            data['leyenda_ticket']?.toString(),
-        'whatsapp_numero':
-            data['whatsapp_numero']?.toString(),
-        'activo': _activeValue(data),
-        'updated_at':
-            _stringValue(
-              data,
-              ['updated_at', 'updatedAt'],
-            ) ??
-            DateTime.now().toIso8601String(),
-      },
-      conflictAlgorithm:
-          ConflictAlgorithm.replace,
-    );
+    if (id <= 0) return;
+    dynamic colors = data['colores'];
+    dynamic config = data['configuracion'];
+    final colorsJson = colors is String ? colors : colors == null ? null : jsonEncode(colors);
+    final configJson = config is String ? config : config == null ? null : jsonEncode(config);
+    await executor.insert('company', {
+      'id': id, 'nombre': data['nombre']?.toString(), 'logo': data['logo']?.toString(),
+      'logo_url': data['logo_url']?.toString(), 'colores_json': colorsJson,
+      'configuracion_json': configJson, 'direccion': data['direccion']?.toString(),
+      'telefono': data['telefono']?.toString(), 'email_contacto': data['email_contacto']?.toString(),
+      'rfc': data['rfc']?.toString(), 'razon_social': data['razon_social']?.toString(),
+      'leyenda_ticket': data['leyenda_ticket']?.toString(), 'whatsapp_numero': data['whatsapp_numero']?.toString(),
+      'activo': _activeValue(data), 'updated_at': _stringValue(data, ['updated_at', 'updatedAt']) ?? DateTime.now().toIso8601String(),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   Future<Map<String, dynamic>?> getCompany() async {
     final db = await database;
-
-    final result = await db.query(
-      'company',
-      limit: 1,
-    );
-
-    if (result.isEmpty) {
-      return null;
-    }
-
-    final row =
-        Map<String, dynamic>.from(result.first);
-
-    if (row['colores_json'] != null) {
-      try {
-        row['colores'] =
-            jsonDecode(
-              row['colores_json'].toString(),
-            );
-      } catch (_) {
-        row['colores'] = {};
-      }
-    } else {
-      row['colores'] = {};
-    }
-
-    if (row['configuracion_json'] != null) {
-      try {
-        row['configuracion'] =
-            jsonDecode(
-              row['configuracion_json'].toString(),
-            );
-      } catch (_) {
-        row['configuracion'] = {};
-      }
-    } else {
-      row['configuracion'] = {};
-    }
-
+    final rows = await db.query('company', limit: 1);
+    if (rows.isEmpty) return null;
+    final row = Map<String, dynamic>.from(rows.first);
+    row['colores'] = _decodeJson(row['colores_json']);
+    row['configuracion'] = _decodeJson(row['configuracion_json']);
     return row;
   }
 
-  // ============================================================
-  // PRODUCTS
-  // ============================================================
+  dynamic _decodeJson(dynamic value) {
+    if (value == null) return {};
+    try { return jsonDecode(value.toString()); } catch (_) { return {}; }
+  }
 
-  Future<List<Map<String, dynamic>>> getProducts() async {
+  Future<List<Map<String, dynamic>>> getProducts() async => (await database).query('products', where: 'is_active = 1', orderBy: 'name ASC');
+  Future<List<Map<String, dynamic>>> getAllProducts() async => (await database).query('products', orderBy: 'name ASC');
+  Future<Map<String, dynamic>?> getProductById(int id) async {
+    final rows = await (await database).query('products', where: 'id = ?', whereArgs: [id], limit: 1);
+    return rows.isEmpty ? null : rows.first;
+  }
+
+  Future<int> createProduct({int? id, required String code, required String name, required double price, double stock = 0, bool isActive = true, Map<String, dynamic>? data, String? updatedAt}) async =>
+      (await database).insert('products', {if (id != null) 'id': id, 'code': code, 'name': name, 'price': price, 'stock': stock, 'is_active': isActive ? 1 : 0, 'data_json': data == null ? null : jsonEncode(data), 'updated_at': updatedAt ?? DateTime.now().toIso8601String()}, conflictAlgorithm: ConflictAlgorithm.replace);
+
+  Future<int> updateProduct({required int id, required String code, required String name, required double price, required double stock, bool isActive = true, Map<String, dynamic>? data, String? updatedAt}) async =>
+      (await database).update('products', {'code': code, 'name': name, 'price': price, 'stock': stock, 'is_active': isActive ? 1 : 0, if (data != null) 'data_json': jsonEncode(data), 'updated_at': updatedAt ?? DateTime.now().toIso8601String()}, where: 'id = ?', whereArgs: [id]);
+
+  Future<int> deleteProduct(int id) async => (await database).update('products', {'is_active': 0, 'updated_at': DateTime.now().toIso8601String()}, where: 'id = ?', whereArgs: [id]);
+
+  Future<void> _upsertClientWithExecutor(dynamic executor, Map<String, dynamic> data) async {
+    final id = _toInt(data['id']); if (id <= 0) return;
+    await executor.insert('clients', {'id': id, 'name': _stringValue(data, ['name', 'nombre']), 'email': _stringValue(data, ['email', 'correo']), 'phone': _stringValue(data, ['phone', 'telefono', 'teléfono']), 'rfc': _stringValue(data, ['rfc']), 'is_active': _activeValue(data), 'data_json': jsonEncode(data), 'updated_at': _stringValue(data, ['updated_at', 'updatedAt']) ?? DateTime.now().toIso8601String()}, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<void> _upsertCatalogWithExecutor(dynamic executor, {required String table, required Map<String, dynamic> data, bool includeRate = false}) async {
+    final id = _toInt(data['id']); if (id <= 0) return;
+    final values = <String, dynamic>{'id': id, 'name': _stringValue(data, ['name', 'nombre', 'descripcion', 'description']), 'code': _stringValue(data, ['code', 'codigo', 'clave', 'clave_sat', 'abreviatura']), 'is_active': _activeValue(data), 'data_json': jsonEncode(data), 'updated_at': _stringValue(data, ['updated_at', 'updatedAt']) ?? DateTime.now().toIso8601String()};
+    if (includeRate) values['rate'] = _toDouble(data['rate'] ?? data['tasa'] ?? data['porcentaje'] ?? data['valor']);
+    await executor.insert(table, values, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<void> upsertClient(Map<String, dynamic> data) async => _upsertClientWithExecutor(await database, data);
+  Future<void> upsertTax(Map<String, dynamic> data) async => _upsertCatalogItem('taxes', data, includeRate: true);
+  Future<void> upsertPaymentMethod(Map<String, dynamic> data) async => _upsertCatalogItem('payment_methods', data);
+  Future<void> upsertUnit(Map<String, dynamic> data) async => _upsertCatalogItem('units', data);
+  Future<void> upsertCategory(Map<String, dynamic> data) async => _upsertCatalogItem('categories', data);
+  Future<void> upsertPromotion(Map<String, dynamic> data) async => _upsertCatalogItem('promotions', data);
+  Future<void> upsertCoupon(Map<String, dynamic> data) async => _upsertCatalogItem('coupons', data);
+  Future<void> _upsertCatalogItem(String table, Map<String, dynamic> data, {bool includeRate = false}) async => _upsertCatalogWithExecutor(await database, table: table, data: data, includeRate: includeRate);
+
+  Future<List<Map<String, dynamic>>> getClients() async => (await database).query('clients', where: 'is_active = 1', orderBy: 'name ASC');
+  Future<List<Map<String, dynamic>>> getAllClients() async => (await database).query('clients', orderBy: 'name ASC');
+  Future<Map<String, dynamic>?> getClientById(int id) async { final r = await (await database).query('clients', where: 'id = ?', whereArgs: [id], limit: 1); return r.isEmpty ? null : r.first; }
+  Future<List<Map<String, dynamic>>> getTaxes() async => (await database).query('taxes', where: 'is_active = 1', orderBy: 'name ASC');
+  Future<List<Map<String, dynamic>>> getAllTaxes() async => (await database).query('taxes', orderBy: 'name ASC');
+  Future<List<Map<String, dynamic>>> getPaymentMethods() async => (await database).query('payment_methods', where: 'is_active = 1', orderBy: 'name ASC');
+  Future<List<Map<String, dynamic>>> getAllPaymentMethods() async => (await database).query('payment_methods', orderBy: 'name ASC');
+  Future<List<Map<String, dynamic>>> getUnits() async => (await database).query('units', where: 'is_active = 1', orderBy: 'name ASC');
+  Future<List<Map<String, dynamic>>> getAllUnits() async => (await database).query('units', orderBy: 'name ASC');
+  Future<List<Map<String, dynamic>>> getCategories() async => (await database).query('categories', where: 'is_active = 1', orderBy: 'name ASC');
+  Future<List<Map<String, dynamic>>> getAllCategories() async => (await database).query('categories', orderBy: 'name ASC');
+  Future<List<Map<String, dynamic>>> getPromotions() async => (await database).query('promotions', where: 'is_active = 1', orderBy: 'name ASC');
+  Future<List<Map<String, dynamic>>> getAllPromotions() async => (await database).query('promotions', orderBy: 'name ASC');
+  Future<List<Map<String, dynamic>>> getCoupons() async => (await database).query('coupons', where: 'is_active = 1', orderBy: 'name ASC');
+  Future<List<Map<String, dynamic>>> getAllCoupons() async => (await database).query('coupons', orderBy: 'name ASC');
+
+  Future<List<Map<String, dynamic>>> getCatalogItems(String table, {bool activeOnly = true}) async {
+    _validateCatalogTable(table);
+    final rows = await (await database).query(table, where: activeOnly ? 'is_active = 1' : null, orderBy: 'name ASC');
+    return rows.map((row) => {...row, 'id': _toInt(row['id']), 'is_active': _toInt(row['is_active']), if (table == 'taxes') 'rate': _toDouble(row['rate'])}).toList();
+  }
+
+  static const _catalogTables = {'taxes', 'payment_methods', 'units', 'categories', 'promotions', 'coupons'};
+  void _validateCatalogTable(String table) { if (!_catalogTables.contains(table)) throw ArgumentError('Catálogo no permitido: $table'); }
+  Future<int> createCatalogItem({required String table, required String name, String? code, double? rate, bool isActive = true, Map<String, dynamic>? data}) async { _validateCatalogTable(table); return (await database).insert(table, {'name': name.trim(), 'code': code?.trim(), if (table == 'taxes') 'rate': rate ?? 0, 'is_active': isActive ? 1 : 0, 'data_json': data == null ? null : jsonEncode(data), 'updated_at': DateTime.now().toIso8601String()}); }
+  Future<int> updateCatalogItem({required String table, required int id, required String name, String? code, double? rate, bool isActive = true, Map<String, dynamic>? data}) async { _validateCatalogTable(table); return (await database).update(table, {'name': name.trim(), 'code': code?.trim(), if (table == 'taxes') 'rate': rate ?? 0, 'is_active': isActive ? 1 : 0, if (data != null) 'data_json': jsonEncode(data), 'updated_at': DateTime.now().toIso8601String()}, where: 'id = ?', whereArgs: [id]); }
+  Future<int> deleteCatalogItem(String table, int id) async { _validateCatalogTable(table); return (await database).update(table, {'is_active': 0, 'updated_at': DateTime.now().toIso8601String()}, where: 'id = ?', whereArgs: [id]); }
+  Future<int> restoreCatalogItem({required String table, required int id}) async { _validateCatalogTable(table); return (await database).update(table, {'is_active': 1, 'updated_at': DateTime.now().toIso8601String()}, where: 'id = ?', whereArgs: [id]); }
+  Future<int> createClient({required String name, String? email, String? phone, String? rfc, bool isActive = true}) async => (await database).insert('clients', {'name': name.trim(), 'email': email?.trim(), 'phone': phone?.trim(), 'rfc': rfc?.trim(), 'is_active': isActive ? 1 : 0, 'updated_at': DateTime.now().toIso8601String()});
+  Future<int> updateClient({required int id, required String name, String? email, String? phone, String? rfc, bool isActive = true}) async => (await database).update('clients', {'name': name.trim(), 'email': email?.trim(), 'phone': phone?.trim(), 'rfc': rfc?.trim(), 'is_active': isActive ? 1 : 0, 'updated_at': DateTime.now().toIso8601String()}, where: 'id = ?', whereArgs: [id]);
+  Future<int> deleteClient(int id) async => (await database).update('clients', {'is_active': 0, 'updated_at': DateTime.now().toIso8601String()}, where: 'id = ?', whereArgs: [id]);
+
+  Future<void> syncCatalogs(Map<String, dynamic> response) async {
+    final data = response['data'] is Map ? Map<String, dynamic>.from(response['data']) : response;
     final db = await database;
-
-    return db.query(
-      'products',
-      where: 'is_active = 1',
-      orderBy: 'name ASC',
-    );
-  }
-
-  Future<List<Map<String, dynamic>>> getAllProducts() async {
-    final db = await database;
-
-    return db.query(
-      'products',
-      orderBy: 'name ASC',
-    );
-  }
-
-  Future<Map<String, dynamic>?> getProductById(
-    int id,
-  ) async {
-    final db = await database;
-
-    final result = await db.query(
-      'products',
-      where: 'id = ?',
-      whereArgs: [id],
-      limit: 1,
-    );
-
-    return result.isEmpty
-        ? null
-        : result.first;
-  }
-
-  Future<int> createProduct({
-    int? id,
-    required String code,
-    required String name,
-    required double price,
-    double stock = 0,
-    bool isActive = true,
-    Map<String, dynamic>? data,
-    String? updatedAt,
-  }) async {
-    final db = await database;
-
-    return db.insert(
-      'products',
-      {
-        if (id != null) 'id': id,
-        'code': code,
-        'name': name,
-        'price': price,
-        'stock': stock,
-        'is_active': isActive ? 1 : 0,
-        'data_json':
-            data == null ? null : jsonEncode(data),
-        'updated_at':
-            updatedAt ??
-            DateTime.now().toIso8601String(),
-      },
-      conflictAlgorithm:
-          ConflictAlgorithm.replace,
-    );
-  }
-
-  Future<int> updateProduct({
-    required int id,
-    required String code,
-    required String name,
-    required double price,
-    required double stock,
-    bool isActive = true,
-    Map<String, dynamic>? data,
-    String? updatedAt,
-  }) async {
-    final db = await database;
-
-    final values = <String, dynamic>{
-      'code': code,
-      'name': name,
-      'price': price,
-      'stock': stock,
-      'is_active': isActive ? 1 : 0,
-      'updated_at':
-          updatedAt ??
-          DateTime.now().toIso8601String(),
-    };
-
-    if (data != null) {
-      values['data_json'] =
-          jsonEncode(data);
-    }
-
-    return db.update(
-      'products',
-      values,
-      where: 'id = ?',
-      whereArgs: [id],
-    );
-  }
-
-  Future<int> deleteProduct(int id) async {
-    final db = await database;
-
-    return db.update(
-      'products',
-      {
-        'is_active': 0,
-        'updated_at':
-            DateTime.now().toIso8601String(),
-      },
-      where: 'id = ?',
-      whereArgs: [id],
-    );
-  }
-
-  // ============================================================
-  // CLIENTS
-  // ============================================================
-
-  Future<List<Map<String, dynamic>>> getClients() async {
-    final db = await database;
-
-    return db.query(
-      'clients',
-      where: 'is_active = 1',
-      orderBy: 'name ASC',
-    );
-  }
-
-  Future<List<Map<String, dynamic>>> getAllClients() async {
-    final db = await database;
-
-    return db.query(
-      'clients',
-      orderBy: 'name ASC',
-    );
-  }
-
-  Future<Map<String, dynamic>?> getClientById(
-    int id,
-  ) async {
-    final db = await database;
-
-    final result = await db.query(
-      'clients',
-      where: 'id = ?',
-      whereArgs: [id],
-      limit: 1,
-    );
-
-    return result.isEmpty
-        ? null
-        : result.first;
-  }
-
-  Future<void> upsertClient(
-    Map<String, dynamic> data,
-  ) async {
-    final db = await database;
-
-    await _upsertClientWithExecutor(
-      db,
-      data,
-    );
-  }
-
-  // ============================================================
-  // GENERIC CATALOG
-  // ============================================================
-
-  Future<void> _upsertCatalogItem({
-    required String table,
-    required Map<String, dynamic> data,
-  }) async {
-    final db = await database;
-
-    await _upsertCatalogWithExecutor(
-      db,
-      table: table,
-      data: data,
-      includeRate: table == 'taxes',
-    );
-  }
-
-  Future<void> _upsertClientWithExecutor(
-    dynamic executor,
-    Map<String, dynamic> data,
-  ) async {
-    final id = _toInt(data['id']);
-
-    if (id <= 0) {
-      return;
-    }
-
-    await executor.insert(
-      'clients',
-      {
-        'id': id,
-        'name': _stringValue(
-          data,
-          ['name', 'nombre'],
-        ),
-        'email': _stringValue(
-          data,
-          ['email', 'correo'],
-        ),
-        'phone': _stringValue(
-          data,
-          ['phone', 'telefono', 'teléfono'],
-        ),
-        'rfc': _stringValue(
-          data,
-          ['rfc'],
-        ),
-        'is_active': _activeValue(data),
-        'data_json': jsonEncode(data),
-        'updated_at':
-            _stringValue(
-              data,
-              ['updated_at', 'updatedAt'],
-            ) ??
-            DateTime.now().toIso8601String(),
-      },
-      conflictAlgorithm:
-          ConflictAlgorithm.replace,
-    );
-  }
-
-  Future<void> _upsertCatalogWithExecutor(
-    dynamic executor, {
-    required String table,
-    required Map<String, dynamic> data,
-    bool includeRate = false,
-  }) async {
-    final id = _toInt(data['id']);
-
-    if (id <= 0) {
-      return;
-    }
-
-    final values = <String, dynamic>{
-      'id': id,
-      'name': _stringValue(
-        data,
-        [
-          'name',
-          'nombre',
-          'descripcion',
-          'description',
-        ],
-      ),
-      'code': _stringValue(
-        data,
-        [
-          'code',
-          'codigo',
-          'clave',
-          'clave_sat',
-          'abreviatura',
-        ],
-      ),
-      'is_active': _activeValue(data),
-      'data_json': jsonEncode(data),
-      'updated_at':
-          _stringValue(
-            data,
-            ['updated_at', 'updatedAt'],
-          ) ??
-          DateTime.now().toIso8601String(),
-    };
-
-    if (includeRate) {
-      values['rate'] = _toDouble(
-        data['rate'] ??
-            data['tasa'] ??
-            data['porcentaje'] ??
-            data['valor'],
-      );
-    }
-
-    await executor.insert(
-      table,
-      values,
-      conflictAlgorithm:
-          ConflictAlgorithm.replace,
-    );
-  }
-
-  // ============================================================
-  // TAXES
-  // ============================================================
-
-  Future<List<Map<String, dynamic>>> getTaxes() async {
-    final db = await database;
-
-    return db.query(
-      'taxes',
-      where: 'is_active = 1',
-      orderBy: 'name ASC',
-    );
-  }
-
-  Future<List<Map<String, dynamic>>> getAllTaxes() async {
-    final db = await database;
-
-    return db.query(
-      'taxes',
-      orderBy: 'name ASC',
-    );
-  }
-
-  Future<void> upsertTax(
-    Map<String, dynamic> data,
-  ) async {
-    await _upsertCatalogItem(
-      table: 'taxes',
-      data: data,
-    );
-  }
-
-  // ============================================================
-  // PAYMENT METHODS
-  // ============================================================
-
-  Future<List<Map<String, dynamic>>>
-      getPaymentMethods() async {
-    final db = await database;
-
-    return db.query(
-      'payment_methods',
-      where: 'is_active = 1',
-      orderBy: 'name ASC',
-    );
-  }
-
-  Future<List<Map<String, dynamic>>>
-      getAllPaymentMethods() async {
-    final db = await database;
-
-    return db.query(
-      'payment_methods',
-      orderBy: 'name ASC',
-    );
-  }
-
-  Future<void> upsertPaymentMethod(
-    Map<String, dynamic> data,
-  ) async {
-    await _upsertCatalogItem(
-      table: 'payment_methods',
-      data: data,
-    );
-  }
-
-  // ============================================================
-  // UNITS
-  // ============================================================
-
-  Future<List<Map<String, dynamic>>> getUnits() async {
-    final db = await database;
-
-    return db.query(
-      'units',
-      where: 'is_active = 1',
-      orderBy: 'name ASC',
-    );
-  }
-
-  Future<List<Map<String, dynamic>>> getAllUnits() async {
-    final db = await database;
-
-    return db.query(
-      'units',
-      orderBy: 'name ASC',
-    );
-  }
-
-  Future<void> upsertUnit(
-    Map<String, dynamic> data,
-  ) async {
-    await _upsertCatalogItem(
-      table: 'units',
-      data: data,
-    );
-  }
-
-  // ============================================================
-  // CATEGORIES
-  // ============================================================
-
-  Future<List<Map<String, dynamic>>>
-      getCategories() async {
-    final db = await database;
-
-    return db.query(
-      'categories',
-      where: 'is_active = 1',
-      orderBy: 'name ASC',
-    );
-  }
-
-  Future<List<Map<String, dynamic>>>
-      getAllCategories() async {
-    final db = await database;
-
-    return db.query(
-      'categories',
-      orderBy: 'name ASC',
-    );
-  }
-
-  Future<void> upsertCategory(
-    Map<String, dynamic> data,
-  ) async {
-    await _upsertCatalogItem(
-      table: 'categories',
-      data: data,
-    );
-  }
-
-  // ============================================================
-  // PROMOTIONS
-  // ============================================================
-
-  Future<List<Map<String, dynamic>>>
-      getPromotions() async {
-    final db = await database;
-
-    return db.query(
-      'promotions',
-      where: 'is_active = 1',
-      orderBy: 'name ASC',
-    );
-  }
-
-  Future<List<Map<String, dynamic>>>
-      getAllPromotions() async {
-    final db = await database;
-
-    return db.query(
-      'promotions',
-      orderBy: 'name ASC',
-    );
-  }
-
-  Future<void> upsertPromotion(
-    Map<String, dynamic> data,
-  ) async {
-    await _upsertCatalogItem(
-      table: 'promotions',
-      data: data,
-    );
-  }
-
-  // ============================================================
-  // COUPONS
-  // ============================================================
-
-  Future<List<Map<String, dynamic>>>
-      getCoupons() async {
-    final db = await database;
-
-    return db.query(
-      'coupons',
-      where: 'is_active = 1',
-      orderBy: 'name ASC',
-    );
-  }
-
-  Future<List<Map<String, dynamic>>>
-      getAllCoupons() async {
-    final db = await database;
-
-    return db.query(
-      'coupons',
-      orderBy: 'name ASC',
-    );
-  }
-
-  Future<void> upsertCoupon(
-    Map<String, dynamic> data,
-  ) async {
-    await _upsertCatalogItem(
-      table: 'coupons',
-      data: data,
-    );
-  }
-
-  // ============================================================
-  // PRODUCT API
-  // ============================================================
-
-  Future<void> upsertProductFromApi(
-    Map<String, dynamic> data,
-  ) async {
-    final db = await database;
-
-    await _upsertProductWithExecutor(
-      db,
-      data,
-    );
-  }
-
-  Future<void> _upsertProductWithExecutor(
-    dynamic executor,
-    Map<String, dynamic> data,
-  ) async {
-    final id = _toInt(data['id']);
-
-    if (id <= 0) {
-      return;
-    }
-
-    final name =
-        _stringValue(
-          data,
-          ['name', 'nombre'],
-        ) ??
-        '';
-
-    final code =
-        _stringValue(
-          data,
-          ['code', 'codigo', 'sku'],
-        ) ??
-        '';
-
-    final price = _toDouble(
-      data['price'] ??
-          data['precio'] ??
-          data['precio_venta'],
-    );
-
-    final stock = _toDouble(
-      data['stock'] ??
-          data['existencia'] ??
-          data['cantidad'],
-    );
-
-    await executor.insert(
-      'products',
-      {
-        'id': id,
-        'code': code,
-        'name': name,
-        'price': price,
-        'stock': stock,
-        'is_active': _activeValue(data),
-        'data_json': jsonEncode(data),
-        'updated_at':
-            _stringValue(
-              data,
-              ['updated_at', 'updatedAt'],
-            ) ??
-            DateTime.now().toIso8601String(),
-      },
-      conflictAlgorithm:
-          ConflictAlgorithm.replace,
-    );
-  }
-
-  // ============================================================
-  // COMPLETE CATALOG SYNC
-  // ============================================================
-
-  Future<void> syncCatalogs(
-    Map<String, dynamic> response,
-  ) async {
-    final db = await database;
-
     await db.transaction((txn) async {
-      // --------------------------------------------------------
-      // EMPRESA
-      // --------------------------------------------------------
-
-      final empresa = response['empresa'];
-
-      if (empresa is Map) {
-        await _upsertCompanyWithTransaction(
-          txn,
-          Map<String, dynamic>.from(empresa),
-        );
-      }
-
-      // --------------------------------------------------------
-      // PRODUCTOS
-      // --------------------------------------------------------
-
-      for (final item
-          in _asList(response['productos'])) {
-        await _upsertProductWithExecutor(
-          txn,
-          item,
-        );
-      }
-
-      // --------------------------------------------------------
-      // CLIENTES
-      // --------------------------------------------------------
-
-      for (final item
-          in _asList(response['clientes'])) {
-        await _upsertClientWithExecutor(
-          txn,
-          item,
-        );
-      }
-
-      // --------------------------------------------------------
-      // IMPUESTOS
-      // --------------------------------------------------------
-
-      for (final item
-          in _asList(response['impuestos'])) {
-        await _upsertCatalogWithExecutor(
-          txn,
-          table: 'taxes',
-          data: item,
-          includeRate: true,
-        );
-      }
-
-      // --------------------------------------------------------
-      // FORMAS DE PAGO
-      // --------------------------------------------------------
-
-      for (final item
-          in _asList(response['formas_pago'])) {
-        await _upsertCatalogWithExecutor(
-          txn,
-          table: 'payment_methods',
-          data: item,
-        );
-      }
-
-      // --------------------------------------------------------
-      // UNIDADES
-      // --------------------------------------------------------
-
-      for (final item
-          in _asList(response['unidades_medida'])) {
-        await _upsertCatalogWithExecutor(
-          txn,
-          table: 'units',
-          data: item,
-        );
-      }
-
-      // --------------------------------------------------------
-      // CATEGORIAS
-      // --------------------------------------------------------
-
-      for (final item
-          in _asList(response['categorias'])) {
-        await _upsertCatalogWithExecutor(
-          txn,
-          table: 'categories',
-          data: item,
-        );
-      }
-
-      // --------------------------------------------------------
-      // PROMOCIONES
-      // --------------------------------------------------------
-
-      for (final item
-          in _asList(response['promociones'])) {
-        await _upsertCatalogWithExecutor(
-          txn,
-          table: 'promotions',
-          data: item,
-        );
-      }
-
-      // --------------------------------------------------------
-      // CUPONES
-      // --------------------------------------------------------
-
-      for (final item
-          in _asList(response['cupones'])) {
-        await _upsertCatalogWithExecutor(
-          txn,
-          table: 'coupons',
-          data: item,
-        );
-      }
-
-      // --------------------------------------------------------
-      // VERSIONES
-      // --------------------------------------------------------
-
-      final versiones = response['versiones'];
-
-      if (versiones is Map) {
-        for (final entry in versiones.entries) {
-          await txn.insert(
-            'catalog_sync',
-            {
-              'catalog':
-                  entry.key.toString(),
-              'version':
-                  entry.value?.toString(),
-              'synced_at':
-                  DateTime.now().toIso8601String(),
-            },
-            conflictAlgorithm:
-                ConflictAlgorithm.replace,
-          );
-        }
-      }
+      if (data['empresa'] is Map) await _upsertCompanyWithExecutor(txn, Map<String, dynamic>.from(data['empresa']));
+      for (final p in _asList(data['productos'])) await _upsertProductWithExecutor(txn, p);
+      for (final c in _asList(data['clientes'])) await _upsertClientWithExecutor(txn, c);
+      for (final x in _asList(data['impuestos'])) await _upsertCatalogWithExecutor(txn, table: 'taxes', data: x, includeRate: true);
+      for (final x in _asList(data['formas_pago'])) await _upsertCatalogWithExecutor(txn, table: 'payment_methods', data: x);
+      for (final x in _asList(data['unidades_medida'])) await _upsertCatalogWithExecutor(txn, table: 'units', data: x);
+      for (final x in _asList(data['categorias'])) await _upsertCatalogWithExecutor(txn, table: 'categories', data: x);
+      for (final x in _asList(data['promociones'])) await _upsertCatalogWithExecutor(txn, table: 'promotions', data: x);
+      for (final x in _asList(data['cupones'])) await _upsertCatalogWithExecutor(txn, table: 'coupons', data: x);
+      if (data['versiones'] is Map) for (final e in (data['versiones'] as Map).entries) await txn.insert('catalog_sync', {'catalog': e.key.toString(), 'version': e.value?.toString(), 'synced_at': DateTime.now().toIso8601String()}, conflictAlgorithm: ConflictAlgorithm.replace);
     });
-
-    // ----------------------------------------------------------
-    // TOMBSTONES
-    // ----------------------------------------------------------
-
-    await _processTombstones(
-      response['tombstones'],
-    );
-
-    // Compatibilidad con backend anterior.
-    await _processTombstones({
-      'productos':
-          response['productos_eliminados'],
-      'clientes':
-          response['clientes_eliminados'],
-      'impuestos':
-          response['impuestos_eliminados'],
-      'formas_pago':
-          response['formas_pago_eliminadas'],
-      'unidades_medida':
-          response['unidades_medida_eliminadas'],
-      'categorias':
-          response['categorias_eliminadas'],
-      'promociones':
-          response['promociones_eliminadas'],
-      'cupones':
-          response['cupones_eliminados'],
-    });
+    await _processTombstones(data['tombstones']);
   }
 
-  Future<void> _upsertCompanyWithTransaction(
-    Transaction txn,
-    Map<String, dynamic> data,
-  ) async {
-    final id = _toInt(data['id']);
-
-    if (id <= 0) {
-      return;
-    }
-
-    String? coloresJson;
-    String? configuracionJson;
-
-    final colores = data['colores'];
-
-    if (colores is Map ||
-        colores is List) {
-      coloresJson = jsonEncode(colores);
-    } else if (colores is String) {
-      coloresJson = colores;
-    }
-
-    final configuracion =
-        data['configuracion'];
-
-    if (configuracion is Map ||
-        configuracion is List) {
-      configuracionJson =
-          jsonEncode(configuracion);
-    } else if (configuracion is String) {
-      configuracionJson =
-          configuracion;
-    }
-
-    await txn.insert(
-      'company',
-      {
-        'id': id,
-        'nombre': data['nombre']?.toString(),
-        'logo': data['logo']?.toString(),
-        'logo_url': data['logo_url']?.toString(),
-        'colores_json': coloresJson,
-        'configuracion_json':
-            configuracionJson,
-        'direccion':
-            data['direccion']?.toString(),
-        'telefono':
-            data['telefono']?.toString(),
-        'email_contacto':
-            data['email_contacto']?.toString(),
-        'rfc': data['rfc']?.toString(),
-        'razon_social':
-            data['razon_social']?.toString(),
-        'leyenda_ticket':
-            data['leyenda_ticket']?.toString(),
-        'whatsapp_numero':
-            data['whatsapp_numero']?.toString(),
-        'activo': _activeValue(data),
-        'updated_at':
-            _stringValue(
-              data,
-              ['updated_at', 'updatedAt'],
-            ) ??
-            DateTime.now().toIso8601String(),
-      },
-      conflictAlgorithm:
-          ConflictAlgorithm.replace,
-    );
+  Future<void> _upsertProductWithExecutor(dynamic executor, Map<String, dynamic> data) async {
+    final id = _toInt(data['id']); if (id <= 0) return;
+    await executor.insert('products', {'id': id, 'code': _stringValue(data, ['code', 'codigo', 'sku']) ?? '', 'name': _stringValue(data, ['name', 'nombre']) ?? '', 'price': _toDouble(data['price'] ?? data['precio'] ?? data['precio_venta']), 'stock': _toDouble(data['stock'] ?? data['existencia'] ?? data['cantidad']), 'is_active': _activeValue(data), 'data_json': jsonEncode(data), 'updated_at': _stringValue(data, ['updated_at', 'updatedAt']) ?? DateTime.now().toIso8601String()}, conflictAlgorithm: ConflictAlgorithm.replace);
   }
+  Future<void> upsertProductFromApi(Map<String, dynamic> data) async => _upsertProductWithExecutor(await database, data);
 
-  // ============================================================
-  // TOMBSTONES
-  // ============================================================
-
-  Future<void> _processTombstones(
-    dynamic tombstonesData,
-  ) async {
-    if (tombstonesData is! Map) {
-      return;
-    }
-
+  Future<void> _processTombstones(dynamic data) async {
+    if (data is! Map) return;
     final db = await database;
-
+    const map = {'productos': 'products', 'clientes': 'clients', 'impuestos': 'taxes', 'formas_pago': 'payment_methods', 'unidades_medida': 'units', 'categorias': 'categories', 'promociones': 'promotions', 'cupones': 'coupons'};
     await db.transaction((txn) async {
-      await _deleteTombstoneList(
-        txn,
-        table: 'products',
-        values: tombstonesData['productos'],
-      );
-
-      await _deleteTombstoneList(
-        txn,
-        table: 'clients',
-        values: tombstonesData['clientes'],
-      );
-
-      await _deleteTombstoneList(
-        txn,
-        table: 'taxes',
-        values: tombstonesData['impuestos'],
-      );
-
-      await _deleteTombstoneList(
-        txn,
-        table: 'payment_methods',
-        values:
-            tombstonesData['formas_pago'],
-      );
-
-      await _deleteTombstoneList(
-        txn,
-        table: 'units',
-        values:
-            tombstonesData['unidades_medida'],
-      );
-
-      await _deleteTombstoneList(
-        txn,
-        table: 'categories',
-        values:
-            tombstonesData['categorias'],
-      );
-
-      await _deleteTombstoneList(
-        txn,
-        table: 'promotions',
-        values:
-            tombstonesData['promociones'],
-      );
-
-      await _deleteTombstoneList(
-        txn,
-        table: 'coupons',
-        values:
-            tombstonesData['cupones'],
-      );
+      for (final entry in map.entries) {
+        final values = data[entry.key];
+        if (values is! List) continue;
+        for (final value in values) {
+          final id = _toInt(value is Map ? value['id'] : value);
+          if (id > 0) await txn.delete(entry.value, where: 'id = ?', whereArgs: [id]);
+        }
+      }
     });
   }
 
-  Future<void> _deleteTombstoneList(
-    Transaction txn, {
-    required String table,
-    dynamic values,
-  }) async {
-    if (values is! List) {
-      return;
-    }
+  Future<String?> getCatalogVersion(String catalog) async { final r = await (await database).query('catalog_sync', where: 'catalog = ?', whereArgs: [catalog], limit: 1); return r.isEmpty ? null : r.first['version']?.toString(); }
+  Future<String?> getCatalogCursor(String catalog) async { final r = await (await database).query('catalog_sync', where: 'catalog = ?', whereArgs: [catalog], limit: 1); return r.isEmpty ? null : r.first['cursor']?.toString(); }
+  Future<void> setCatalogVersion(String catalog, String? version, {String? cursor}) async => (await database).insert('catalog_sync', {'catalog': catalog, 'version': version, 'cursor': cursor, 'synced_at': DateTime.now().toIso8601String()}, conflictAlgorithm: ConflictAlgorithm.replace);
+  Future<Map<String, String?>> getCatalogVersions() async { final rows = await (await database).query('catalog_sync'); return {for (final r in rows) r['catalog'].toString(): r['version']?.toString()}; }
 
-    for (final item in values) {
-      int id = 0;
+  // ---------------------------------------------------------------------------
+  // SALES / HISTORICAL QUEUE
+  // ---------------------------------------------------------------------------
 
-      if (item is Map) {
-        id = _toInt(item['id']);
-      } else {
-        id = _toInt(item);
-      }
-
-      if (id <= 0) {
-        continue;
-      }
-
-      await txn.delete(
-        table,
-        where: 'id = ?',
-        whereArgs: [id],
-      );
-    }
-  }
-
-  // ============================================================
-  // CATALOG VERSIONS
-  // ============================================================
-
-  Future<String?> getCatalogVersion(
-    String catalog,
-  ) async {
+  Future<int> saveSale({required String uuid, required List<Map<String, dynamic>> items, required List<Map<String, dynamic>> payments, required double total, required String status, String syncStatus = 'pending', String? paymentMethod, double cashReceived = 0, double changeDue = 0, int? tableId, String? tableName, int? clienteId, double descuentoGlobal = 0, double impuestoGlobal = 0, String? notas, String? businessDate}) async {
     final db = await database;
-
-    final result = await db.query(
-      'catalog_sync',
-      where: 'catalog = ?',
-      whereArgs: [catalog],
-      limit: 1,
-    );
-
-    if (result.isEmpty) {
-      return null;
-    }
-
-    return result.first['version']
-        ?.toString();
-  }
-
-  Future<void> setCatalogVersion(
-    String catalog,
-    String? version,
-  ) async {
-    final db = await database;
-
-    await db.insert(
-      'catalog_sync',
-      {
-        'catalog': catalog,
-        'version': version,
-        'synced_at':
-            DateTime.now().toIso8601String(),
-      },
-      conflictAlgorithm:
-          ConflictAlgorithm.replace,
-    );
-  }
-
-  Future<Map<String, String?>>
-      getCatalogVersions() async {
-    final db = await database;
-
-    final rows =
-        await db.query('catalog_sync');
-
-    return {
-      for (final row in rows)
-        row['catalog'].toString():
-            row['version']?.toString(),
-    };
-  }
-
-  // ============================================================
-  // SALES
-  // ============================================================
-
-  Future<bool> cancelSale(
-    int saleId,
-  ) async {
-    final db = await database;
-
     return db.transaction((txn) async {
-      final sales = await txn.query(
-        'sales',
-        where: 'id = ?',
-        whereArgs: [saleId],
-        limit: 1,
-      );
-
-      if (sales.isEmpty) {
-        return false;
-      }
-
-      final sale = sales.first;
-
-      final currentStatus =
-          sale['status']?.toString();
-
-      if (currentStatus == 'cancelled') {
-        return false;
-      }
-
-      if (currentStatus == 'paid' ||
-          currentStatus == 'synced') {
-        final items = await txn.query(
-          'sale_items',
-          where: 'sale_id = ?',
-          whereArgs: [saleId],
-        );
-
-        for (final item in items) {
-          await txn.rawUpdate(
-            '''
-            UPDATE products
-            SET stock = stock + ?
-            WHERE id = ?
-            ''',
-            [
-              _toDouble(item['quantity']),
-              _toInt(item['product_id']),
-            ],
-          );
-        }
-      }
-
-      await txn.update(
-        'sales',
-        {
-          'status': 'cancelled',
-          'sync_status': 'pending',
-          'updated_at':
-              DateTime.now().toIso8601String(),
-        },
-        where: 'id = ?',
-        whereArgs: [saleId],
-      );
-
-      return true;
-    });
-  }
-
-  // ============================================================
-  // SAVE SALE
-  // ============================================================
-
-  Future<int> saveSale({
-    required String uuid,
-    required List<Map<String, dynamic>> items,
-    required List<Map<String, dynamic>> payments,
-    required double total,
-    required String status,
-    String syncStatus = 'pending',
-    String? paymentMethod,
-    double cashReceived = 0,
-    double changeDue = 0,
-    int? tableId,
-    String? tableName,
-  }) async {
-    final db = await database;
-
-    return db.transaction((txn) async {
-      final now =
-          DateTime.now().toIso8601String();
-
-      final saleId = await txn.insert(
-        'sales',
-        {
-          'uuid_local': uuid,
-          'total': total,
-          'status': status,
-          'sync_status': syncStatus,
-          'payment_method': paymentMethod,
-          'cash_received': cashReceived,
-          'change_due': changeDue,
-          'mesa_id': tableId,
-          'mesa_nombre': tableName,
-          'created_at': now,
-          'updated_at': now,
-          'paid_at':
-              status == 'paid' ? now : null,
-        },
-      );
-
-      for (final item in items) {
-        final productId =
-            _toInt(item['product_id']);
-
-        final quantity =
-            _toDouble(item['quantity']);
-
-        await txn.insert(
-          'sale_items',
-          {
-            'sale_id': saleId,
-            'product_id': productId,
-            'name': item['name'],
-            'quantity': quantity,
-            'unit_price':
-                item['unit_price'],
-            'total': item['total'],
-          },
-        );
-
-        if (status == 'paid') {
-          final updated =
-              await txn.rawUpdate(
-            '''
-            UPDATE products
-            SET stock = stock - ?
-            WHERE id = ?
-              AND stock >= ?
-            ''',
-            [
-              quantity,
-              productId,
-              quantity,
-            ],
-          );
-
-          if (updated != 1) {
-            throw StateError(
-              'Stock insuficiente para registrar la venta.',
-            );
-          }
-        }
-      }
-
-      for (final payment in payments) {
-        await txn.insert(
-          'sale_payments',
-          {
-            'sale_id': saleId,
-            'method': payment['method'],
-            'amount': payment['amount'],
-          },
-        );
-      }
-
+      final now = DateTime.now().toIso8601String();
+      final existing = await txn.query('sales', where: 'uuid_local = ?', whereArgs: [uuid], limit: 1);
+      if (existing.isNotEmpty) return _toInt(existing.first['id']);
+      final saleId = await txn.insert('sales', {'uuid_local': uuid, 'business_date': businessDate ?? now.substring(0, 10), 'total': total, 'status': status, 'sync_status': syncStatus, 'payment_method': paymentMethod, 'cash_received': cashReceived, 'change_due': changeDue, 'mesa_id': tableId, 'mesa_nombre': tableName, 'cliente_id': clienteId, 'descuento_global': descuentoGlobal, 'impuesto_global': impuestoGlobal, 'notas': notas, 'created_at': now, 'updated_at': now, 'paid_at': status == 'paid' ? now : null});
+      for (final item in items) await txn.insert('sale_items', {'sale_id': saleId, 'product_id': _toInt(item['product_id']), 'name': item['name'], 'quantity': _toDouble(item['quantity']), 'unit_price': _toDouble(item['unit_price']), 'total': _toDouble(item['total']), 'descuento': _toDouble(item['descuento'])});
+      for (final payment in payments) await txn.insert('sale_payments', {'sale_id': saleId, 'method': payment['method'], 'amount': _toDouble(payment['amount']), 'referencia': payment['referencia']});
       return saleId;
     });
   }
 
-  // ============================================================
-  // TODAY SALES
-  // ============================================================
+  Future<List<Map<String, dynamic>>> getTodaySales() async { final db = await database; final day = DateTime.now().toIso8601String().substring(0, 10); return db.query('sales', where: 'business_date = ?', whereArgs: [day], orderBy: 'created_at DESC'); }
+  Future<List<Map<String, dynamic>>> getSales({String? businessDate, String? syncStatus, int? limit}) async { final db = await database; final where = <String>[]; final args = <dynamic>[]; if (businessDate != null) { where.add('business_date = ?'); args.add(businessDate); } if (syncStatus != null) { where.add('sync_status = ?'); args.add(syncStatus); } return db.query('sales', where: where.isEmpty ? null : where.join(' AND '), whereArgs: args.isEmpty ? null : args, orderBy: 'created_at ASC', limit: limit); }
+  Future<List<Map<String, dynamic>>> getPendingSales({bool includeFailed = true}) async => getSales(syncStatus: includeFailed ? null : 'pending').then((rows) => rows.where((r) => r['sync_status'] == 'pending' || r['sync_status'] == 'failed').toList());
+  Future<Map<String, dynamic>?> getSaleById(int id) async { final r = await (await database).query('sales', where: 'id = ?', whereArgs: [id], limit: 1); return r.isEmpty ? null : r.first; }
+  Future<List<Map<String, dynamic>>> getSaleItemsBySaleId(int id) async => (await database).query('sale_items', where: 'sale_id = ?', whereArgs: [id]);
+  Future<List<Map<String, dynamic>>> getSalePaymentsBySaleId(int id) async => (await database).query('sale_payments', where: 'sale_id = ?', whereArgs: [id]);
 
-  Future<List<Map<String, dynamic>>>
-      getTodaySales() async {
-    final db = await database;
+  Future<void> markSaleSyncing(int saleId) async => (await database).update('sales', {'sync_status': 'syncing', 'updated_at': DateTime.now().toIso8601String()}, where: 'id = ?', whereArgs: [saleId]);
+  Future<void> markSaleAsSynced(int saleId, {Map<String, dynamic>? serverResponse}) async {
+    final r = serverResponse ?? const <String, dynamic>{};
+    final nested = r['data'] is Map ? Map<String, dynamic>.from(r['data']) : r;
+    await (await database).update('sales', {'sync_status': 'synced', 'server_id': _nullableInt(nested['server_id'] ?? nested['venta_id'] ?? nested['id']), 'server_folio': nested['folio']?.toString() ?? nested['server_folio']?.toString(), 'server_synced_at': DateTime.now().toIso8601String(), 'last_sync_error': null, 'next_retry_at': null, 'updated_at': DateTime.now().toIso8601String()}, where: 'id = ?', whereArgs: [saleId]);
+  }
+  Future<void> markSaleSyncFailed(int saleId, String error, {int? attempts}) async { final db = await database; final sale = await getSaleById(saleId); final count = attempts ?? (_toInt(sale?['sync_attempts']) + 1); final retry = DateTime.now().add(Duration(minutes: count.clamp(1, 30) * 2)); await db.update('sales', {'sync_status': 'failed', 'sync_attempts': count, 'last_sync_error': error, 'next_retry_at': retry.toIso8601String(), 'updated_at': DateTime.now().toIso8601String()}, where: 'id = ?', whereArgs: [saleId]); }
+  Future<void> resetSaleForRetry(int saleId) async => (await database).update('sales', {'sync_status': 'pending', 'next_retry_at': null, 'last_sync_error': null, 'updated_at': DateTime.now().toIso8601String()}, where: 'id = ?', whereArgs: [saleId]);
+  Future<void> updateSaleServerResult(int saleId, Map<String, dynamic> response) async => markSaleAsSynced(saleId, serverResponse: response);
+  Future<List<Map<String, dynamic>>> getPendingSalesReadyToSync({int? limit}) async { final db = await database; final now = DateTime.now().toIso8601String(); return db.query('sales', where: "sync_status IN ('pending','failed') AND (next_retry_at IS NULL OR next_retry_at <= ?)", whereArgs: [now], orderBy: 'business_date ASC, created_at ASC', limit: limit); }
 
-    final now = DateTime.now();
+  Future<void> updateSaleStatus(int saleId, String status, {String syncStatus = 'pending'}) async => (await database).update('sales', {'status': status, 'sync_status': syncStatus, 'updated_at': DateTime.now().toIso8601String(), 'paid_at': status == 'paid' ? DateTime.now().toIso8601String() : null}, where: 'id = ?', whereArgs: [saleId]);
+  Future<void> markSaleAsPaid(int saleId, {required String paymentMethod, required double cashReceived, required double changeDue}) async => (await database).update('sales', {'status': 'paid', 'sync_status': 'pending', 'payment_method': paymentMethod, 'cash_received': cashReceived, 'change_due': changeDue, 'paid_at': DateTime.now().toIso8601String(), 'updated_at': DateTime.now().toIso8601String()}, where: 'id = ?', whereArgs: [saleId]);
 
-    final startOfDay = DateTime(
-      now.year,
-      now.month,
-      now.day,
-    );
+  Future<bool> cancelSale(int saleId) async { final db = await database; return db.transaction((txn) async { final r = await txn.query('sales', where: 'id = ?', whereArgs: [saleId], limit: 1); if (r.isEmpty || r.first['status'] == 'cancelled') return false; await txn.update('sales', {'status': 'cancelled', 'sync_status': 'pending', 'updated_at': DateTime.now().toIso8601String()}, where: 'id = ?', whereArgs: [saleId]); return true; }); }
+  Future<bool> deletePendingSale(int saleId) async { final db = await database; return db.transaction((txn) async { final r = await txn.query('sales', where: 'id = ? AND status = ?', whereArgs: [saleId, 'pending'], limit: 1); if (r.isEmpty) return false; await txn.delete('sale_items', where: 'sale_id = ?', whereArgs: [saleId]); await txn.delete('sale_payments', where: 'sale_id = ?', whereArgs: [saleId]); return (await txn.delete('sales', where: 'id = ?', whereArgs: [saleId])) == 1; }); }
+  Future<bool> updatePendingSale({required int saleId, required List<Map<String, dynamic>> items, required double total, int? tableId, String? tableName}) async { final db = await database; return db.transaction((txn) async { final n = await txn.update('sales', {'total': total, 'mesa_id': tableId, 'mesa_nombre': tableName, 'updated_at': DateTime.now().toIso8601String(), 'sync_status': 'pending'}, where: 'id = ? AND status = ?', whereArgs: [saleId, 'pending']); if (n != 1) return false; await txn.delete('sale_items', where: 'sale_id = ?', whereArgs: [saleId]); for (final item in items) await txn.insert('sale_items', {'sale_id': saleId, 'product_id': _toInt(item['product_id']), 'name': item['name'], 'quantity': _toDouble(item['quantity']), 'unit_price': _toDouble(item['unit_price']), 'total': _toDouble(item['total']), 'descuento': _toDouble(item['descuento'])}); return true; }); }
+  Future<bool> payPendingSale(int saleId, {required List<Map<String, dynamic>> payments, required String paymentMethod, required double cashReceived, required double changeDue}) async { final db = await database; return db.transaction((txn) async { final r = await txn.query('sales', where: 'id = ? AND status = ?', whereArgs: [saleId, 'pending'], limit: 1); if (r.isEmpty) return false; await txn.delete('sale_payments', where: 'sale_id = ?', whereArgs: [saleId]); for (final p in payments) await txn.insert('sale_payments', {'sale_id': saleId, 'method': p['method'], 'amount': _toDouble(p['amount']), 'referencia': p['referencia']}); await txn.update('sales', {'status': 'paid', 'sync_status': 'pending', 'payment_method': paymentMethod, 'cash_received': cashReceived, 'change_due': changeDue, 'paid_at': DateTime.now().toIso8601String(), 'updated_at': DateTime.now().toIso8601String()}, where: 'id = ?', whereArgs: [saleId]); return true; }); }
 
-    final startOfTomorrow =
-        startOfDay.add(
-      const Duration(days: 1),
-    );
-
-    return db.query(
-      'sales',
-      where:
-          'created_at >= ? AND created_at < ?',
-      whereArgs: [
-        startOfDay.toIso8601String(),
-        startOfTomorrow.toIso8601String(),
-      ],
-      orderBy: 'created_at DESC',
-    );
+  /// Copia una venta pendiente de la base diaria a esta base histórica.
+  /// Si ya existe por uuid, no duplica.
+  Future<int> archiveDailySale({required Map<String, dynamic> sale, required List<Map<String, dynamic>> items, required List<Map<String, dynamic>> payments}) async {
+    return saveSale(uuid: sale['uuid_local']?.toString() ?? '', items: items, payments: payments, total: _toDouble(sale['total']), status: sale['status']?.toString() ?? 'paid', syncStatus: sale['sync_status']?.toString() ?? 'pending', paymentMethod: sale['payment_method']?.toString(), cashReceived: _toDouble(sale['cash_received']), changeDue: _toDouble(sale['change_due']), tableId: _nullableInt(sale['mesa_id']), tableName: sale['mesa_nombre']?.toString(), clienteId: _nullableInt(sale['cliente_id']), descuentoGlobal: _toDouble(sale['descuento_global']), impuestoGlobal: _toDouble(sale['impuesto_global']), notas: sale['notas']?.toString(), businessDate: sale['business_date']?.toString() ?? sale['created_at']?.toString().substring(0, 10));
   }
 
-  // ============================================================
-  // PENDING / UNSYNCED SALES
-  // ============================================================
+  Future<bool> hasPendingSales() async => (await getPendingSales()).isNotEmpty;
+  Future<Map<String, int>> getSyncSummary() async { final rows = await (await database).rawQuery("SELECT sync_status, COUNT(*) total FROM sales GROUP BY sync_status"); return {for (final r in rows) r['sync_status'].toString(): _toInt(r['total'])}; }
 
-  Future<List<Map<String, dynamic>>>
-      getPendingSales() async {
-    final db = await database;
+  Future<Map<String, dynamic>?> getSyncStatus(int saleId) async { final sale = await getSaleById(saleId); if (sale == null) return null; return {'sync_status': sale['sync_status'], 'server_id': sale['server_id'], 'server_folio': sale['server_folio'], 'server_synced_at': sale['server_synced_at'], 'last_sync_error': sale['last_sync_error'], 'business_date': sale['business_date'], 'sync_attempts': _toInt(sale['sync_attempts'])}; }
 
-    return db.query(
-      'sales',
-      where:
-          "sync_status IN (?, ?)",
-      whereArgs: [
-        'pending',
-        'failed',
-      ],
-      orderBy: 'created_at ASC',
-    );
-  }
 
-  // ============================================================
-  // SALE DETAIL
-  // ============================================================
 
-  Future<Map<String, dynamic>?> getSaleById(
-    int saleId,
-  ) async {
-    final db = await database;
+  Future<Map<String, int>> getCatalogCounts() async { final db = await database; Future<int> c(String t) async => Sqflite.firstIntValue(await db.rawQuery('SELECT COUNT(*) FROM $t')) ?? 0; return {'productos': await c('products'), 'clientes': await c('clients'), 'impuestos': await c('taxes'), 'formas_pago': await c('payment_methods'), 'unidades_medida': await c('units'), 'categorias': await c('categories'), 'promociones': await c('promotions'), 'cupones': await c('coupons')}; }
 
-    final sales = await db.query(
-      'sales',
-      where: 'id = ?',
-      whereArgs: [saleId],
-      limit: 1,
-    );
-
-    return sales.isEmpty
-        ? null
-        : sales.first;
-  }
-
-  Future<List<Map<String, dynamic>>>
-      getSaleItemsBySaleId(
-    int saleId,
-  ) async {
-    final db = await database;
-
-    return db.query(
-      'sale_items',
-      where: 'sale_id = ?',
-      whereArgs: [saleId],
-    );
-  }
-
-  Future<List<Map<String, dynamic>>>
-      getSalePaymentsBySaleId(
-    int saleId,
-  ) async {
-    final db = await database;
-
-    return db.query(
-      'sale_payments',
-      where: 'sale_id = ?',
-      whereArgs: [saleId],
-    );
-  }
-
-  // ============================================================
-  // SALE STATUS
-  // ============================================================
-
-  Future<void> updateSaleStatus(
-    int saleId,
-    String status, {
-    String syncStatus = 'pending',
-  }) async {
-    final db = await database;
-
-    final now =
-        DateTime.now().toIso8601String();
-
-    await db.update(
-      'sales',
-      {
-        'status': status,
-        'sync_status': syncStatus,
-        'updated_at': now,
-        'paid_at':
-            status == 'paid' ? now : null,
-      },
-      where: 'id = ?',
-      whereArgs: [saleId],
-    );
-  }
-
-  // ============================================================
-  // MARK PAID
-  // ============================================================
-
-  Future<void> markSaleAsPaid(
-    int saleId, {
-    required String paymentMethod,
-    required double cashReceived,
-    required double changeDue,
-  }) async {
-    final db = await database;
-
-    final now =
-        DateTime.now().toIso8601String();
-
-    await db.update(
-      'sales',
-      {
-        'status': 'paid',
-        'sync_status': 'pending',
-        'payment_method': paymentMethod,
-        'cash_received': cashReceived,
-        'change_due': changeDue,
-        'paid_at': now,
-        'updated_at': now,
-      },
-      where: 'id = ?',
-      whereArgs: [saleId],
-    );
-  }
-
-  // ============================================================
-  // PAY PENDING SALE
-  // ============================================================
-
-  Future<bool> payPendingSale(
-    int saleId, {
-    required List<Map<String, dynamic>> payments,
-    required String paymentMethod,
-    required double cashReceived,
-    required double changeDue,
-  }) async {
-    final db = await database;
-
-    return db.transaction((txn) async {
-      final sales = await txn.query(
-        'sales',
-        where:
-            'id = ? AND status = ?',
-        whereArgs: [
-          saleId,
-          'pending',
-        ],
-        limit: 1,
-      );
-
-      if (sales.isEmpty) {
-        return false;
-      }
-
-      final items = await txn.query(
-        'sale_items',
-        where: 'sale_id = ?',
-        whereArgs: [saleId],
-      );
-
-      for (final item in items) {
-        final quantity =
-            _toDouble(item['quantity']);
-
-        final productId =
-            _toInt(item['product_id']);
-
-        final updated =
-            await txn.rawUpdate(
-          '''
-          UPDATE products
-          SET stock = stock - ?
-          WHERE id = ?
-            AND stock >= ?
-          ''',
-          [
-            quantity,
-            productId,
-            quantity,
-          ],
-        );
-
-        if (updated != 1) {
-          throw StateError(
-            'Stock insuficiente para cobrar la venta pendiente.',
-          );
-        }
-      }
-
-      await txn.delete(
-        'sale_payments',
-        where: 'sale_id = ?',
-        whereArgs: [saleId],
-      );
-
-      for (final payment in payments) {
-        await txn.insert(
-          'sale_payments',
-          {
-            'sale_id': saleId,
-            'method': payment['method'],
-            'amount': payment['amount'],
-          },
-        );
-      }
-
-      final now =
-          DateTime.now().toIso8601String();
-
-      await txn.update(
-        'sales',
-        {
-          'status': 'paid',
-          'sync_status': 'pending',
-          'payment_method': paymentMethod,
-          'cash_received': cashReceived,
-          'change_due': changeDue,
-          'paid_at': now,
-          'updated_at': now,
-        },
-        where: 'id = ?',
-        whereArgs: [saleId],
-      );
-
-      return true;
-    });
-  }
-
-  // ============================================================
-  // DELETE PENDING SALE
-  // ============================================================
-
-  Future<bool> deletePendingSale(
-    int saleId,
-  ) async {
-    final db = await database;
-
-    return db.transaction((txn) async {
-      final sale = await txn.query(
-        'sales',
-        where:
-            'id = ? AND status = ?',
-        whereArgs: [
-          saleId,
-          'pending',
-        ],
-        limit: 1,
-      );
-
-      if (sale.isEmpty) {
-        return false;
-      }
-
-      await txn.delete(
-        'sale_items',
-        where: 'sale_id = ?',
-        whereArgs: [saleId],
-      );
-
-      await txn.delete(
-        'sale_payments',
-        where: 'sale_id = ?',
-        whereArgs: [saleId],
-      );
-
-      final deleted =
-          await txn.delete(
-        'sales',
-        where:
-            'id = ? AND status = ?',
-        whereArgs: [
-          saleId,
-          'pending',
-        ],
-      );
-
-      return deleted == 1;
-    });
-  }
-
-  // ============================================================
-  // UPDATE PENDING SALE
-  // ============================================================
-
-  Future<bool> updatePendingSale({
-    required int saleId,
-    required List<Map<String, dynamic>> items,
-    required double total,
-    int? tableId,
-    String? tableName,
-  }) async {
-    final db = await database;
-
-    return db.transaction((txn) async {
-      final updated =
-          await txn.update(
-        'sales',
-        {
-          'total': total,
-          'mesa_id': tableId,
-          'mesa_nombre': tableName,
-          'updated_at':
-              DateTime.now().toIso8601String(),
-        },
-        where:
-            'id = ? AND status = ?',
-        whereArgs: [
-          saleId,
-          'pending',
-        ],
-      );
-
-      if (updated != 1) {
-        return false;
-      }
-
-      await txn.delete(
-        'sale_items',
-        where: 'sale_id = ?',
-        whereArgs: [saleId],
-      );
-
-      for (final item in items) {
-        await txn.insert(
-          'sale_items',
-          {
-            'sale_id': saleId,
-            'product_id':
-                item['product_id'],
-            'name': item['name'],
-            'quantity':
-                item['quantity'],
-            'unit_price':
-                item['unit_price'],
-            'total': item['total'],
-          },
-        );
-      }
-
-      return true;
-    });
-  }
-
-  // ============================================================
-  // MARK SALE AS SYNCED
-  // ============================================================
-
-  Future<void> markSaleAsSynced(
-    int saleId,
-  ) async {
-    final db = await database;
-
-    await db.update(
-      'sales',
-      {
-        'sync_status': 'synced',
-        'updated_at':
-            DateTime.now().toIso8601String(),
-      },
-      where: 'id = ?',
-      whereArgs: [saleId],
-    );
-  }
-
-  // ============================================================
-  // CATALOG COUNTS
-  // ============================================================
-
-  Future<Map<String, int>>
-      getCatalogCounts() async {
-    final db = await database;
-
-    Future<int> count(
-      String table,
-    ) async {
-      final result =
-          await db.rawQuery(
-        'SELECT COUNT(*) AS total FROM $table',
-      );
-
-      return Sqflite.firstIntValue(
-            result,
-          ) ??
-          0;
-    }
-
-    return {
-      'productos':
-          await count('products'),
-      'clientes':
-          await count('clients'),
-      'impuestos':
-          await count('taxes'),
-      'formas_pago':
-          await count('payment_methods'),
-      'unidades_medida':
-          await count('units'),
-      'categorias':
-          await count('categories'),
-      'promociones':
-          await count('promotions'),
-      'cupones':
-          await count('coupons'),
-    };
-  }
-
-  Future<int> restoreCatalogItem({
-    required String table,
-    required int id,
-  }) async {
-    final db = await database;
-
-    return db.update(
-      table,
-      {
-        'is_active': 1,
-        'updated_at': DateTime.now().toIso8601String(),
-      },
-      where: 'id = ?',
-      whereArgs: [id],
-    );
-  }
-
-
-  // ============================================================
-  // CLEAR DATABASE
-  // ============================================================
-
-  Future<void> clearDb() async {
-    final db = await database;
-
-    await db.delete('sale_items');
-    await db.delete('sale_payments');
-    await db.delete('sales');
-
-    await db.delete('products');
-    await db.delete('clients');
-    await db.delete('taxes');
-    await db.delete('payment_methods');
-    await db.delete('units');
-    await db.delete('categories');
-    await db.delete('promotions');
-    await db.delete('coupons');
-    await db.delete('catalog_sync');
-    await db.delete('company');
-  }
-
-  // ============================================================
-  // CLOSE
-  // ============================================================
-
-  Future<void> close() async {
-    final db = _database;
-
-    if (db != null) {
-      await db.close();
-      _database = null;
-    }
-  }
-
-  // ============================================================
-  // GENERIC CATALOG CRUD
-  // ============================================================
-
-  static const Set<String> _catalogTables = {
-    'taxes',
-    'payment_methods',
-    'units',
-    'categories',
-    'promotions',
-    'coupons',
-  };
-
-  void _validateCatalogTable(String table) {
-    if (!_catalogTables.contains(table)) {
-      throw ArgumentError('Catálogo no permitido: $table');
-    }
-  }
-
-  Future<List<Map<String, dynamic>>> getCatalogItems(
-    String table, {
-    bool activeOnly = true,
-  }) async {
-    _validateCatalogTable(table);
-
-    final db = await database;
-
-    return db.query(
-      table,
-      where: activeOnly ? 'is_active = 1' : null,
-      orderBy: 'name ASC',
-    );
-  }
-
-  Future<int> createCatalogItem({
-    required String table,
-    required String name,
-    String? code,
-    double? rate,
-    bool isActive = true,
-    Map<String, dynamic>? data,
-  }) async {
-    _validateCatalogTable(table);
-
-    final db = await database;
-
-    return db.insert(
-      table,
-      {
-        'name': name.trim(),
-        'code': code?.trim(),
-        if (table == 'taxes') 'rate': rate ?? 0,
-        'is_active': isActive ? 1 : 0,
-        'data_json':
-            data == null ? null : jsonEncode(data),
-        'updated_at':
-            DateTime.now().toIso8601String(),
-      },
-    );
-  }
-
-  Future<int> updateCatalogItem({
-    required String table,
-    required int id,
-    required String name,
-    String? code,
-    double? rate,
-    bool isActive = true,
-    Map<String, dynamic>? data,
-  }) async {
-    _validateCatalogTable(table);
-
-    final db = await database;
-
-    final values = <String, dynamic>{
-      'name': name.trim(),
-      'code': code?.trim(),
-      'is_active': isActive ? 1 : 0,
-      'updated_at':
-          DateTime.now().toIso8601String(),
-    };
-
-    if (table == 'taxes') {
-      values['rate'] = rate ?? 0;
-    }
-
-    if (data != null) {
-      values['data_json'] = jsonEncode(data);
-    }
-
-    return db.update(
-      table,
-      values,
-      where: 'id = ?',
-      whereArgs: [id],
-    );
-  }
-
-  Future<int> deleteCatalogItem(
-    String table,
-    int id,
-  ) async {
-    _validateCatalogTable(table);
-
-    final db = await database;
-
-    return db.update(
-      table,
-      {
-        'is_active': 0,
-        'updated_at':
-            DateTime.now().toIso8601String(),
-      },
-      where: 'id = ?',
-      whereArgs: [id],
-    );
-  }
-
-  // ============================================================
-  // CLIENT CRUD
-  // ============================================================
-
-  Future<int> createClient({
-    required String name,
-    String? email,
-    String? phone,
-    String? rfc,
-    bool isActive = true,
-  }) async {
-    final db = await database;
-
-    return db.insert(
-      'clients',
-      {
-        'name': name.trim(),
-        'email': email?.trim(),
-        'phone': phone?.trim(),
-        'rfc': rfc?.trim(),
-        'is_active': isActive ? 1 : 0,
-        'data_json': null,
-        'updated_at':
-            DateTime.now().toIso8601String(),
-      },
-    );
-  }
-
-  Future<int> updateClient({
-    required int id,
-    required String name,
-    String? email,
-    String? phone,
-    String? rfc,
-    bool isActive = true,
-  }) async {
-    final db = await database;
-
-    return db.update(
-      'clients',
-      {
-        'name': name.trim(),
-        'email': email?.trim(),
-        'phone': phone?.trim(),
-        'rfc': rfc?.trim(),
-        'is_active': isActive ? 1 : 0,
-        'updated_at':
-            DateTime.now().toIso8601String(),
-      },
-      where: 'id = ?',
-      whereArgs: [id],
-    );
-  }
-
-  Future<int> deleteClient(int id) async {
-    final db = await database;
-
-    return db.update(
-      'clients',
-      {
-        'is_active': 0,
-        'updated_at':
-            DateTime.now().toIso8601String(),
-      },
-      where: 'id = ?',
-      whereArgs: [id],
-    );
-  }
-
+  Future<void> clearDb() async { final db = await database; await db.transaction((txn) async { for (final t in ['sale_items','sale_payments','sales','products','clients','taxes','payment_methods','units','categories','promotions','coupons','catalog_sync','company']) await txn.delete(t); }); }
+  Future<void> close() async { final db = _database; if (db != null) { await db.close(); _database = null; } }
 }

@@ -4,329 +4,172 @@ import '../storage/app_storage.dart';
 class AuthService {
   final ApiClient _apiClient;
 
-  AuthService({ApiClient? apiClient})
-      : _apiClient = apiClient ?? ApiClient();
+  AuthService({ApiClient? apiClient}) : _apiClient = apiClient ?? ApiClient();
 
-  /// ============================================================
-  /// LOGIN
-  /// ============================================================
-  ///
-  /// El login se considera válido únicamente cuando:
-  ///
-  /// 1. El identificador no está vacío.
-  /// 2. La contraseña no está vacía.
-  /// 3. Laravel devuelve un token.
-  /// 4. Laravel devuelve un usuario válido.
-  /// 5. El usuario tiene un ID válido.
-  /// 6. El identificador enviado corresponde al usuario devuelto.
-  ///
-  /// Esto último evita que un backend mal configurado permita
-  /// iniciar sesión con un número de empleado incorrecto.
   Future<Map<String, dynamic>> login({
     required String identifier,
     required String password,
   }) async {
     final cleanIdentifier = identifier.trim();
-
-    // IMPORTANTE:
-    // No hacemos trim() a la contraseña.
-    // Los espacios podrían formar parte de una contraseña válida.
-    final cleanPassword = password;
-
-    // ============================================================
-    // VALIDACIONES LOCALES
-    // ============================================================
-
     if (cleanIdentifier.isEmpty) {
-      throw Exception('Ingresa tu número de empleado.');
+      throw Exception('Ingresa tu usuario o número de usuario.');
     }
-
-    if (cleanPassword.isEmpty) {
+    if (password.isEmpty) {
       throw Exception('Ingresa tu contraseña.');
     }
 
-    // ============================================================
-    // LOGIN CONTRA EL BACKEND
-    // ============================================================
-
-    final payload = await _apiClient.login(
-      identifier: cleanIdentifier,
-      password: cleanPassword,
-    );
-
-    if (payload.isEmpty) {
-      await AppStorage().logOut();
-
-      throw Exception(
-        'El servidor no devolvió una respuesta válida.',
+    try {
+      final payload = await _apiClient.login(
+        identifier: cleanIdentifier,
+        password: password,
       );
-    }
-
-    // ============================================================
-    // TOKEN
-    // ============================================================
-
-    final dynamic rawToken =
-        payload['token'] ?? payload['access_token'];
-
-    final token = rawToken?.toString().trim() ?? '';
-
-    if (token.isEmpty) {
-      await AppStorage().logOut();
-
-      throw Exception(
-        payload['message']?.toString() ??
-            'Número de empleado o contraseña incorrectos.',
+      await _saveOnlineSession(payload, cleanIdentifier, password);
+      return payload;
+    } catch (error) {
+      // Si no hay conectividad o el servidor no está disponible, intentamos
+      // únicamente con las credenciales previamente validadas y almacenadas.
+      // No se usa una cuenta demo ni se inventa una identidad local.
+      final offline = await loginOffline(
+        identifier: cleanIdentifier,
+        password: password,
       );
+      if (offline) {
+        return {
+          'offline': true,
+          'token': 'offline-session',
+          'user': {
+            'id': await AppStorage().getUserId(),
+            'name': await AppStorage().getUserName() ?? 'Usuario',
+            'numero_usuario': cleanIdentifier,
+          },
+          'empresa': {
+            'id': await AppStorage().getEmpresaId(),
+            'nombre': await AppStorage().getCompanyName() ?? '',
+          },
+        };
+      }
+      rethrow;
     }
+  }
 
-    // ============================================================
-    // USUARIO
-    // ============================================================
-
+  Future<void> _saveOnlineSession(
+    Map<String, dynamic> payload,
+    String identifier,
+    String password,
+  ) async {
+    final token = (payload['token'] ?? payload['access_token'] ?? '').toString();
     final user = payload['user'] is Map
-        ? Map<String, dynamic>.from(
-            payload['user'] as Map,
-          )
+        ? Map<String, dynamic>.from(payload['user'] as Map)
+        : <String, dynamic>{};
+    final empresa = payload['empresa'] is Map
+        ? Map<String, dynamic>.from(payload['empresa'] as Map)
         : <String, dynamic>{};
 
-    if (user.isEmpty) {
-      await AppStorage().logOut();
+    final userId = _toInt(user['id'] ?? user['user_id']);
+    final companyId = _toInt(empresa['id'] ?? empresa['empresa_id']);
 
-      throw Exception(
-        payload['message']?.toString() ??
-            'El servidor no devolvió los datos del usuario.',
-      );
+    if (token.isEmpty || userId <= 0 || companyId <= 0) {
+      throw Exception('El servidor devolvió una sesión incompleta.');
     }
 
-    // ============================================================
-    // ID DEL USUARIO
-    // ============================================================
-
-    final userId = _parsePositiveInt(
-      user['id'] ?? user['user_id'],
-    );
-
-    if (userId <= 0) {
-      await AppStorage().logOut();
-
-      throw Exception(
-        'La respuesta del servidor no contiene un usuario válido.',
-      );
-    }
-
-    // ============================================================
-    // VALIDAR IDENTIFICADOR DEVUELTO POR EL SERVIDOR
-    // ============================================================
-    //
-    // El backend puede utilizar distintos nombres dependiendo
-    // de cómo esté construido el modelo:
-    //
-    // numero_usuario
-    // numero_empleado
-    // numero_socio
-    // username
-    //
-    // Para este POS el login de la pantalla es por número de
-    // empleado. Por eso exigimos que el número devuelto coincida.
-    //
-
-    final serverIdentifier = _extractUserIdentifier(user);
+    final serverIdentifier = (user['numero_usuario'] ??
+            user['numero_empleado'] ??
+            user['numero_socio'] ??
+            user['employee_number'] ??
+            user['username'] ??
+            identifier)
+        .toString()
+        .trim();
 
     if (serverIdentifier.isEmpty) {
-      await AppStorage().logOut();
-
-      throw Exception(
-        'El servidor no devolvió el número de empleado del usuario.',
-      );
+      throw Exception('El usuario recibido por el servidor no es válido.');
     }
 
-    if (serverIdentifier != cleanIdentifier) {
-      await AppStorage().logOut();
-
-      throw Exception(
-        'El número de empleado no corresponde al usuario autenticado.',
-      );
+    DateTime? serverDate;
+    final rawDate = payload['business_date'] ??
+        payload['fecha_negocio'] ??
+        payload['fecha_operacion'] ??
+        empresa['business_date'];
+    if (rawDate != null) {
+      serverDate = DateTime.tryParse(rawDate.toString());
     }
 
-    // ============================================================
-    // EMPRESA
-    // ============================================================
-
-    final empresa = payload['empresa'] is Map
-        ? Map<String, dynamic>.from(
-            payload['empresa'] as Map,
-          )
-        : <String, dynamic>{};
-
-    final empresaId = _parsePositiveInt(
-      empresa['id'] ?? empresa['empresa_id'],
-    );
-
-    if (empresaId <= 0) {
-      await AppStorage().logOut();
-
-      throw Exception(
-        'El usuario no tiene una empresa válida asociada.',
-      );
-    }
-
-    // ============================================================
-    // NOMBRE DEL USUARIO
-    // ============================================================
-
-    final userName = _extractUserName(user);
-
-    // ============================================================
-    // GUARDAR SESIÓN
-    // ============================================================
+    final userName =
+        (user['name'] ?? user['username'] ?? 'Usuario').toString();
 
     await AppStorage().saveSession(
       token: token,
       userId: userId,
-      empresaId: empresaId,
+      empresaId: companyId,
       userName: userName,
       isLoggedIn: true,
+      offlineIdentifier: identifier,
+      offlinePassword: password,
+      serverBusinessDate: serverDate,
     );
 
-    // ============================================================
-    // NOMBRE DE EMPRESA
-    // ============================================================
-
-    final dynamic rawCompanyName =
-        empresa['nombre'] ?? empresa['name'];
-
-    if (rawCompanyName != null) {
-      final companyName = rawCompanyName.toString().trim();
-
-      if (companyName.isNotEmpty) {
-        await AppStorage().saveCompanyName(companyName);
-      }
+    final companyName = empresa['nombre'] ?? empresa['name'];
+    if (companyName != null) {
+      await AppStorage().saveCompanyName(companyName.toString());
     }
 
-    // ============================================================
-    // CONFIGURACIÓN DE EMPRESA
-    // ============================================================
-
     final configuration = empresa['configuracion'];
-
     if (configuration is Map) {
-      final settings = Map<String, dynamic>.from(
-        configuration,
-      );
-
       await AppStorage().saveOperationState({
-        'cajas_activas': settings['cajas_activas'] == true,
-        'mesas_activas': settings['mesas_activas'] == true,
+        'cajas_activas': configuration['cajas_activas'] == true,
+        'mesas_activas': configuration['mesas_activas'] == true,
         'caja_abierta': null,
       });
     }
-
-    // ============================================================
-    // DEVOLVER RESPUESTA
-    // ============================================================
-
-    return payload;
   }
 
-  // ============================================================
-  // EXTRAER IDENTIFICADOR DEL USUARIO
-  // ============================================================
+  Future<bool> loginOffline({
+    required String identifier,
+    required String password,
+  }) async {
+    final cleanIdentifier = identifier.trim();
+    if (cleanIdentifier.isEmpty || password.isEmpty) return false;
 
-  String _extractUserIdentifier(
-    Map<String, dynamic> user,
-  ) {
-    final possibleValues = [
-      user['numero_usuario'],
-      user['numero_empleado'],
-      user['numero_socio'],
-      user['employee_number'],
-      user['username'],
-    ];
+    final available = await AppStorage().isOfflineLoginAvailable();
+    if (!available) return false;
 
-    for (final value in possibleValues) {
-      if (value == null) {
-        continue;
-      }
+    final savedIdentifier = await AppStorage().getOfflineIdentifier();
+    final savedPassword = await AppStorage().getOfflinePassword();
 
-      final result = value.toString().trim();
-
-      if (result.isNotEmpty) {
-        return result;
-      }
+    if (savedIdentifier == null || savedPassword == null) return false;
+    if (savedIdentifier.trim() != cleanIdentifier || savedPassword != password) {
+      return false;
     }
 
-    return '';
+    final userId = await AppStorage().getLastOnlineUserId();
+    final companyId = await AppStorage().getLastOnlineEmpresaId();
+    if (userId == null || companyId == null || userId <= 0 || companyId <= 0) {
+      return false;
+    }
+
+    await AppStorage().saveSession(
+      token: 'offline-session',
+      userId: userId,
+      empresaId: companyId,
+      userName: await AppStorage().getUserName() ?? 'Usuario',
+      isLoggedIn: true,
+    );
+
+    return true;
   }
 
-  // ============================================================
-  // EXTRAER NOMBRE
-  // ============================================================
-
-  String _extractUserName(
-    Map<String, dynamic> user,
-  ) {
-    final possibleValues = [
-      user['name'],
-      user['username'],
-      user['nombre'],
-    ];
-
-    for (final value in possibleValues) {
-      if (value == null) {
-        continue;
-      }
-
-      final result = value.toString().trim();
-
-      if (result.isNotEmpty) {
-        return result;
-      }
-    }
-
-    return 'Usuario';
-  }
-
-  // ============================================================
-  // CONVERTIR ID
-  // ============================================================
-
-  int _parsePositiveInt(dynamic value) {
-    if (value == null) {
-      return 0;
-    }
-
-    if (value is int) {
-      return value;
-    }
-
-    if (value is double) {
-      return value.toInt();
-    }
-
-    return int.tryParse(
-          value.toString().trim(),
-        ) ??
-        0;
-  }
-
-  // ============================================================
-  // LOGOUT
-  // ============================================================
-
-  Future<void> logout() async {
-    await AppStorage().logOut();
-  }
-
-  // ============================================================
-  // COMPROBAR SESIÓN
-  // ============================================================
+  Future<void> logout() => AppStorage().logOut();
 
   Future<bool> hasSession() async {
     final token = await AppStorage().getToken();
-    final loggedIn = await AppStorage().isLoggedIn();
+    return (await AppStorage().isLoggedIn()) &&
+        token != null &&
+        token.isNotEmpty;
+  }
 
-    return loggedIn &&
-        (token ?? '').trim().isNotEmpty;
+  int _toInt(dynamic value) {
+    return value is num
+        ? value.toInt()
+        : int.tryParse('${value ?? ''}') ?? 0;
   }
 }

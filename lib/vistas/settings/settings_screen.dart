@@ -192,7 +192,9 @@ class SettingsScreen extends StatelessWidget {
     if (!context.mounted) return;
     final result = await showDialog<Map<String, dynamic>>(
       context: context,
-      builder: (_) => _TicketConfigDialog(initialConfig: local),
+      builder: (_) => _TicketConfigDialog(
+        initialConfig: local ?? <String, dynamic>{},
+      ),
     );
     if (result == null) return;
     await AppStorage().saveTicketConfig(result);

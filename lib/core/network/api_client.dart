@@ -21,39 +21,106 @@ class ApiClient {
         onRequest: (options, handler) async {
           final token = await AppStorage().getToken();
 
-          print('🔑 Token obtenido: $token');
+          final tokenDisponible =
+              token != null &&
+              token.isNotEmpty &&
+              token != 'offline-session';
 
-          if (token != null && token.isNotEmpty) {
-            options.headers['Authorization'] = 'Bearer $token';
-            print('🔒 Header Authorization agregado');
+          print(
+            '🔑 Token disponible: $tokenDisponible',
+          );
+
+          if (tokenDisponible) {
+            options.headers['Authorization'] =
+                'Bearer $token';
+
+            print(
+              '🔒 Header Authorization agregado',
+            );
           } else {
-            print('⚠️ Token vacío o nulo');
+            print(
+              '⚠️ Token vacío, nulo o sesión offline',
+            );
           }
 
           print(
-            '🌐 URL completa: ${options.baseUrl}${options.path}',
+            '🌐 URL completa: '
+            '${options.baseUrl}${options.path}',
           );
+
+          /*
+           * Información adicional para depuración de requests.
+           */
+          print(
+            '📤 Método: ${options.method}',
+          );
+
+          if (options.data != null) {
+            print(
+              '📦 Payload: ${options.data}',
+            );
+          }
 
           handler.next(options);
         },
-        onResponse: (response, handler) {
+
+        onResponse: (response, handler) async {
           print(
-            '📡 Respuesta: ${response.statusCode} - ${response.data}',
+            '📡 Respuesta: '
+            '${response.statusCode} - ${response.data}',
           );
 
+          /*
+           * Cerrar sesión solamente ante 401 y solamente
+           * cuando existe una sesión remota válida.
+           */
           if (response.statusCode == 401) {
-            AppStorage().logOut();
+            final currentToken =
+                await AppStorage().getToken();
+
+            final sesionValida =
+                currentToken != null &&
+                currentToken.isNotEmpty &&
+                currentToken != 'offline-session';
+
+            if (sesionValida) {
+              await AppStorage().logOut();
+            }
           }
 
           handler.next(response);
         },
-        onError: (DioException error, handler) async {
-          print('❌ Error en API: ${error.message}');
-          print('❌ Código: ${error.response?.statusCode}');
-          print('❌ Data: ${error.response?.data}');
+
+        onError: (
+          DioException error,
+          handler,
+        ) async {
+          print(
+            '❌ Error en API: ${error.message}',
+          );
+
+          print(
+            '❌ Código: '
+            '${error.response?.statusCode}',
+          );
+
+          print(
+            '❌ Data: '
+            '${error.response?.data}',
+          );
 
           if (error.response?.statusCode == 401) {
-            await AppStorage().logOut();
+            final currentToken =
+                await AppStorage().getToken();
+
+            final sesionValida =
+                currentToken != null &&
+                currentToken.isNotEmpty &&
+                currentToken != 'offline-session';
+
+            if (sesionValida) {
+              await AppStorage().logOut();
+            }
           }
 
           handler.next(error);
@@ -73,30 +140,36 @@ class ApiClient {
     String fallback = 'Ocurrió un error.',
   }) {
     if (payload is Map) {
-      final message = payload['message'] ??
+      final message =
+          payload['message'] ??
           payload['error'] ??
           payload['detail'];
 
-      if (message is String && message.trim().isNotEmpty) {
+      if (message is String &&
+          message.trim().isNotEmpty) {
         return message.trim();
       }
 
       final errors = payload['errors'];
 
-      if (errors is Map && errors.isNotEmpty) {
+      if (errors is Map &&
+          errors.isNotEmpty) {
         final first = errors.values.first;
 
-        if (first is List && first.isNotEmpty) {
+        if (first is List &&
+            first.isNotEmpty) {
           return first.first.toString();
         }
 
-        if (first is String && first.trim().isNotEmpty) {
+        if (first is String &&
+            first.trim().isNotEmpty) {
           return first.trim();
         }
       }
     }
 
-    if (payload is String && payload.trim().isNotEmpty) {
+    if (payload is String &&
+        payload.trim().isNotEmpty) {
       return payload.trim();
     }
 
@@ -120,7 +193,8 @@ class ApiClient {
         },
       );
 
-      if (response.statusCode == 200 && response.data is Map) {
+      if (response.statusCode == 200 &&
+          response.data is Map) {
         return Map<String, dynamic>.from(
           response.data as Map,
         );
@@ -149,7 +223,8 @@ class ApiClient {
         '/api/v1/user',
       );
 
-      if (response.statusCode == 200 && response.data is Map) {
+      if (response.statusCode == 200 &&
+          response.data is Map) {
         return Map<String, dynamic>.from(
           response.data as Map,
         );
@@ -162,7 +237,8 @@ class ApiClient {
       throw Exception(
         parseApiError(
           e.response?.data,
-          fallback: 'No se pudo cargar el perfil',
+          fallback:
+              'No se pudo cargar el perfil',
         ),
       );
     }
@@ -181,7 +257,8 @@ class ApiClient {
         data: payload,
       );
 
-      if (response.statusCode == 200 && response.data is Map) {
+      if (response.statusCode == 200 &&
+          response.data is Map) {
         return Map<String, dynamic>.from(
           response.data as Map,
         );
@@ -194,7 +271,8 @@ class ApiClient {
       throw Exception(
         parseApiError(
           e.response?.data,
-          fallback: 'No se pudo actualizar el perfil',
+          fallback:
+              'No se pudo actualizar el perfil',
         ),
       );
     }
@@ -214,11 +292,13 @@ class ApiClient {
         data: {
           'password_actual': currentPassword,
           'password_nueva': newPassword,
-          'password_nueva_confirmation': newPassword,
+          'password_nueva_confirmation':
+              newPassword,
         },
       );
 
-      if (response.statusCode == 200 && response.data is Map) {
+      if (response.statusCode == 200 &&
+          response.data is Map) {
         return Map<String, dynamic>.from(
           response.data as Map,
         );
@@ -231,7 +311,8 @@ class ApiClient {
       throw Exception(
         parseApiError(
           e.response?.data,
-          fallback: 'No se pudo cambiar la contraseña',
+          fallback:
+              'No se pudo cambiar la contraseña',
         ),
       );
     }
@@ -252,7 +333,8 @@ class ApiClient {
         },
       );
 
-      if (response.statusCode == 200 && response.data is Map) {
+      if (response.statusCode == 200 &&
+          response.data is Map) {
         return Map<String, dynamic>.from(
           response.data as Map,
         );
@@ -265,7 +347,8 @@ class ApiClient {
       throw Exception(
         parseApiError(
           e.response?.data,
-          fallback: 'No se pudo recuperar la contraseña',
+          fallback:
+              'No se pudo recuperar la contraseña',
         ),
       );
     }
@@ -290,7 +373,8 @@ class ApiClient {
         },
       );
 
-      if (response.statusCode == 200 && response.data is Map) {
+      if (response.statusCode == 200 &&
+          response.data is Map) {
         return Map<String, dynamic>.from(
           response.data as Map,
         );
@@ -303,7 +387,8 @@ class ApiClient {
       throw Exception(
         parseApiError(
           e.response?.data,
-          fallback: 'No se pudo restablecer la contraseña',
+          fallback:
+              'No se pudo restablecer la contraseña',
         ),
       );
     }
@@ -319,7 +404,8 @@ class ApiClient {
         '/api/v1/me/permissions',
       );
 
-      if (response.statusCode == 200 && response.data is Map) {
+      if (response.statusCode == 200 &&
+          response.data is Map) {
         return Map<String, dynamic>.from(
           response.data as Map,
         );
@@ -332,7 +418,8 @@ class ApiClient {
       throw Exception(
         parseApiError(
           e.response?.data,
-          fallback: 'No se pudieron cargar los permisos',
+          fallback:
+              'No se pudieron cargar los permisos',
         ),
       );
     }
@@ -342,14 +429,17 @@ class ApiClient {
   // ESTADO OPERATIVO
   // ============================================================
 
-  Future<Map<String, dynamic>> getOperationStatus() async {
+  Future<Map<String, dynamic>>
+      getOperationStatus() async {
     try {
       final response = await _dio.get(
         '/api/v1/operacion/estado',
       );
 
-      if (response.statusCode == 200 && response.data is Map) {
-        final payload = Map<String, dynamic>.from(
+      if (response.statusCode == 200 &&
+          response.data is Map) {
+        final payload =
+            Map<String, dynamic>.from(
           response.data as Map,
         );
 
@@ -367,7 +457,8 @@ class ApiClient {
       throw Exception(
         parseApiError(
           e.response?.data,
-          fallback: 'No se pudo consultar el estado operativo',
+          fallback:
+              'No se pudo consultar el estado operativo',
         ),
       );
     }
@@ -377,14 +468,17 @@ class ApiClient {
   // CAJA ACTUAL
   // ============================================================
 
-  Future<Map<String, dynamic>?> getCurrentCashRegister() async {
+  Future<Map<String, dynamic>?>
+      getCurrentCashRegister() async {
     try {
       final response = await _dio.get(
         '/api/v1/cajas/actual',
       );
 
-      if (response.statusCode == 200 && response.data is Map) {
-        final data = (response.data as Map)['data'];
+      if (response.statusCode == 200 &&
+          response.data is Map) {
+        final data =
+            (response.data as Map)['data'];
 
         return data is Map
             ? Map<String, dynamic>.from(data)
@@ -398,7 +492,8 @@ class ApiClient {
       throw Exception(
         parseApiError(
           e.response?.data,
-          fallback: 'No se pudo consultar la caja actual',
+          fallback:
+              'No se pudo consultar la caja actual',
         ),
       );
     }
@@ -416,7 +511,8 @@ class ApiClient {
       '/api/v1/cajas/abrir',
       {
         'monto_apertura': openingAmount,
-        if (notes != null && notes.trim().isNotEmpty)
+        if (notes != null &&
+            notes.trim().isNotEmpty)
           'notas': notes.trim(),
       },
     );
@@ -434,8 +530,10 @@ class ApiClient {
     return _postOperation(
       '/api/v1/cajas/$cashRegisterId/cerrar',
       {
-        'monto_cierre_declarado': declaredAmount,
-        if (notes != null && notes.trim().isNotEmpty)
+        'monto_cierre_declarado':
+            declaredAmount,
+        if (notes != null &&
+            notes.trim().isNotEmpty)
           'notas': notes.trim(),
       },
     );
@@ -445,7 +543,8 @@ class ApiClient {
   // MESAS
   // ============================================================
 
-  Future<List<Map<String, dynamic>>> getTables() async {
+  Future<List<Map<String, dynamic>>>
+      getTables() async {
     try {
       final response = await _dio.get(
         '/api/v1/mesas',
@@ -459,7 +558,10 @@ class ApiClient {
         return data
             .whereType<Map>()
             .map(
-              (item) => Map<String, dynamic>.from(item),
+              (item) =>
+                  Map<String, dynamic>.from(
+                item,
+              ),
             )
             .toList();
       }
@@ -469,7 +571,8 @@ class ApiClient {
       throw Exception(
         parseApiError(
           e.response?.data,
-          fallback: 'No se pudieron consultar las mesas',
+          fallback:
+              'No se pudieron consultar las mesas',
         ),
       );
     }
@@ -488,10 +591,13 @@ class ApiClient {
   }) {
     final payload = <String, dynamic>{
       'nombre': name.trim(),
-      if (capacity != null) 'capacidad': capacity,
-      if (notes != null && notes.trim().isNotEmpty)
+      if (capacity != null)
+        'capacidad': capacity,
+      if (notes != null &&
+          notes.trim().isNotEmpty)
         'notas': notes.trim(),
-      if (active != null) 'activo': active,
+      if (active != null)
+        'activo': active,
     };
 
     if (id == null) {
@@ -534,7 +640,8 @@ class ApiClient {
       throw Exception(
         parseApiError(
           e.response?.data,
-          fallback: 'No se pudo completar la operación',
+          fallback:
+              'No se pudo completar la operación',
         ),
       );
     }
@@ -567,7 +674,8 @@ class ApiClient {
       throw Exception(
         parseApiError(
           e.response?.data,
-          fallback: 'No se pudo completar la operación',
+          fallback:
+              'No se pudo completar la operación',
         ),
       );
     }
@@ -608,7 +716,8 @@ class ApiClient {
       throw Exception(
         parseApiError(
           e.response?.data,
-          fallback: 'No se pudo descargar el catálogo',
+          fallback:
+              'No se pudo descargar el catálogo',
         ),
       );
     }
@@ -621,28 +730,182 @@ class ApiClient {
   Future<Map<String, dynamic>> syncOffline(
     Map<String, dynamic> payload,
   ) async {
-    try {
-      final response = await _dio.post(
-        '/api/v1/sync/offline',
-        data: payload,
+    /*
+     * Extraer ventas del payload.
+     *
+     * Se acepta únicamente una lista.
+     */
+    final dynamic ventasRaw =
+        payload['ventas'];
+
+    /*
+     * Cuando el sincronizador no tiene ventas
+     * pendientes, NO se debe realizar una petición
+     * HTTP al endpoint /sync/offline.
+     *
+     * Esto evita los 422 repetitivos.
+     */
+    if (ventasRaw == null) {
+      print(
+        '🔄 Sync offline: no hay campo "ventas". '
+        'No se realizará petición.',
       );
 
-      if (response.statusCode == 200 &&
-          response.data is Map) {
-        return Map<String, dynamic>.from(
-          response.data as Map,
+      return <String, dynamic>{
+        'message':
+            'No hay ventas offline pendientes.',
+        'procesadas': <dynamic>[],
+        'errores': <dynamic>[],
+        'total_recibidas': 0,
+        'total_procesadas': 0,
+        'total_errores': 0,
+        'sincronizado': false,
+      };
+    }
+
+    if (ventasRaw is! List) {
+      print(
+        '❌ Sync offline: el campo "ventas" '
+        'no es una lista válida.',
+      );
+
+      throw Exception(
+        'El campo ventas debe ser una lista válida.',
+      );
+    }
+
+    /*
+     * No enviar una petición vacía.
+     */
+    if (ventasRaw.isEmpty) {
+      print(
+        '🔄 Sync offline: 0 ventas pendientes. '
+        'No se realizará petición HTTP.',
+      );
+
+      return <String, dynamic>{
+        'message':
+            'No hay ventas offline pendientes.',
+        'procesadas': <dynamic>[],
+        'errores': <dynamic>[],
+        'total_recibidas': 0,
+        'total_procesadas': 0,
+        'total_errores': 0,
+        'sincronizado': false,
+      };
+    }
+
+    /*
+     * Validación local básica de cada venta.
+     *
+     * La validación completa continúa correspondiendo
+     * al backend Laravel.
+     */
+    final ventasValidas =
+        <Map<String, dynamic>>[];
+
+    for (var i = 0; i < ventasRaw.length; i++) {
+      final venta = ventasRaw[i];
+
+      if (venta is! Map) {
+        throw Exception(
+          'La venta en la posición $i no es un objeto válido.',
         );
       }
 
+      final ventaMap =
+          Map<String, dynamic>.from(venta);
+
+      final uuidLocal =
+          ventaMap['uuid_local'];
+
+      if (uuidLocal == null ||
+          uuidLocal.toString().trim().isEmpty) {
+        throw Exception(
+          'La venta en la posición $i no contiene uuid_local.',
+        );
+      }
+
+      final productos =
+          ventaMap['productos'];
+
+      if (productos is! List ||
+          productos.isEmpty) {
+        throw Exception(
+          'La venta $uuidLocal no contiene productos.',
+        );
+      }
+
+      ventasValidas.add(ventaMap);
+    }
+
+    /*
+     * Construir SIEMPRE el contrato esperado por Laravel.
+     */
+    final requestPayload = <String, dynamic>{
+      'ventas': ventasValidas,
+    };
+
+    print(
+      '🔄 Sync offline iniciado.',
+    );
+
+    print(
+      '📦 Ventas a sincronizar: '
+      '${ventasValidas.length}',
+    );
+
+    print(
+      '📤 Payload sync offline: '
+      '$requestPayload',
+    );
+
+    try {
+      final response = await _dio.post(
+        '/api/v1/sync/offline',
+        data: requestPayload,
+      );
+
+      if ((response.statusCode == 200 ||
+              response.statusCode == 201) &&
+          response.data is Map) {
+        final result =
+            Map<String, dynamic>.from(
+          response.data as Map,
+        );
+
+        print(
+          '✅ Sync offline completado.',
+        );
+
+        print(
+          '✅ Respuesta: $result',
+        );
+
+        return result;
+      }
+
       throw Exception(
-        'No se pudo sincronizar la venta fuera de línea',
+        'No se pudo sincronizar la venta fuera de línea.',
       );
     } on DioException catch (e) {
+      print(
+        '❌ Error sincronizando ventas offline.',
+      );
+
+      print(
+        '❌ Código: ${e.response?.statusCode}',
+      );
+
+      print(
+        '❌ Data: ${e.response?.data}',
+      );
+
       throw Exception(
         parseApiError(
           e.response?.data,
           fallback:
-              'No se pudo sincronizar la venta fuera de línea',
+              'No se pudo sincronizar la venta fuera de línea.',
         ),
       );
     }
@@ -679,7 +942,8 @@ class ApiClient {
       throw Exception(
         parseApiError(
           e.response?.data,
-          fallback: 'No se pudieron obtener los cambios',
+          fallback:
+              'No se pudieron obtener los cambios',
         ),
       );
     }
@@ -712,7 +976,8 @@ class ApiClient {
       throw Exception(
         parseApiError(
           e.response?.data,
-          fallback: 'No se pudo completar la sincronización',
+          fallback:
+              'No se pudo completar la sincronización',
         ),
       );
     }
@@ -746,7 +1011,8 @@ class ApiClient {
       throw Exception(
         parseApiError(
           e.response?.data,
-          fallback: 'No se pudo sincronizar la venta',
+          fallback:
+              'No se pudo sincronizar la venta',
         ),
       );
     }
@@ -780,7 +1046,8 @@ class ApiClient {
       throw Exception(
         parseApiError(
           e.response?.data,
-          fallback: 'No se pudo procesar la devolución',
+          fallback:
+              'No se pudo procesar la devolución',
         ),
       );
     }
@@ -798,7 +1065,8 @@ class ApiClient {
       final response = await _dio.post(
         '/api/v1/ventas/$saleId/anular',
         data: {
-          if (reason != null && reason.trim().isNotEmpty)
+          if (reason != null &&
+              reason.trim().isNotEmpty)
             'motivo': reason.trim(),
         },
       );
@@ -817,7 +1085,8 @@ class ApiClient {
       throw Exception(
         parseApiError(
           e.response?.data,
-          fallback: 'No se pudo cancelar la venta',
+          fallback:
+              'No se pudo cancelar la venta',
         ),
       );
     }
@@ -827,7 +1096,8 @@ class ApiClient {
   // CONFIGURACIÓN DE EMPRESA
   // ============================================================
 
-  Future<Map<String, dynamic>> getCompanyConfig() async {
+  Future<Map<String, dynamic>>
+      getCompanyConfig() async {
     try {
       final response = await _dio.get(
         '/api/v1/admin/empresa/config',
@@ -854,7 +1124,8 @@ class ApiClient {
     }
   }
 
-  Future<Map<String, dynamic>> updateCompanyConfig(
+  Future<Map<String, dynamic>>
+      updateCompanyConfig(
     Map<String, dynamic> payload,
   ) async {
     try {
@@ -888,7 +1159,8 @@ class ApiClient {
   // CONFIGURACIÓN DE TICKET
   // ============================================================
 
-  Future<Map<String, dynamic>> getTicketConfig() async {
+  Future<Map<String, dynamic>>
+      getTicketConfig() async {
     try {
       final response = await _dio.get(
         '/api/v1/ticket/config',
@@ -915,7 +1187,8 @@ class ApiClient {
     }
   }
 
-  Future<Map<String, dynamic>> updateTicketConfig(
+  Future<Map<String, dynamic>>
+      updateTicketConfig(
     Map<String, dynamic> payload,
   ) async {
     try {
@@ -949,7 +1222,8 @@ class ApiClient {
   // COMPARTIR REPORTE DIARIO
   // ============================================================
 
-  Future<Map<String, dynamic>> shareDailyReport(
+  Future<Map<String, dynamic>>
+      shareDailyReport(
     Map<String, dynamic> payload,
   ) async {
     try {
@@ -972,7 +1246,8 @@ class ApiClient {
       throw Exception(
         parseApiError(
           e.response?.data,
-          fallback: 'No se pudo compartir el reporte',
+          fallback:
+              'No se pudo compartir el reporte',
         ),
       );
     }

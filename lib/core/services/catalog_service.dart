@@ -3,59 +3,22 @@ import '../network/api_client.dart';
 
 class CatalogService {
   final ApiClient _apiClient;
+  final PosDatabaseService _dbService;
 
-  CatalogService({ApiClient? apiClient})
-      : _apiClient = apiClient ?? ApiClient();
+  CatalogService({ApiClient? apiClient, PosDatabaseService? dbService})
+      : _apiClient = apiClient ?? ApiClient(),
+        _dbService = dbService ?? PosDatabaseService();
 
-  Future<List<Map<String, dynamic>>> syncCatalog({
-    required int companyId,
-    required int userId,
-    DateTime? businessDate,
-  }) async {
-    final response = await _apiClient.getCatalog();
-
-    // El endpoint /api/v1/catalogos devuelve el catálogo completo.
-    // Aquí solamente necesitamos la lista de productos.
-    dynamic productsData = response['productos'];
-
-    // Soporte por si Laravel envuelve la respuesta dentro de "data".
-    if (productsData == null && response['data'] is Map) {
-      final data = Map<String, dynamic>.from(response['data'] as Map);
-      productsData = data['productos'];
-    }
-
-    final remoteProducts = productsData is List
-        ? productsData
-            .whereType<Map>()
-            .map(
-              (item) => Map<String, dynamic>.from(item),
-            )
-            .toList()
-        : <Map<String, dynamic>>[];
-
-    final db = await PosDatabaseService().open(
-      companyId: companyId,
-      userId: userId,
-      businessDate: businessDate ?? DateTime.now(),
-    );
-
-    await PosDatabaseService().upsertProducts(
-      db,
-      remoteProducts,
-    );
-
-    return remoteProducts;
+  Future<List<Map<String, dynamic>>> syncCatalog({required int companyId, required int userId, DateTime? businessDate, bool force = false}) async {
+    final response = await _apiClient.getCatalog(desde: force ? null : null);
+    final data = response['data'] is Map ? Map<String, dynamic>.from(response['data']) : response;
+    final raw = data['productos'];
+    final products = raw is List ? raw.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList() : <Map<String, dynamic>>[];
+    final db = await _dbService.open(companyId: companyId, userId: userId, businessDate: businessDate ?? DateTime.now());
+    await _dbService.upsertProducts(db, products);
+    return products;
   }
 
-  Future<List<Map<String, dynamic>>> downloadCatalogForToday({
-    required int companyId,
-    required int userId,
-    DateTime? businessDate,
-  }) async {
-    return syncCatalog(
-      companyId: companyId,
-      userId: userId,
-      businessDate: businessDate ?? DateTime.now(),
-    );
-  }
+  Future<List<Map<String, dynamic>>> downloadCatalogForToday({required int companyId, required int userId, DateTime? businessDate}) =>
+      syncCatalog(companyId: companyId, userId: userId, businessDate: businessDate ?? DateTime.now(), force: true);
 }

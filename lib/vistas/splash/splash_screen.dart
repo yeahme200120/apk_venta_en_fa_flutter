@@ -4,19 +4,24 @@ import 'package:flutter/material.dart';
 
 import '../../core/services/auth_service.dart';
 import '../auth/login_screen.dart';
-import '../pos/pos_screen.dart';
+import '../home_shell.dart';
 
 class SplashScreen extends StatefulWidget {
-  const SplashScreen({super.key});
+  const SplashScreen({
+    super.key,
+  });
 
   @override
-  State<SplashScreen> createState() => _SplashScreenState();
+  State<SplashScreen> createState() =>
+      _SplashScreenState();
 }
 
-class _SplashScreenState extends State<SplashScreen> {
+class _SplashScreenState
+    extends State<SplashScreen> {
   Timer? _timer;
 
-  final AuthService _authService = AuthService();
+  final AuthService _authService =
+      AuthService();
 
   @override
   void initState() {
@@ -26,47 +31,39 @@ class _SplashScreenState extends State<SplashScreen> {
   }
 
   Future<void> _verificarSesion() async {
-    // Mantener el splash visible durante 2 segundos.
-    await Future.delayed(const Duration(seconds: 2));
+    await Future.delayed(
+      const Duration(seconds: 2),
+    );
 
-    if (!mounted) return;
+    if (!mounted) {
+      return;
+    }
 
     try {
-      final hasSession = await _authService.hasSession();
+      final hasSession =
+          await _authService.hasSession();
 
-      if (!mounted) return;
+      if (!mounted) {
+        return;
+      }
 
       if (hasSession) {
-        // ========================================================
-        // SESIÓN EXISTENTE
-        // ========================================================
-        //
-        // El usuario ya inició sesión anteriormente.
-        // No mostramos nuevamente el Login.
-        //
         Navigator.of(context).pushReplacement(
           MaterialPageRoute(
-            builder: (_) => const PosScreen(),
+            builder: (_) => const HomeShell(),
           ),
         );
       } else {
-        // ========================================================
-        // SIN SESIÓN
-        // ========================================================
-        //
-        // Es necesario iniciar sesión.
-        //
         Navigator.of(context).pushReplacement(
           MaterialPageRoute(
             builder: (_) => const LoginScreen(),
           ),
         );
       }
-    } catch (e) {
-      // Si ocurre algún problema leyendo la sesión,
-      // mandamos al usuario al Login por seguridad.
-
-      if (!mounted) return;
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
 
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(
@@ -84,8 +81,11 @@ class _SplashScreenState extends State<SplashScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final colors =
+        Theme.of(context).colorScheme;
+
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F5F5),
+      backgroundColor: colors.surface,
       body: Center(
         child: Image.asset(
           'assets/images/logo.png',

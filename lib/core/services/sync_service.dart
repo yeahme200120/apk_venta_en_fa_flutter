@@ -1,341 +1,201 @@
+import 'dart:async';
 import 'dart:convert';
-import 'package:sqflite/sqflite.dart';
+
 import '../database/local_db.dart';
 import '../database/pos_db_service.dart';
 import '../network/api_client.dart';
+import '../storage/app_storage.dart';
 
+class SyncResult {
+  const SyncResult({required this.total, required this.synced, required this.failed, required this.skipped});
+  final int total;
+  final int synced;
+  final int failed;
+  final int skipped;
+}
+
+/// Coordinador único de sincronización.
+///
+/// PosDatabaseService = operación del día.
+/// LocalDb = histórico/cola multidía.
 class SyncService {
   final ApiClient _apiClient;
-  final PosDatabaseService _dbService;
-  final LocalDb _localDb;
+  final PosDatabaseService _dayDb;
+  final LocalDb _historyDb;
 
-  SyncService({
-    ApiClient? apiClient,
-    PosDatabaseService? posDbService,
-    LocalDb? localDb,
-  })  : _apiClient = apiClient ?? ApiClient(),
-        _dbService = posDbService ?? PosDatabaseService(),
-        _localDb = localDb ?? LocalDb();
+  SyncService({ApiClient? apiClient, PosDatabaseService? posDbService, LocalDb? localDb})
+      : _apiClient = apiClient ?? ApiClient(),
+        _dayDb = posDbService ?? PosDatabaseService(),
+        _historyDb = localDb ?? LocalDb();
 
-  // ============================================================
-  // VENTAS PENDIENTES
-  // ============================================================
+  static bool _running = false;
 
-  Future<void> syncPendingSales({
-    required int companyId,
-    required int userId,
-    required DateTime businessDate,
-  }) async {
-    final queue = await _dbService.getPendingOutbox(
-      companyId: companyId,
-      userId: userId,
-      businessDate: businessDate,
-    );
-
-    final localSales = await _localDb.getPendingSales();
-
-    // ----------------------------------------------------------
-    // Ventas almacenadas directamente en LocalDb
-    // ----------------------------------------------------------
-
-    for (final sale in localSales) {
-      final saleId = int.tryParse('${sale['id'] ?? 0}') ?? 0;
-      if (saleId == 0) continue;
-
-      final status = (sale['status'] ?? 'pending').toString().toLowerCase();
-
-      // ✅ Si la venta está cancelada, no se envía al backend
-      // Simplemente se marca como sincronizada (no hay nada que crear)
-      if (status == 'cancelled') {
-        await _localDb.markSaleAsSynced(saleId);
-        continue;
-      }
-
-      // Para ventas pagadas o pendientes, se envían al backend
-      try {
-        final items = await _localDb.getSaleItemsBySaleId(saleId);
-        final payments = await _localDb.getSalePaymentsBySaleId(saleId);
-
-        final totalVenta = double.tryParse(sale['total']?.toString() ?? '0') ?? 0;
-        final changeDue = double.tryParse(sale['change_due']?.toString() ?? '0') ?? 0;
-
-        List<Map<String, dynamic>> pagosNetos = [];
-        double sumNeto = 0.0;
-        bool efectivoAjustado = false;
-
-        for (final payment in payments) {
-          final method = payment['method'] ?? '';
-          final montoOriginal = double.tryParse(payment['amount']?.toString() ?? '0') ?? 0;
-
-          double montoNeto;
-          double cambioPago = 0.0;
-
-          if (method.toLowerCase() == 'efectivo' && !efectivoAjustado) {
-            montoNeto = montoOriginal - changeDue;
-            cambioPago = changeDue;
-            efectivoAjustado = true;
-          } else if (method.toLowerCase() == 'efectivo' && efectivoAjustado) {
-            montoNeto = montoOriginal;
-            cambioPago = 0.0;
-          } else {
-            montoNeto = montoOriginal;
-            cambioPago = 0.0;
-          }
-
-          pagosNetos.add({
-            'forma_pago': _mapPaymentMethod(method),
-            'monto': montoNeto,
-            'cambio': cambioPago,
-            'referencia': payment['referencia'] ?? null,
-          });
-          sumNeto += montoNeto;
-        }
-
-        final diff = totalVenta - sumNeto;
-        if (diff.abs() > 0.001) {
-          int? indexToAdjust;
-          for (int i = 0; i < pagosNetos.length; i++) {
-            if (pagosNetos[i]['forma_pago'] == 'Efectivo') {
-              indexToAdjust = i;
-              break;
-            }
-          }
-          if (indexToAdjust == null && pagosNetos.isNotEmpty) {
-            indexToAdjust = 0;
-          }
-
-          if (indexToAdjust != null) {
-            final nuevoMonto = (pagosNetos[indexToAdjust]['monto'] as double) + diff;
-            pagosNetos[indexToAdjust]['monto'] = nuevoMonto;
-            sumNeto += diff;
-          } else {
-            pagosNetos.add({
-              'forma_pago': 'Efectivo',
-              'monto': diff,
-              'cambio': 0.0,
-              'referencia': null,
-            });
-            sumNeto += diff;
-          }
-        }
-
-        final payload = {
-          'cliente_id': sale['cliente_id'] ?? null,
-          'productos': items.map((item) => {
-            'producto_id': item['product_id'],
-            'cantidad': item['quantity'],
-            'precio': item['unit_price'],
-            'descuento': item['descuento'] ?? 0,
-          }).toList(),
-          'pagos': pagosNetos,
-          'descuento_global': sale['descuento_global'] ?? 0,
-          'impuesto_global': sale['impuesto_global'] ?? 0,
-          'notas': sale['notas'] ?? '',
-        };
-
-        await _apiClient.createSale(payload);
-        // ✅ Ahora markSaleAsSynced solo actualiza sync_status, no status
-        await _localDb.markSaleAsSynced(saleId);
-      } catch (e) {
-        // Si falla, se mantiene el status comercial y sync_status se pone a failed
-        await _localDb.updateSaleStatus(
-          saleId,
-          status, // Mantiene el mismo status comercial
-          syncStatus: 'failed',
-        );
-      }
+  Future<SyncResult> syncPendingSales({required int companyId, required int userId, required DateTime businessDate, int? limit}) async {
+    if (_running) return const SyncResult(total: 0, synced: 0, failed: 0, skipped: 0);
+    if (await AppStorage().isOfflineSession()) {
+      return const SyncResult(total: 0, synced: 0, failed: 0, skipped: 0);
     }
-
-    // ----------------------------------------------------------
-    // Ventas almacenadas en Outbox (PosDatabaseService)
-    // (Aquí se aplica la misma lógica si se usara outbox)
-    // ----------------------------------------------------------
-
-    for (final item in queue) {
-      final uuidLocal = item['uuid_local'] as String;
-      final attempts = item['attempts'] is int
-          ? item['attempts'] as int
-          : int.tryParse('${item['attempts'] ?? 0}') ?? 0;
-
-      try {
-        final payload = jsonDecode(item['payload'] as String) as Map<String, dynamic>;
-        // Si el payload incluye status, se podría filtrar cancelados, pero asumimos que outbox solo contiene ventas a crear
-        await _apiClient.createSale(payload);
-        await _dbService.markOutboxSynced(
-          companyId: companyId,
-          userId: userId,
-          businessDate: businessDate,
-          uuidLocal: uuidLocal,
-        );
-      } catch (error) {
-        await _dbService.markOutboxFailed(
-          companyId: companyId,
-          userId: userId,
-          businessDate: businessDate,
-          uuidLocal: uuidLocal,
-          error: error.toString(),
-          attempts: attempts + 1,
-        );
+    _running = true;
+    var total = 0, synced = 0, failed = 0, skipped = 0;
+    try {
+      // Primero procesa el histórico: puede contener ventas de hace días.
+      final historical = await _historyDb.getPendingSalesReadyToSync(limit: limit);
+      for (final sale in historical) {
+        total++;
+        final ok = await _syncHistoricalSale(sale);
+        ok ? synced++ : failed++;
       }
+
+      // Después procesa la base diaria.
+      final dayOutbox = await _dayDb.getPendingOutbox(companyId: companyId, userId: userId, businessDate: businessDate, limit: limit);
+      for (final item in dayOutbox) {
+        total++;
+        final ok = await _syncDayOutbox(companyId, userId, businessDate, item);
+        ok ? synced++ : failed++;
+      }
+
+      return SyncResult(total: total, synced: synced, failed: failed, skipped: skipped);
+    } finally {
+      _running = false;
     }
   }
 
-  // ============================================================
-  // CATÁLOGOS (sin cambios)
-  // ============================================================
+  Future<bool> syncSaleById(int saleId) async {
+    final sale = await _historyDb.getSaleById(saleId);
+    if (sale == null) return false;
+    if (sale['sync_status'] == 'synced') return true;
+    return _syncHistoricalSale(sale, force: true);
+  }
+
+  Future<bool> _syncHistoricalSale(Map<String, dynamic> sale, {bool force = false}) async {
+    final id = _toInt(sale['id']);
+    if (id <= 0) return false;
+    if (!force && sale['next_retry_at'] != null && DateTime.tryParse(sale['next_retry_at'].toString())?.isAfter(DateTime.now()) == true) return true;
+    if (sale['status']?.toString().toLowerCase() == 'cancelled') {
+      await _historyDb.markSaleAsSynced(id, serverResponse: {'server_id': sale['server_id'], 'folio': sale['server_folio']});
+      return true;
+    }
+
+    await _historyDb.markSaleSyncing(id);
+    try {
+      final payload = await _buildHistoricalPayload(sale);
+      payload['uuid_local'] = sale['uuid_local'];
+      payload['business_date'] = sale['business_date'];
+      final response = await _apiClient.syncOffline(payload);
+      await _historyDb.markSaleAsSynced(id, serverResponse: response);
+      return true;
+    } catch (e) {
+      await _historyDb.markSaleSyncFailed(id, e.toString());
+      return false;
+    }
+  }
+
+  Future<Map<String, dynamic>> _buildHistoricalPayload(Map<String, dynamic> sale) async {
+    final id = _toInt(sale['id']);
+    final items = await _historyDb.getSaleItemsBySaleId(id);
+    final payments = await _historyDb.getSalePaymentsBySaleId(id);
+    return _buildPayload(sale, items, payments);
+  }
+
+  Future<bool> _syncDayOutbox(int companyId, int userId, DateTime date, Map<String, dynamic> item) async {
+    final uuid = item['uuid_local']?.toString() ?? '';
+    if (uuid.isEmpty) return false;
+    final attempts = _toInt(item['attempts']);
+    try {
+      final payload = jsonDecode(item['payload']?.toString() ?? '{}');
+      if (payload is! Map) throw const FormatException('Payload de sincronización inválido.');
+      final map = Map<String, dynamic>.from(payload);
+      map['uuid_local'] = uuid;
+      map['business_date'] ??= date.toIso8601String().substring(0, 10);
+      final response = await _apiClient.syncOffline(map);
+      await _dayDb.markOutboxSynced(companyId: companyId, userId: userId, businessDate: date, uuidLocal: uuid, serverResponse: response);
+      return true;
+    } catch (e) {
+      await _dayDb.markOutboxFailed(companyId: companyId, userId: userId, businessDate: date, uuidLocal: uuid, error: e.toString(), attempts: attempts + 1);
+      return false;
+    }
+  }
+
+  Map<String, dynamic> _buildPayload(Map<String, dynamic> sale, List<Map<String, dynamic>> items, List<Map<String, dynamic>> payments) {
+    final total = _toDouble(sale['total']);
+    final changeDue = _toDouble(sale['change_due']);
+    final normalized = <Map<String, dynamic>>[];
+    var cashAdjusted = false;
+    var sum = 0.0;
+
+    for (final p in payments) {
+      final method = p['method']?.toString() ?? '';
+      final original = _toDouble(p['amount']);
+      var amount = original;
+      var change = 0.0;
+      if (method.trim().toLowerCase() == 'efectivo' && !cashAdjusted) {
+        amount = original - changeDue;
+        change = changeDue;
+        cashAdjusted = true;
+      }
+      if (amount < 0) amount = 0;
+      normalized.add({'forma_pago': _mapPaymentMethod(method), 'monto': amount, 'cambio': change, 'referencia': p['referencia']});
+      sum += amount;
+    }
+
+    final diff = total - sum;
+    if (diff.abs() > 0.001) {
+      if (normalized.isNotEmpty) {
+        normalized[0]['monto'] = _toDouble(normalized[0]['monto']) + diff;
+      } else {
+        normalized.add({'forma_pago': 'Efectivo', 'monto': diff, 'cambio': 0.0, 'referencia': null});
+      }
+    }
+
+    return {
+      'cliente_id': sale['cliente_id'],
+      'productos': items.map((i) => {'producto_id': _toInt(i['product_id']), 'cantidad': _toDouble(i['quantity']), 'precio': _toDouble(i['unit_price']), 'descuento': _toDouble(i['descuento'])}).toList(),
+      'pagos': normalized,
+      'descuento_global': _toDouble(sale['descuento_global']),
+      'impuesto_global': _toDouble(sale['impuesto_global']),
+      'notas': sale['notas']?.toString() ?? '',
+    };
+  }
+
+  /// Mueve pendientes de la base diaria a la histórica.
+  /// Debe ejecutarse antes de borrar el archivo del día.
+  Future<int> archivePendingSalesFromDay({required int companyId, required int userId, required DateTime businessDate}) async {
+    final db = await _dayDb.open(companyId: companyId, userId: userId, businessDate: businessDate);
+    final rows = await db.query('sales', where: "sync_status IN ('pending','failed','syncing')", orderBy: 'created_at ASC');
+    var count = 0;
+    for (final sale in rows) {
+      final uuid = sale['uuid_local']?.toString() ?? '';
+      if (uuid.isEmpty) continue;
+      final items = await _dayDb.getSaleItems(db, _toInt(sale['id']));
+      final payments = await _dayDb.getSalePayments(db, _toInt(sale['id']));
+      await _historyDb.archiveDailySale(sale: sale, items: items, payments: payments);
+      count++;
+    }
+    return count;
+  }
 
   Future<void> syncCatalogs({bool force = false}) async {
-    try {
-      final response = await _apiClient.getCatalog();
-      if (response.isEmpty) return;
-
-      await _saveProducts(response['productos']);
-      await _saveCatalog(table: 'clients', data: response['clientes']);
-      await _saveCatalog(table: 'taxes', data: response['impuestos']);
-      await _saveCatalog(table: 'payment_methods', data: response['formas_pago']);
-      await _saveCatalog(table: 'units', data: response['unidades_medida']);
-      await _saveCatalog(table: 'categories', data: response['categorias']);
-      await _saveCatalog(table: 'promotions', data: response['promociones']);
-      await _saveCatalog(table: 'coupons', data: response['cupones']);
-
-      final versions = response['versiones'] as Map<String, dynamic>?;
-      if (versions != null) {
-        await _saveCatalogVersions(versions);
-      }
-    } catch (e) {
-      rethrow;
-    }
+    final versions = await _historyDb.getCatalogVersions();
+    final cursor = await _historyDb.getCatalogCursor('global');
+    final response = await _apiClient.getCatalog(desde: force ? null : cursor ?? versions['global']);
+    if (response.isEmpty) return;
+    await _historyDb.syncCatalogs(response);
+    final nextCursor = response['next_cursor']?.toString() ?? response['cursor']?.toString();
+    final nextVersion = response['version']?.toString() ?? (response['versiones'] is Map ? (response['versiones'] as Map)['global']?.toString() : null);
+    if (nextCursor != null || nextVersion != null) await _historyDb.setCatalogVersion('global', nextVersion, cursor: nextCursor);
   }
 
-  // ============================================================
-  // MÉTODOS PRIVADOS (sin cambios)
-  // ============================================================
-
-  Future<void> _saveProducts(dynamic data) async {
-    if (data is! List) return;
-    final db = await _localDb.database;
-    await db.transaction((txn) async {
-      for (final item in data) {
-        if (item is! Map) continue;
-        final map = Map<String, dynamic>.from(item);
-        final id = _toInt(map['id']);
-        if (id == null) continue;
-        await txn.insert(
-          'products',
-          {
-            'id': id,
-            'code': _toString(map['codigo'] ?? map['code'] ?? map['clave']),
-            'name': _toString(map['nombre'] ?? map['name'] ?? 'Producto'),
-            'price': _toDouble(map['precio'] ?? map['price'] ?? 0),
-            'stock': _toDouble(map['stock'] ?? 0),
-            'is_active': _toBoolInt(map['activo'] ?? map['is_active'] ?? true),
-          },
-          conflictAlgorithm: ConflictAlgorithm.replace,
-        );
-      }
-    });
+  /// Aplica únicamente cambios entregados por el servidor desde el cursor.
+  Future<Map<String, dynamic>> syncPull() async {
+    final cursor = await _historyDb.getCatalogCursor('server_changes');
+    final response = await _apiClient.syncPull(cursor: cursor);
+    final next = response['next_cursor']?.toString() ?? response['cursor']?.toString();
+    if (next != null) await _historyDb.setCatalogVersion('server_changes', null, cursor: next);
+    if (response['data'] is Map) await _historyDb.syncCatalogs(Map<String, dynamic>.from(response['data']));
+    return response;
   }
 
-  Future<void> _saveCatalog({
-    required String table,
-    required dynamic data,
-  }) async {
-    if (data is! List) return;
-    final db = await _localDb.database;
-    await db.transaction((txn) async {
-      for (final item in data) {
-        if (item is! Map) continue;
-        final map = Map<String, dynamic>.from(item);
-        final id = _toInt(map['id']);
-        if (id == null) continue;
-
-        final name = _toString(map['nombre'] ?? map['name'] ?? map['descripcion'] ?? '');
-        final code = _toString(map['codigo'] ?? map['code'] ?? map['clave'] ?? '');
-
-        final values = <String, dynamic>{
-          'id': id,
-          'name': name,
-          'is_active': _toBoolInt(map['activo'] ?? map['is_active'] ?? true),
-          'data_json': jsonEncode(map),
-          'updated_at': _toString(map['updated_at'] ?? map['updatedAt'] ?? ''),
-        };
-
-        if (table != 'clients') {
-          values['code'] = code;
-        }
-
-        await txn.insert(table, values, conflictAlgorithm: ConflictAlgorithm.replace);
-
-        if (table == 'taxes') {
-          await txn.update(
-            table,
-            {
-              'rate': _toDouble(map['porcentaje'] ?? map['tasa'] ?? map['rate'] ?? 0),
-            },
-            where: 'id = ?',
-            whereArgs: [id],
-          );
-        }
-      }
-    });
-  }
-
-  Future<void> _saveCatalogVersions(Map<String, dynamic> versions) async {
-    final db = await _localDb.database;
-    await db.transaction((txn) async {
-      for (final entry in versions.entries) {
-        final catalog = entry.key;
-        final version = entry.value?.toString();
-        if (version == null || version.isEmpty) continue;
-        await txn.insert(
-          'catalog_sync',
-          {
-            'catalog': catalog,
-            'version': version,
-            'synced_at': DateTime.now().toIso8601String(),
-          },
-          conflictAlgorithm: ConflictAlgorithm.replace,
-        );
-      }
-    });
-  }
-
-  // ============================================================
-  // HELPERS
-  // ============================================================
-
-  int? _toInt(dynamic value) {
-    if (value == null) return null;
-    if (value is int) return value;
-    if (value is num) return value.toInt();
-    return int.tryParse(value.toString());
-  }
-
-  double _toDouble(dynamic value) {
-    if (value == null) return 0;
-    if (value is num) return value.toDouble();
-    return double.tryParse(value.toString().replaceAll(',', '.')) ?? 0;
-  }
-
-  String _toString(dynamic value) {
-    if (value == null) return '';
-    return value.toString();
-  }
-
-  int _toBoolInt(dynamic value) {
-    if (value is bool) return value ? 1 : 0;
-    if (value is num) return value != 0 ? 1 : 0;
-    final text = value.toString().toLowerCase();
-    return text == 'true' || text == '1' || text == 'activo' ? 1 : 0;
-  }
-
-  String _mapPaymentMethod(String method) {
-    final normalized = method.toLowerCase().trim();
-    if (normalized == 'efectivo') return 'Efectivo';
-    if (normalized == 'tarjeta' || normalized == 'tarjeta crédito') return 'Tarjeta Crédito';
-    if (normalized == 'tarjeta débito') return 'Tarjeta Débito';
-    if (normalized == 'transferencia') return 'Transferencia';
-    if (normalized == 'crédito') return 'Crédito';
-    return 'Otro';
-  }
+  int _toInt(dynamic v) => v is num ? v.toInt() : int.tryParse('${v ?? ''}') ?? 0;
+  double _toDouble(dynamic v) => v is num ? v.toDouble() : double.tryParse('${v ?? ''}'.replaceAll(',', '.')) ?? 0;
+  String _mapPaymentMethod(String method) { final n = method.toLowerCase().trim(); if (n == 'efectivo') return 'Efectivo'; if (n == 'tarjeta' || n == 'tarjeta crédito') return 'Tarjeta Crédito'; if (n == 'tarjeta débito') return 'Tarjeta Débito'; if (n == 'transferencia') return 'Transferencia'; if (n == 'crédito') return 'Crédito'; return 'Otro'; }
 }
