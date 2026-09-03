@@ -17,116 +17,73 @@ class ApiClient {
           ),
         ) {
     _dio.interceptors.add(
-      InterceptorsWrapper(
-        onRequest: (options, handler) async {
-          final token = await AppStorage().getToken();
+  InterceptorsWrapper(
+    onRequest: (options, handler) async {
+      final token = await AppStorage().getToken();
 
-          final tokenDisponible =
-              token != null &&
-              token.isNotEmpty &&
-              token != 'offline-session';
+      final hasToken =
+          token != null && token.trim().isNotEmpty;
 
-          print(
-            '🔑 Token disponible: $tokenDisponible',
-          );
+      print('🔑 Token disponible: $hasToken');
 
-          if (tokenDisponible) {
-            options.headers['Authorization'] =
-                'Bearer $token';
+      if (hasToken) {
+        options.headers['Authorization'] =
+            'Bearer ${token!.trim()}';
 
-            print(
-              '🔒 Header Authorization agregado',
-            );
-          } else {
-            print(
-              '⚠️ Token vacío, nulo o sesión offline',
-            );
-          }
+        print(
+          '🔒 Authorization agregado a ${options.path}',
+        );
+      } else {
+        print(
+          '⚠️ No existe token de autenticación',
+        );
+      }
 
-          print(
-            '🌐 URL completa: '
-            '${options.baseUrl}${options.path}',
-          );
+      print(
+        '🌐 URL completa: '
+        '${options.baseUrl}${options.path}',
+      );
 
-          /*
-           * Información adicional para depuración de requests.
-           */
-          print(
-            '📤 Método: ${options.method}',
-          );
+      handler.next(options);
+    },
 
-          if (options.data != null) {
-            print(
-              '📦 Payload: ${options.data}',
-            );
-          }
+    onResponse: (response, handler) {
+      print(
+        '📡 Respuesta: '
+        '${response.statusCode}',
+      );
 
-          handler.next(options);
-        },
+      handler.next(response);
+    },
 
-        onResponse: (response, handler) async {
-          print(
-            '📡 Respuesta: '
-            '${response.statusCode} - ${response.data}',
-          );
+    onError: (DioException error, handler) async {
+      print(
+        '❌ Error en API: ${error.message}',
+      );
 
-          /*
-           * Cerrar sesión solamente ante 401 y solamente
-           * cuando existe una sesión remota válida.
-           */
-          if (response.statusCode == 401) {
-            final currentToken =
-                await AppStorage().getToken();
+      print(
+        '❌ Código: ${error.response?.statusCode}',
+      );
 
-            final sesionValida =
-                currentToken != null &&
-                currentToken.isNotEmpty &&
-                currentToken != 'offline-session';
+      print(
+        '❌ Data: ${error.response?.data}',
+      );
 
-            if (sesionValida) {
-              await AppStorage().logOut();
-            }
-          }
-
-          handler.next(response);
-        },
-
-        onError: (
-          DioException error,
-          handler,
-        ) async {
-          print(
-            '❌ Error en API: ${error.message}',
-          );
-
-          print(
-            '❌ Código: '
-            '${error.response?.statusCode}',
-          );
-
-          print(
-            '❌ Data: '
-            '${error.response?.data}',
-          );
-
-          if (error.response?.statusCode == 401) {
-            final currentToken =
-                await AppStorage().getToken();
-
-            final sesionValida =
-                currentToken != null &&
-                currentToken.isNotEmpty &&
-                currentToken != 'offline-session';
-
-            if (sesionValida) {
-              await AppStorage().logOut();
-            }
-          }
-
-          handler.next(error);
-        },
-      ),
-    );
+      /*
+       * IMPORTANTE:
+       *
+       * NO cerrar sesión automáticamente aquí.
+       *
+       * Un 401 no debe borrar:
+       * - ventas pendientes
+       * - outbox
+       * - histórico
+       * - cursor de sincronización
+       */
+      handler.next(error);
+    },
+  ),
+);
   }
 
   final Dio _dio;
@@ -916,38 +873,70 @@ class ApiClient {
   // ============================================================
 
   Future<Map<String, dynamic>> syncPull({
-    String? cursor,
-  }) async {
-    try {
-      final response = await _dio.get(
-        '/api/v1/sync/pull',
-        queryParameters: cursor == null
-            ? null
-            : {
-                'cursor': cursor,
-              },
+  String? cursor,
+}) async {
+  try {
+    final response = await _dio.get(
+      '/api/v1/sync/pull',
+      queryParameters: cursor == null
+          ? null
+          : {
+              'cursor': cursor,
+            },
+    );
+
+    if (response.statusCode == 200 &&
+        response.data is Map) {
+      final result =
+          Map<String, dynamic>.from(
+        response.data as Map,
       );
 
-      if (response.statusCode == 200 &&
-          response.data is Map) {
-        return Map<String, dynamic>.from(
-          response.data as Map,
+      final cambios = result['cambios'];
+
+      if (cambios is Map) {
+        final ventas = cambios['ventas'];
+
+        print(
+          '🔽 SYNC PULL - ventas recibidas: '
+          '${ventas is List ? ventas.length : 0}',
+        );
+
+        if (ventas is List) {
+          for (final venta in ventas) {
+            if (venta is Map) {
+              print(
+                '   Venta: '
+                'id=${venta['id']} '
+                'uuid=${venta['uuid']} '
+                'folio=${venta['folio']} '
+                'created_at=${venta['created_at']}',
+              );
+            }
+          }
+        }
+      } else {
+        print(
+          '⚠️ SYNC PULL - cambios no es Map',
         );
       }
 
-      throw Exception(
-        'No se pudieron obtener los cambios',
-      );
-    } on DioException catch (e) {
-      throw Exception(
-        parseApiError(
-          e.response?.data,
-          fallback:
-              'No se pudieron obtener los cambios',
-        ),
-      );
+      return result;
     }
+
+    throw Exception(
+      'No se pudieron obtener los cambios',
+    );
+  } on DioException catch (e) {
+    throw Exception(
+      parseApiError(
+        e.response?.data,
+        fallback:
+            'No se pudieron obtener los cambios',
+      ),
+    );
   }
+}
 
   // ============================================================
   // SYNC GENERAL
