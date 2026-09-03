@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:path_provider/path_provider.dart';
@@ -15,6 +16,19 @@ class LocalDb {
 
   static Database? _database;
   static const int _databaseVersion = 7;
+
+  // Notificador global para que las pantallas puedan reaccionar
+  // inmediatamente a cambios de ventas sin polling periódico.
+  static final StreamController<void> _salesChanges =
+      StreamController<void>.broadcast();
+
+  static Stream<void> get salesChanges => _salesChanges.stream;
+
+  static void notifySalesChanged() {
+    if (!_salesChanges.isClosed) {
+      _salesChanges.add(null);
+    }
+  }
 
   Future<Database> get database async {
     if (_database != null) return _database!;
@@ -362,42 +376,443 @@ class LocalDb {
 
   Future<int> saveSale({required String uuid, required List<Map<String, dynamic>> items, required List<Map<String, dynamic>> payments, required double total, required String status, String syncStatus = 'pending', String? paymentMethod, double cashReceived = 0, double changeDue = 0, int? tableId, String? tableName, int? clienteId, double descuentoGlobal = 0, double impuestoGlobal = 0, String? notas, String? businessDate}) async {
     final db = await database;
-    return db.transaction((txn) async {
+    var created = false;
+
+    final saleId = await db.transaction((txn) async {
       final now = DateTime.now().toIso8601String();
-      final existing = await txn.query('sales', where: 'uuid_local = ?', whereArgs: [uuid], limit: 1);
-      if (existing.isNotEmpty) return _toInt(existing.first['id']);
-      final saleId = await txn.insert('sales', {'uuid_local': uuid, 'business_date': businessDate ?? now.substring(0, 10), 'total': total, 'status': status, 'sync_status': syncStatus, 'payment_method': paymentMethod, 'cash_received': cashReceived, 'change_due': changeDue, 'mesa_id': tableId, 'mesa_nombre': tableName, 'cliente_id': clienteId, 'descuento_global': descuentoGlobal, 'impuesto_global': impuestoGlobal, 'notas': notas, 'created_at': now, 'updated_at': now, 'paid_at': status == 'paid' ? now : null});
-      for (final item in items) await txn.insert('sale_items', {'sale_id': saleId, 'product_id': _toInt(item['product_id']), 'name': item['name'], 'quantity': _toDouble(item['quantity']), 'unit_price': _toDouble(item['unit_price']), 'total': _toDouble(item['total']), 'descuento': _toDouble(item['descuento'])});
-      for (final payment in payments) await txn.insert('sale_payments', {'sale_id': saleId, 'method': payment['method'], 'amount': _toDouble(payment['amount']), 'referencia': payment['referencia']});
-      return saleId;
+      final existing = await txn.query(
+        'sales',
+        where: 'uuid_local = ?',
+        whereArgs: [uuid],
+        limit: 1,
+      );
+
+      if (existing.isNotEmpty) {
+        return _toInt(existing.first['id']);
+      }
+
+      final id = await txn.insert('sales', {
+        'uuid_local': uuid,
+        'business_date': businessDate ?? now.substring(0, 10),
+        'total': total,
+        'status': status,
+        'sync_status': syncStatus,
+        'payment_method': paymentMethod,
+        'cash_received': cashReceived,
+        'change_due': changeDue,
+        'mesa_id': tableId,
+        'mesa_nombre': tableName,
+        'cliente_id': clienteId,
+        'descuento_global': descuentoGlobal,
+        'impuesto_global': impuestoGlobal,
+        'notas': notas,
+        'created_at': now,
+        'updated_at': now,
+        'paid_at': status == 'paid' ? now : null,
+      });
+
+      for (final item in items) {
+        await txn.insert('sale_items', {
+          'sale_id': id,
+          'product_id': _toInt(item['product_id']),
+          'name': item['name'],
+          'quantity': _toDouble(item['quantity']),
+          'unit_price': _toDouble(item['unit_price']),
+          'total': _toDouble(item['total']),
+          'descuento': _toDouble(item['descuento']),
+        });
+      }
+
+      for (final payment in payments) {
+        await txn.insert('sale_payments', {
+          'sale_id': id,
+          'method': payment['method'],
+          'amount': _toDouble(payment['amount']),
+          'referencia': payment['referencia'],
+        });
+      }
+
+      created = true;
+      return id;
     });
+
+    if (created) {
+      notifySalesChanged();
+    }
+
+    return saleId;
   }
 
-  Future<List<Map<String, dynamic>>> getTodaySales() async { final db = await database; final day = DateTime.now().toIso8601String().substring(0, 10); return db.query('sales', where: 'business_date = ?', whereArgs: [day], orderBy: 'created_at DESC'); }
+  Future<List<Map<String, dynamic>>> getTodaySales() async {
+    final db = await database;
+    final now = DateTime.now();
+    final todayYear = now.year;
+    final todayMonth = now.month;
+    final todayDay = now.day;
+
+    // `business_date` conserva la fecha comercial original de la venta y no
+    // debe utilizarse para decidir la fecha local visible en esta pantalla.
+    // El backend puede entregar `created_at` en UTC, por ejemplo:
+    // 2026-09-03T02:23:44+00:00, que en México todavía puede corresponder
+    // al 02/09 en hora local.
+    final rows = await db.query(
+      'sales',
+      orderBy: 'created_at DESC',
+    );
+
+    final result = <Map<String, dynamic>>[];
+
+    for (final row in rows) {
+      final createdAt = row['created_at']?.toString();
+      if (createdAt != null && createdAt.trim().isNotEmpty) {
+        final parsed = DateTime.tryParse(createdAt);
+        if (parsed != null) {
+          final local = parsed.toLocal();
+          if (local.year == todayYear &&
+              local.month == todayMonth &&
+              local.day == todayDay) {
+            result.add(Map<String, dynamic>.from(row));
+          }
+          continue;
+        }
+      }
+
+      // Compatibilidad con registros antiguos que no tengan un created_at
+      // válido. En ese caso sí usamos business_date como respaldo.
+      if (row['business_date']?.toString() ==
+          '${todayYear.toString().padLeft(4, '0')}-'
+          '${todayMonth.toString().padLeft(2, '0')}-'
+          '${todayDay.toString().padLeft(2, '0')}') {
+        result.add(Map<String, dynamic>.from(row));
+      }
+    }
+
+    return result;
+  }
   Future<List<Map<String, dynamic>>> getSales({String? businessDate, String? syncStatus, int? limit}) async { final db = await database; final where = <String>[]; final args = <dynamic>[]; if (businessDate != null) { where.add('business_date = ?'); args.add(businessDate); } if (syncStatus != null) { where.add('sync_status = ?'); args.add(syncStatus); } return db.query('sales', where: where.isEmpty ? null : where.join(' AND '), whereArgs: args.isEmpty ? null : args, orderBy: 'created_at ASC', limit: limit); }
   Future<List<Map<String, dynamic>>> getPendingSales({bool includeFailed = true}) async => getSales(syncStatus: includeFailed ? null : 'pending').then((rows) => rows.where((r) => r['sync_status'] == 'pending' || r['sync_status'] == 'failed').toList());
   Future<Map<String, dynamic>?> getSaleById(int id) async { final r = await (await database).query('sales', where: 'id = ?', whereArgs: [id], limit: 1); return r.isEmpty ? null : r.first; }
   Future<List<Map<String, dynamic>>> getSaleItemsBySaleId(int id) async => (await database).query('sale_items', where: 'sale_id = ?', whereArgs: [id]);
   Future<List<Map<String, dynamic>>> getSalePaymentsBySaleId(int id) async => (await database).query('sale_payments', where: 'sale_id = ?', whereArgs: [id]);
 
-  Future<void> markSaleSyncing(int saleId) async => (await database).update('sales', {'sync_status': 'syncing', 'updated_at': DateTime.now().toIso8601String()}, where: 'id = ?', whereArgs: [saleId]);
-  Future<void> markSaleAsSynced(int saleId, {Map<String, dynamic>? serverResponse}) async {
-    final r = serverResponse ?? const <String, dynamic>{};
-    final nested = r['data'] is Map ? Map<String, dynamic>.from(r['data']) : r;
-    await (await database).update('sales', {'sync_status': 'synced', 'server_id': _nullableInt(nested['server_id'] ?? nested['venta_id'] ?? nested['id']), 'server_folio': nested['folio']?.toString() ?? nested['server_folio']?.toString(), 'server_synced_at': DateTime.now().toIso8601String(), 'last_sync_error': null, 'next_retry_at': null, 'updated_at': DateTime.now().toIso8601String()}, where: 'id = ?', whereArgs: [saleId]);
+  Future<void> markSaleSyncing(int saleId) async {
+    final updated = await (await database).update(
+      'sales',
+      {
+        'sync_status': 'syncing',
+        'updated_at': DateTime.now().toIso8601String(),
+      },
+      where: 'id = ?',
+      whereArgs: [saleId],
+    );
+    if (updated > 0) notifySalesChanged();
   }
-  Future<void> markSaleSyncFailed(int saleId, String error, {int? attempts}) async { final db = await database; final sale = await getSaleById(saleId); final count = attempts ?? (_toInt(sale?['sync_attempts']) + 1); final retry = DateTime.now().add(Duration(minutes: count.clamp(1, 30) * 2)); await db.update('sales', {'sync_status': 'failed', 'sync_attempts': count, 'last_sync_error': error, 'next_retry_at': retry.toIso8601String(), 'updated_at': DateTime.now().toIso8601String()}, where: 'id = ?', whereArgs: [saleId]); }
-  Future<void> resetSaleForRetry(int saleId) async => (await database).update('sales', {'sync_status': 'pending', 'next_retry_at': null, 'last_sync_error': null, 'updated_at': DateTime.now().toIso8601String()}, where: 'id = ?', whereArgs: [saleId]);
+
+  Future<void> markSaleAsSynced(
+    int saleId, {
+    Map<String, dynamic>? serverResponse,
+  }) async {
+    final r = serverResponse ?? const <String, dynamic>{};
+    final nested = r['data'] is Map
+        ? Map<String, dynamic>.from(r['data'])
+        : r;
+
+    final updated = await (await database).update(
+      'sales',
+      {
+        'sync_status': 'synced',
+        'server_id': _nullableInt(
+          nested['server_id'] ?? nested['venta_id'] ?? nested['id'],
+        ),
+        'server_folio': nested['folio']?.toString() ??
+            nested['server_folio']?.toString(),
+        'server_synced_at': DateTime.now().toIso8601String(),
+        'last_sync_error': null,
+        'next_retry_at': null,
+        'updated_at': DateTime.now().toIso8601String(),
+      },
+      where: 'id = ?',
+      whereArgs: [saleId],
+    );
+
+    if (updated > 0) notifySalesChanged();
+  }
+
+  Future<void> markSaleSyncFailed(
+    int saleId,
+    String error, {
+    int? attempts,
+  }) async {
+    final db = await database;
+    final sale = await getSaleById(saleId);
+    final count = attempts ?? (_toInt(sale?['sync_attempts']) + 1);
+    final retry = DateTime.now().add(
+      Duration(minutes: count.clamp(1, 30).toInt() * 2),
+    );
+
+    final updated = await db.update(
+      'sales',
+      {
+        'sync_status': 'failed',
+        'sync_attempts': count,
+        'last_sync_error': error,
+        'next_retry_at': retry.toIso8601String(),
+        'updated_at': DateTime.now().toIso8601String(),
+      },
+      where: 'id = ?',
+      whereArgs: [saleId],
+    );
+
+    if (updated > 0) notifySalesChanged();
+  }
+
+  Future<void> resetSaleForRetry(int saleId) async {
+    final updated = await (await database).update(
+      'sales',
+      {
+        'sync_status': 'pending',
+        'next_retry_at': null,
+        'last_sync_error': null,
+        'updated_at': DateTime.now().toIso8601String(),
+      },
+      where: 'id = ?',
+      whereArgs: [saleId],
+    );
+    if (updated > 0) notifySalesChanged();
+  }
   Future<void> updateSaleServerResult(int saleId, Map<String, dynamic> response) async => markSaleAsSynced(saleId, serverResponse: response);
   Future<List<Map<String, dynamic>>> getPendingSalesReadyToSync({int? limit}) async { final db = await database; final now = DateTime.now().toIso8601String(); return db.query('sales', where: "sync_status IN ('pending','failed') AND (next_retry_at IS NULL OR next_retry_at <= ?)", whereArgs: [now], orderBy: 'business_date ASC, created_at ASC', limit: limit); }
 
-  Future<void> updateSaleStatus(int saleId, String status, {String syncStatus = 'pending'}) async => (await database).update('sales', {'status': status, 'sync_status': syncStatus, 'updated_at': DateTime.now().toIso8601String(), 'paid_at': status == 'paid' ? DateTime.now().toIso8601String() : null}, where: 'id = ?', whereArgs: [saleId]);
-  Future<void> markSaleAsPaid(int saleId, {required String paymentMethod, required double cashReceived, required double changeDue}) async => (await database).update('sales', {'status': 'paid', 'sync_status': 'pending', 'payment_method': paymentMethod, 'cash_received': cashReceived, 'change_due': changeDue, 'paid_at': DateTime.now().toIso8601String(), 'updated_at': DateTime.now().toIso8601String()}, where: 'id = ?', whereArgs: [saleId]);
+  Future<void> updateSaleStatus(
+    int saleId,
+    String status, {
+    String syncStatus = 'pending',
+  }) async {
+    final now = DateTime.now().toIso8601String();
+    final updated = await (await database).update(
+      'sales',
+      {
+        'status': status,
+        'sync_status': syncStatus,
+        'updated_at': now,
+        'paid_at': status == 'paid' ? now : null,
+      },
+      where: 'id = ?',
+      whereArgs: [saleId],
+    );
+    if (updated > 0) notifySalesChanged();
+  }
 
-  Future<bool> cancelSale(int saleId) async { final db = await database; return db.transaction((txn) async { final r = await txn.query('sales', where: 'id = ?', whereArgs: [saleId], limit: 1); if (r.isEmpty || r.first['status'] == 'cancelled') return false; await txn.update('sales', {'status': 'cancelled', 'sync_status': 'pending', 'updated_at': DateTime.now().toIso8601String()}, where: 'id = ?', whereArgs: [saleId]); return true; }); }
-  Future<bool> deletePendingSale(int saleId) async { final db = await database; return db.transaction((txn) async { final r = await txn.query('sales', where: 'id = ? AND status = ?', whereArgs: [saleId, 'pending'], limit: 1); if (r.isEmpty) return false; await txn.delete('sale_items', where: 'sale_id = ?', whereArgs: [saleId]); await txn.delete('sale_payments', where: 'sale_id = ?', whereArgs: [saleId]); return (await txn.delete('sales', where: 'id = ?', whereArgs: [saleId])) == 1; }); }
-  Future<bool> updatePendingSale({required int saleId, required List<Map<String, dynamic>> items, required double total, int? tableId, String? tableName}) async { final db = await database; return db.transaction((txn) async { final n = await txn.update('sales', {'total': total, 'mesa_id': tableId, 'mesa_nombre': tableName, 'updated_at': DateTime.now().toIso8601String(), 'sync_status': 'pending'}, where: 'id = ? AND status = ?', whereArgs: [saleId, 'pending']); if (n != 1) return false; await txn.delete('sale_items', where: 'sale_id = ?', whereArgs: [saleId]); for (final item in items) await txn.insert('sale_items', {'sale_id': saleId, 'product_id': _toInt(item['product_id']), 'name': item['name'], 'quantity': _toDouble(item['quantity']), 'unit_price': _toDouble(item['unit_price']), 'total': _toDouble(item['total']), 'descuento': _toDouble(item['descuento'])}); return true; }); }
-  Future<bool> payPendingSale(int saleId, {required List<Map<String, dynamic>> payments, required String paymentMethod, required double cashReceived, required double changeDue}) async { final db = await database; return db.transaction((txn) async { final r = await txn.query('sales', where: 'id = ? AND status = ?', whereArgs: [saleId, 'pending'], limit: 1); if (r.isEmpty) return false; await txn.delete('sale_payments', where: 'sale_id = ?', whereArgs: [saleId]); for (final p in payments) await txn.insert('sale_payments', {'sale_id': saleId, 'method': p['method'], 'amount': _toDouble(p['amount']), 'referencia': p['referencia']}); await txn.update('sales', {'status': 'paid', 'sync_status': 'pending', 'payment_method': paymentMethod, 'cash_received': cashReceived, 'change_due': changeDue, 'paid_at': DateTime.now().toIso8601String(), 'updated_at': DateTime.now().toIso8601String()}, where: 'id = ?', whereArgs: [saleId]); return true; }); }
+  Future<void> markSaleAsPaid(
+    int saleId, {
+    required String paymentMethod,
+    required double cashReceived,
+    required double changeDue,
+  }) async {
+    final now = DateTime.now().toIso8601String();
+    final updated = await (await database).update(
+      'sales',
+      {
+        'status': 'paid',
+        'sync_status': 'pending',
+        'payment_method': paymentMethod,
+        'cash_received': cashReceived,
+        'change_due': changeDue,
+        'paid_at': now,
+        'updated_at': now,
+      },
+      where: 'id = ?',
+      whereArgs: [saleId],
+    );
+    if (updated > 0) notifySalesChanged();
+  }
+
+  Future<bool> cancelSale(int saleId) async {
+    final db = await database;
+
+    final cancelled = await db.transaction((txn) async {
+      final r = await txn.query(
+        'sales',
+        where: 'id = ?',
+        whereArgs: [saleId],
+        limit: 1,
+      );
+
+      if (r.isEmpty || r.first['status'] == 'cancelled') {
+        return false;
+      }
+
+      final updated = await txn.update(
+        'sales',
+        {
+          'status': 'cancelled',
+          'sync_status': 'pending',
+          'updated_at': DateTime.now().toIso8601String(),
+        },
+        where: 'id = ?',
+        whereArgs: [saleId],
+      );
+
+      return updated == 1;
+    });
+
+    if (cancelled) {
+      notifySalesChanged();
+    }
+
+    return cancelled;
+  }
+
+  Future<bool> deletePendingSale(int saleId) async {
+    final db = await database;
+
+    final deleted = await db.transaction((txn) async {
+      final r = await txn.query(
+        'sales',
+        where: 'id = ? AND status = ?',
+        whereArgs: [saleId, 'pending'],
+        limit: 1,
+      );
+
+      if (r.isEmpty) return false;
+
+      await txn.delete(
+        'sale_items',
+        where: 'sale_id = ?',
+        whereArgs: [saleId],
+      );
+      await txn.delete(
+        'sale_payments',
+        where: 'sale_id = ?',
+        whereArgs: [saleId],
+      );
+
+      return (await txn.delete(
+            'sales',
+            where: 'id = ?',
+            whereArgs: [saleId],
+          )) ==
+          1;
+    });
+
+    if (deleted) {
+      notifySalesChanged();
+    }
+
+    return deleted;
+  }
+
+  Future<bool> updatePendingSale({
+    required int saleId,
+    required List<Map<String, dynamic>> items,
+    required double total,
+    int? tableId,
+    String? tableName,
+  }) async {
+    final db = await database;
+
+    final updated = await db.transaction((txn) async {
+      final n = await txn.update(
+        'sales',
+        {
+          'total': total,
+          'mesa_id': tableId,
+          'mesa_nombre': tableName,
+          'updated_at': DateTime.now().toIso8601String(),
+          'sync_status': 'pending',
+        },
+        where: 'id = ? AND status = ?',
+        whereArgs: [saleId, 'pending'],
+      );
+
+      if (n != 1) return false;
+
+      await txn.delete(
+        'sale_items',
+        where: 'sale_id = ?',
+        whereArgs: [saleId],
+      );
+
+      for (final item in items) {
+        await txn.insert('sale_items', {
+          'sale_id': saleId,
+          'product_id': _toInt(item['product_id']),
+          'name': item['name'],
+          'quantity': _toDouble(item['quantity']),
+          'unit_price': _toDouble(item['unit_price']),
+          'total': _toDouble(item['total']),
+          'descuento': _toDouble(item['descuento']),
+        });
+      }
+
+      return true;
+    });
+
+    if (updated) {
+      notifySalesChanged();
+    }
+
+    return updated;
+  }
+
+  Future<bool> payPendingSale(
+    int saleId, {
+    required List<Map<String, dynamic>> payments,
+    required String paymentMethod,
+    required double cashReceived,
+    required double changeDue,
+  }) async {
+    final db = await database;
+
+    final paid = await db.transaction((txn) async {
+      final r = await txn.query(
+        'sales',
+        where: 'id = ? AND status = ?',
+        whereArgs: [saleId, 'pending'],
+        limit: 1,
+      );
+
+      if (r.isEmpty) return false;
+
+      await txn.delete(
+        'sale_payments',
+        where: 'sale_id = ?',
+        whereArgs: [saleId],
+      );
+
+      for (final p in payments) {
+        await txn.insert('sale_payments', {
+          'sale_id': saleId,
+          'method': p['method'],
+          'amount': _toDouble(p['amount']),
+          'referencia': p['referencia'],
+        });
+      }
+
+      final updated = await txn.update(
+        'sales',
+        {
+          'status': 'paid',
+          'sync_status': 'pending',
+          'payment_method': paymentMethod,
+          'cash_received': cashReceived,
+          'change_due': changeDue,
+          'paid_at': DateTime.now().toIso8601String(),
+          'updated_at': DateTime.now().toIso8601String(),
+        },
+        where: 'id = ?',
+        whereArgs: [saleId],
+      );
+
+      return updated == 1;
+    });
+
+    if (paid) {
+      notifySalesChanged();
+    }
+
+    return paid;
+  }
 
   /// Copia una venta pendiente de la base diaria a esta base histórica.
   /// Si ya existe por uuid, no duplica.
@@ -414,6 +829,37 @@ class LocalDb {
 
   Future<Map<String, int>> getCatalogCounts() async { final db = await database; Future<int> c(String t) async => Sqflite.firstIntValue(await db.rawQuery('SELECT COUNT(*) FROM $t')) ?? 0; return {'productos': await c('products'), 'clientes': await c('clients'), 'impuestos': await c('taxes'), 'formas_pago': await c('payment_methods'), 'unidades_medida': await c('units'), 'categorias': await c('categories'), 'promociones': await c('promotions'), 'cupones': await c('coupons')}; }
 
-  Future<void> clearDb() async { final db = await database; await db.transaction((txn) async { for (final t in ['sale_items','sale_payments','sales','products','clients','taxes','payment_methods','units','categories','promotions','coupons','catalog_sync','company']) await txn.delete(t); }); }
-  Future<void> close() async { final db = _database; if (db != null) { await db.close(); _database = null; } }
+  Future<void> clearDb() async {
+    final db = await database;
+    await db.transaction((txn) async {
+      for (final t in [
+        'sale_items',
+        'sale_payments',
+        'sales',
+        'products',
+        'clients',
+        'taxes',
+        'payment_methods',
+        'units',
+        'categories',
+        'promotions',
+        'coupons',
+        'catalog_sync',
+        'company',
+      ]) {
+        await txn.delete(t);
+      }
+    });
+    notifySalesChanged();
+  }
+
+  Future<void> close() async {
+    final db = _database;
+    if (db != null) {
+      await db.close();
+      _database = null;
+    }
+    // No cerrar _salesChanges: es un notificador estático de proceso y
+    // LocalDb puede volver a abrirse después de cambiar de día.
+  }
 }
