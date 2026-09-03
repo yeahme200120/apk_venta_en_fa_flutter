@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../core/database/local_db.dart';
@@ -6,6 +8,7 @@ import '../../core/models/sale_model.dart';
 import '../../core/network/api_client.dart';
 import '../../core/payments/payment_breakdown.dart';
 import '../../core/storage/app_storage.dart';
+import '../../core/services/sync_service.dart';
 import '../operacion/operation_screen.dart';
 import 'cart_screen.dart';
 import '../ventas/sale_detail_screen.dart';
@@ -26,6 +29,11 @@ class PosScreenState extends State<PosScreen> {
   final LocalDb _db = LocalDb();
   final TextEditingController _searchController = TextEditingController();
   final ValueNotifier<List<CartItem>> _cartNotifier = ValueNotifier([]);
+
+  StreamSubscription<void>? _salesChangesSubscription;
+  bool _refreshing = false;
+  bool _syncing = false;
+  bool _refreshQueued = false;
 
   List<Product> _products = [];
   bool _isLoading = true;
@@ -59,6 +67,11 @@ class PosScreenState extends State<PosScreen> {
   @override
   void initState() {
     super.initState();
+
+    _salesChangesSubscription = LocalDb.salesChanges.listen((_) {
+      _handleSalesChanged();
+    });
+
     _loadProducts();
     _loadOperationState();
 
@@ -70,6 +83,8 @@ class PosScreenState extends State<PosScreen> {
 
   @override
   void dispose() {
+    _salesChangesSubscription?.cancel();
+    _salesChangesSubscription = null;
     _searchController.dispose();
     _cartNotifier.dispose();
     super.dispose();
@@ -79,19 +94,114 @@ class PosScreenState extends State<PosScreen> {
   // CARGA DE DATOS
   // ============================================================
 
-  Future<void> _loadProducts() async {
-    final items = await _db.getProducts();
-    final sales = await _db.getTodaySales();
+  Future<void> _loadProducts({bool showLoading = false}) async {
+    if (_refreshing) return;
 
+    _refreshing = true;
+
+    if (showLoading && mounted) {
+      setState(() {
+        _isLoading = true;
+      });
+    }
+
+    try {
+      final items = await _db.getProducts();
+      final sales = await _db.getTodaySales();
+
+      if (!mounted) return;
+
+      setState(() {
+        _products = items.map(Product.fromMap).toList();
+        _todaySales = sales.length;
+        _pendingSales = sales
+            .where((sale) => sale['sync_status'] != 'synced')
+            .length;
+        _cancelledSales = sales
+            .where((sale) => sale['status'] == 'cancelled')
+            .length;
+        _isLoading = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+
+      setState(() {
+        _isLoading = false;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('No fue posible actualizar la caja: $error'),
+        ),
+      );
+    } finally {
+      _refreshing = false;
+    }
+  }
+
+  Future<void> _handleSalesChanged() async {
     if (!mounted) return;
 
+    if (_refreshing || _syncing) {
+      _refreshQueued = true;
+      return;
+    }
+
+    await _loadProducts();
+
+    if (!mounted || !_refreshQueued) return;
+
+    _refreshQueued = false;
+    await _loadProducts();
+  }
+
+  Future<void> _refreshLocalDataSilently() async {
+    await _handleSalesChanged();
+  }
+
+  Future<void> _refreshAll() async {
+    if (!mounted || _syncing) return;
+
     setState(() {
-      _products = items.map(Product.fromMap).toList();
-      _todaySales = sales.length;
-      _pendingSales = sales.where((sale) => sale['sync_status'] != 'synced').length;
-      _cancelledSales = sales.where((sale) => sale['status'] == 'cancelled').length;
-      _isLoading = false;
+      _syncing = true;
     });
+
+    try {
+      try {
+        final offline = await AppStorage().isOfflineSession();
+        if (!offline) {
+          await SyncService().syncPull();
+        }
+      } catch (error) {
+        debugPrint('ℹ️ Actualización remota omitida: $error');
+      }
+
+      await _loadProducts();
+      await _loadOperationState();
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Caja actualizada correctamente.'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('No fue posible actualizar la caja: $error'),
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _syncing = false;
+        });
+      }
+    }
   }
 
   Future<void> _loadOperationState() async {
@@ -548,11 +658,13 @@ class PosScreenState extends State<PosScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
     return Scaffold(
-      backgroundColor: const Color(0xFFF7F9F4),
+      backgroundColor: colorScheme.surface,
       appBar: AppBar(
         elevation: 0,
-        backgroundColor: const Color(0xFFF3F6EE),
+        backgroundColor: colorScheme.surfaceContainerHighest,
         titleSpacing: 12,
         title: Row(
           children: [
@@ -560,42 +672,75 @@ class PosScreenState extends State<PosScreen> {
               width: 38,
               height: 38,
               decoration: BoxDecoration(
-                color: const Color(0xFF9AC53B),
+                color: colorScheme.primary,
                 borderRadius: BorderRadius.circular(12),
               ),
-              child: const Icon(Icons.point_of_sale, color: Colors.white),
+              child: Icon(Icons.point_of_sale, color: colorScheme.onPrimary),
             ),
             const SizedBox(width: 10),
-            const Flexible(
+            Flexible(
               child: Text(
                 'Caja',
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(color: Color(0xFF1F2A1A), fontWeight: FontWeight.w800),
+                style: TextStyle(
+                  color: colorScheme.onSurface,
+                  fontWeight: FontWeight.w800,
+                ),
               ),
             ),
           ],
         ),
         actions: [
+          IconButton(
+            tooltip: 'Actualizar',
+            onPressed: _syncing ? null : _refreshAll,
+            icon: _syncing
+                ? SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: colorScheme.primary,
+                    ),
+                  )
+                : const Icon(Icons.refresh),
+          ),
           ValueListenableBuilder<List<CartItem>>(
             valueListenable: _cartNotifier,
             builder: (context, items, child) {
-              final total = items.fold(0.0, (sum, item) => sum + item.subtotal);
               return Padding(
-                padding: const EdgeInsets.only(right: 12),
-                child: Center(
-                  child: Container(
-                    constraints: const BoxConstraints(maxWidth: 150),
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF9AC53B),
-                      borderRadius: BorderRadius.circular(999),
+                padding: const EdgeInsets.only(right: 8),
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    IconButton(
+                      tooltip: items.isEmpty ? 'Carrito vacío' : 'Abrir carrito',
+                      onPressed: _openCart,
+                      icon: const Icon(Icons.shopping_cart_outlined),
                     ),
-                    child: Text(
-                      items.isEmpty ? 'Sin venta' : 'Total \$${total.toStringAsFixed(2)}',
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 12, color: Colors.white, fontWeight: FontWeight.w700),
-                    ),
-                  ),
+                    if (items.isNotEmpty)
+                      Positioned(
+                        right: 0,
+                        top: 0,
+                        child: Container(
+                          constraints: const BoxConstraints(minWidth: 18),
+                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: colorScheme.error,
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: Text(
+                            '${items.length}',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: colorScheme.onError,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
               );
             },
@@ -627,25 +772,28 @@ class PosScreenState extends State<PosScreen> {
                                       overflow: TextOverflow.ellipsis,
                                     ),
                                     subtitle: Text(
-                                      _mesasActivas ? 'Mesas activas para esta empresa.' : 'Mesas no activas para esta empresa.',
+                                      _mesasActivas
+                                          ? 'Mesas activas para esta empresa.'
+                                          : 'Mesas no activas para esta empresa.',
                                       maxLines: 2,
                                       overflow: TextOverflow.ellipsis,
                                     ),
-                                    trailing: _mesasActivas ? const Icon(Icons.table_restaurant_outlined) : null,
+                                    trailing: _mesasActivas
+                                        ? const Icon(Icons.table_restaurant_outlined)
+                                        : null,
                                     onTap: _openOperation,
                                   ),
                                 ),
-
                               if (_cajasActivas) const SizedBox(height: 10),
-
                               if (_mesasActivas)
                                 DropdownButtonFormField<int?>(
                                   value: _selectedTableId,
-                                  decoration: const InputDecoration(
+                                  isExpanded: true,
+                                  decoration: InputDecoration(
                                     labelText: 'Mesa para la venta pendiente',
-                                    border: OutlineInputBorder(),
+                                    border: const OutlineInputBorder(),
                                     filled: true,
-                                    fillColor: Colors.white,
+                                    fillColor: colorScheme.surface,
                                   ),
                                   items: [
                                     const DropdownMenuItem<int?>(
@@ -656,7 +804,8 @@ class PosScreenState extends State<PosScreen> {
                                         .where(
                                           (table) =>
                                               table['activo'] != false &&
-                                              (table['estado'] == 'libre' || table['id'] == _selectedTableId),
+                                              (table['estado'] == 'libre' ||
+                                                  table['id'] == _selectedTableId),
                                         )
                                         .map(
                                           (table) => DropdownMenuItem<int?>(
@@ -669,25 +818,29 @@ class PosScreenState extends State<PosScreen> {
                                         ),
                                   ],
                                   onChanged: (tableId) {
-                                    final table = _tables.where((item) => item['id'] == tableId).firstOrNull;
+                                    final table = _tables
+                                        .where((item) => item['id'] == tableId)
+                                        .firstOrNull;
                                     setState(() {
                                       _selectedTableId = tableId;
                                       _selectedTableName = table?['nombre']?.toString();
                                     });
                                   },
                                 ),
-
                               if (_mesasActivas) const SizedBox(height: 10),
-
-                              _buildSearch(),
+                              _buildSearch(context),
                               const SizedBox(height: 12),
-                              _buildMetrics(constraints),
+                              _buildMetrics(context, constraints),
                               const SizedBox(height: 16),
                               Align(
                                 alignment: Alignment.centerLeft,
                                 child: Text(
                                   'Productos',
-                                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Color(0xFF1F2A1A)),
+                                  style: TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w800,
+                                    color: colorScheme.onSurface,
+                                  ),
                                 ),
                               ),
                               const SizedBox(height: 8),
@@ -695,22 +848,25 @@ class PosScreenState extends State<PosScreen> {
                           ),
                         ),
                       ),
-
                       if (_filteredProducts.isEmpty)
-                        const SliverFillRemaining(
+                        SliverFillRemaining(
                           hasScrollBody: false,
                           child: Center(
                             child: Padding(
-                              padding: EdgeInsets.all(30),
+                              padding: const EdgeInsets.all(30),
                               child: Column(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  Icon(Icons.inventory_2_outlined, size: 48, color: Colors.black38),
-                                  SizedBox(height: 12),
+                                  Icon(
+                                    Icons.inventory_2_outlined,
+                                    size: 48,
+                                    color: colorScheme.onSurfaceVariant,
+                                  ),
+                                  const SizedBox(height: 12),
                                   Text(
                                     'No se encontraron productos.',
                                     textAlign: TextAlign.center,
-                                    style: TextStyle(color: Colors.black54),
+                                    style: TextStyle(color: colorScheme.onSurfaceVariant),
                                   ),
                                 ],
                               ),
@@ -719,7 +875,7 @@ class PosScreenState extends State<PosScreen> {
                         )
                       else
                         SliverPadding(
-                          padding: const EdgeInsets.fromLTRB(12, 0, 12, 100),
+                          padding: const EdgeInsets.fromLTRB(12, 0, 12, 24),
                           sliver: SliverLayoutBuilder(
                             builder: (context, sliverConstraints) {
                               final width = sliverConstraints.crossAxisExtent;
@@ -732,7 +888,7 @@ class PosScreenState extends State<PosScreen> {
                                       final product = _filteredProducts[index];
                                       return Padding(
                                         padding: const EdgeInsets.only(bottom: 10),
-                                        child: _buildProductCard(product),
+                                        child: _buildProductCard(context, product),
                                       );
                                     },
                                     childCount: _filteredProducts.length,
@@ -742,7 +898,8 @@ class PosScreenState extends State<PosScreen> {
 
                               return SliverGrid(
                                 delegate: SliverChildBuilderDelegate(
-                                  (context, index) => _buildProductCard(_filteredProducts[index]),
+                                  (context, index) =>
+                                      _buildProductCard(context, _filteredProducts[index]),
                                   childCount: _filteredProducts.length,
                                 ),
                                 gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
@@ -760,21 +917,8 @@ class PosScreenState extends State<PosScreen> {
                 },
               ),
             ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _openCart,
-        backgroundColor: const Color(0xFF9AC53B),
-        foregroundColor: Colors.white,
-        icon: const Icon(Icons.shopping_cart_outlined),
-        label: ValueListenableBuilder<List<CartItem>>(
-          valueListenable: _cartNotifier,
-          builder: (context, items, child) {
-            return Text('Carrito (${items.length})');
-          },
-        ),
-      ),
     );
   }
-
   // ============================================================
   // WIDGETS DE UI
   // ============================================================
@@ -787,24 +931,25 @@ class PosScreenState extends State<PosScreen> {
     }).toList();
   }
 
-  Widget _buildSearch() {
+  Widget _buildSearch(BuildContext context) {
     return Row(
       children: [
         Expanded(
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 12),
             decoration: BoxDecoration(
-              color: Colors.white,
+              color: Theme.of(context).colorScheme.surface,
               borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: const Color(0xFF9AC53B).withAlpha(45)),
+              border: Border.all(color: Theme.of(context).colorScheme.primary.withAlpha(45)),
             ),
             child: TextField(
               controller: _searchController,
-              decoration: const InputDecoration(
-                hintText: 'Buscar producto por nombre o código',
-                prefixIcon: Icon(Icons.search, color: Color(0xFF9AC53B)),
+              decoration: InputDecoration(
+                hintStyle: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+                prefixIcon: Icon(Icons.search, color: Theme.of(context).colorScheme.primary),
                 border: InputBorder.none,
-                hintStyle: TextStyle(color: Colors.black54),
               ),
               onChanged: (_) => setState(() {}),
             ),
@@ -814,16 +959,16 @@ class PosScreenState extends State<PosScreen> {
         Container(
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
-            color: const Color(0xFF1F2A1A),
+            color: Theme.of(context).colorScheme.onSurface,
             borderRadius: BorderRadius.circular(14),
           ),
-          child: const Icon(Icons.filter_list, color: Colors.white),
+          child: Icon(Icons.filter_list, color: Theme.of(context).colorScheme.onPrimary),
         ),
       ],
     );
   }
 
-  Widget _buildMetrics(BoxConstraints constraints) {
+  Widget _buildMetrics(BuildContext context, BoxConstraints constraints) {
     final width = constraints.maxWidth;
     int columns;
     if (width < 500) columns = 1;
@@ -834,17 +979,17 @@ class PosScreenState extends State<PosScreen> {
       _MetricCard(
         label: 'Ventas del día',
         value: '$_todaySales',
-        color: const Color(0xFF9AC53B),
+        color: Theme.of(context).colorScheme.primary,
       ),
       _MetricCard(
         label: 'Pendientes',
         value: '$_pendingSales',
-        color: const Color(0xFFFFB703),
+        color: Theme.of(context).colorScheme.tertiary,
       ),
       _MetricCard(
         label: 'Canceladas',
         value: '$_cancelledSales',
-        color: const Color(0xFF1F9D8A),
+        color: Theme.of(context).colorScheme.secondary,
       ),
     ];
 
@@ -859,15 +1004,15 @@ class PosScreenState extends State<PosScreen> {
     );
   }
 
-  Widget _buildProductCard(Product product) {
+  Widget _buildProductCard(BuildContext context, Product product) {
     return Container(
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: Theme.of(context).colorScheme.surface,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: const Color(0xFF9AC53B).withAlpha(50)),
+        border: Border.all(color: Theme.of(context).colorScheme.primary.withAlpha(50)),
         boxShadow: [
           BoxShadow(
-            color: const Color(0xFF9AC53B).withAlpha(18),
+            color: Theme.of(context).colorScheme.primary.withAlpha(18),
             blurRadius: 10,
             offset: const Offset(0, 4),
           ),
@@ -885,24 +1030,24 @@ class PosScreenState extends State<PosScreen> {
                 children: [
                   Row(
                     children: [
-                      _productCode(product),
+                      _productCode(context, product),
                       const SizedBox(width: 10),
-                      Expanded(child: _productInformation(product)),
+                      Expanded(child: _productInformation(context, product)),
                     ],
                   ),
                   const SizedBox(height: 10),
-                  _productBottomActions(product, fullWidth: true),
+                  _productBottomActions(context, product, fullWidth: true),
                 ],
               );
             }
 
             return Row(
               children: [
-                _productCode(product),
+                _productCode(context, product),
                 const SizedBox(width: 12),
-                Expanded(child: _productInformation(product)),
+                Expanded(child: _productInformation(context, product)),
                 const SizedBox(width: 10),
-                _productBottomActions(product),
+                _productBottomActions(context, product),
               ],
             );
           },
@@ -911,12 +1056,12 @@ class PosScreenState extends State<PosScreen> {
     );
   }
 
-  Widget _productCode(Product product) {
+  Widget _productCode(BuildContext context, Product product) {
     return Container(
       width: 52,
       height: 52,
       decoration: BoxDecoration(
-        color: const Color(0xFF9AC53B).withAlpha(30),
+        color: Theme.of(context).colorScheme.primary.withAlpha(30),
         borderRadius: BorderRadius.circular(14),
       ),
       child: Center(
@@ -926,7 +1071,7 @@ class PosScreenState extends State<PosScreen> {
             fit: BoxFit.scaleDown,
             child: Text(
               product.code,
-              style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF2B3A1E)),
+              style: TextStyle(fontWeight: FontWeight.bold, color: Theme.of(context).colorScheme.onSurface),
             ),
           ),
         ),
@@ -934,7 +1079,7 @@ class PosScreenState extends State<PosScreen> {
     );
   }
 
-  Widget _productInformation(Product product) {
+  Widget _productInformation(BuildContext context, Product product) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -942,20 +1087,20 @@ class PosScreenState extends State<PosScreen> {
           product.name,
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15, color: Color(0xFF1F2A1A)),
+          style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15, color: Theme.of(context).colorScheme.onSurface),
         ),
         const SizedBox(height: 6),
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
           decoration: BoxDecoration(
-            color: product.stock > 0 ? const Color(0xFF9AC53B).withAlpha(23) : Colors.red.withAlpha(20),
+            color: product.stock > 0 ? Theme.of(context).colorScheme.primary.withAlpha(23) : Theme.of(context).colorScheme.error.withAlpha(20),
             borderRadius: BorderRadius.circular(999),
           ),
           child: Text(
             'Stock: ${product.stock.toStringAsFixed(0)}',
             style: TextStyle(
               fontSize: 11,
-              color: product.stock > 0 ? const Color(0xFF2D6A1E) : Colors.red.shade700,
+              color: product.stock > 0 ? Theme.of(context).colorScheme.primary : Theme.of(context).colorScheme.error,
               fontWeight: FontWeight.w600,
             ),
           ),
@@ -964,21 +1109,21 @@ class PosScreenState extends State<PosScreen> {
     );
   }
 
-  Widget _productBottomActions(Product product, {bool fullWidth = false}) {
+  Widget _productBottomActions(BuildContext context, Product product, {bool fullWidth = false}) {
     if (fullWidth) {
       return Row(
         children: [
           Expanded(
             child: Text(
               '\$${product.price.toStringAsFixed(2)}',
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Color(0xFF1F2A1A)),
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Theme.of(context).colorScheme.onSurface),
             ),
           ),
           ElevatedButton(
             onPressed: () => _addToCart(product),
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF9AC53B),
-              foregroundColor: Colors.white,
+              backgroundColor: Theme.of(context).colorScheme.primary,
+              foregroundColor: Theme.of(context).colorScheme.onPrimary,
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
             ),
@@ -994,15 +1139,15 @@ class PosScreenState extends State<PosScreen> {
         FittedBox(
           child: Text(
             '\$${product.price.toStringAsFixed(2)}',
-            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Color(0xFF1F2A1A)),
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Theme.of(context).colorScheme.onSurface),
           ),
         ),
         const SizedBox(height: 8),
         ElevatedButton(
           onPressed: () => _addToCart(product),
           style: ElevatedButton.styleFrom(
-            backgroundColor: const Color(0xFF9AC53B),
-            foregroundColor: Colors.white,
+            backgroundColor: Theme.of(context).colorScheme.primary,
+            foregroundColor: Theme.of(context).colorScheme.onPrimary,
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
           ),
@@ -1229,7 +1374,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
       SnackBar(
         content: Text(message),
         backgroundColor:
-            isError ? Colors.red.shade700 : null,
+            isError ? Theme.of(context).colorScheme.error : null,
       ),
     );
   }
@@ -1254,7 +1399,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                   width: double.infinity,
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: const Color(0xFF9AC53B)
+                    color: Theme.of(context).colorScheme.primary
                         .withAlpha(26),
                     borderRadius:
                         BorderRadius.circular(10),
@@ -1394,7 +1539,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
       height: 56,
       decoration: BoxDecoration(
         border: Border.all(
-          color: Colors.grey.shade400,
+          color: Theme.of(context).colorScheme.outline,
         ),
         borderRadius:
             BorderRadius.circular(8),
@@ -1469,11 +1614,11 @@ class _PaymentDialogState extends State<_PaymentDialog> {
       width: double.infinity,
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.grey.shade100,
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
         borderRadius:
             BorderRadius.circular(10),
         border: Border.all(
-          color: Colors.grey.shade300,
+          color: Theme.of(context).colorScheme.outlineVariant,
         ),
       ),
       child: Column(
@@ -1547,12 +1692,12 @@ class _PaymentDialogState extends State<_PaymentDialog> {
               padding: const EdgeInsets.all(8),
               decoration: BoxDecoration(
                 color:
-                    const Color(0xFF9AC53B)
+                    Theme.of(context).colorScheme.primary
                         .withAlpha(20),
                 borderRadius:
                     BorderRadius.circular(6),
               ),
-              child: const Row(
+              child: Row(
                 mainAxisAlignment:
                     MainAxisAlignment.spaceBetween,
                 children: [
@@ -1561,12 +1706,12 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                     style: TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
-                      color: Color(0xFF2D6A1E),
+                      color: Theme.of(context).colorScheme.primary,
                     ),
                   ),
                   Icon(
                     Icons.check_circle,
-                    color: Color(0xFF2D6A1E),
+                    color: Theme.of(context).colorScheme.primary,
                     size: 18,
                   ),
                 ],
@@ -1589,7 +1734,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
             label,
             style: TextStyle(
               fontSize: small ? 11 : 12,
-              color: Colors.black54,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
           ),
         ),
@@ -1614,7 +1759,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
         color:
-            const Color(0xFF9AC53B)
+            Theme.of(context).colorScheme.primary
                 .withAlpha(20),
         borderRadius:
             BorderRadius.circular(6),
@@ -1624,19 +1769,19 @@ class _PaymentDialogState extends State<_PaymentDialog> {
           Expanded(
             child: Text(
               label,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
-                color: Color(0xFF2D6A1E),
+                color: Theme.of(context).colorScheme.primary,
               ),
             ),
           ),
           Text(
             value,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 12,
               fontWeight: FontWeight.bold,
-              color: Color(0xFF2D6A1E),
+              color: Theme.of(context).colorScheme.primary,
             ),
           ),
         ],
@@ -1645,36 +1790,37 @@ class _PaymentDialogState extends State<_PaymentDialog> {
   }
 
   Widget _buildWarningBox(String value) {
+    final colorScheme = Theme.of(context).colorScheme;
+
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: Colors.orange.withAlpha(26),
-        borderRadius:
-            BorderRadius.circular(6),
+        color: colorScheme.tertiary.withAlpha(26),
+        borderRadius: BorderRadius.circular(6),
         border: Border.all(
-          color: Colors.orange.withAlpha(100),
+          color: colorScheme.tertiary.withAlpha(100),
         ),
       ),
       child: Row(
         children: [
-          const Expanded(
+          Expanded(
             child: Text(
               'Los pagos sin efectivo deben cubrir el importe exacto.',
               style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
-                color: Colors.orange,
+                color: colorScheme.tertiary,
               ),
             ),
           ),
           const SizedBox(width: 8),
           Text(
             value,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 12,
               fontWeight: FontWeight.bold,
-              color: Colors.orange,
+              color: colorScheme.tertiary,
             ),
           ),
         ],
@@ -1687,28 +1833,28 @@ class _PaymentDialogState extends State<_PaymentDialog> {
       width: double.infinity,
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
-        color: Colors.red.withAlpha(20),
+        color: Theme.of(context).colorScheme.error.withAlpha(20),
         borderRadius:
             BorderRadius.circular(6),
       ),
       child: Row(
         children: [
-          const Expanded(
+          Expanded(
             child: Text(
               'Falta por cobrar:',
               style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
-                color: Colors.red,
+                color: Theme.of(context).colorScheme.error,
               ),
             ),
           ),
           Text(
             value,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 12,
               fontWeight: FontWeight.bold,
-              color: Colors.red,
+              color: Theme.of(context).colorScheme.error,
             ),
           ),
         ],
@@ -1733,7 +1879,7 @@ class _MetricCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: Theme.of(context).colorScheme.surface,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: color.withAlpha(80)),
         boxShadow: [
@@ -1755,7 +1901,7 @@ class _MetricCard extends StatelessWidget {
                   label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 11, color: Colors.black54, fontWeight: FontWeight.w600),
+                  style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.onSurfaceVariant, fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(height: 4),
                 Text(
