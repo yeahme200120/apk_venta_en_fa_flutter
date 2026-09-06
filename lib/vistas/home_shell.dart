@@ -59,38 +59,6 @@ class _HomeShellState
         children: pages,
       ),
 
-      floatingActionButton:
-          _currentIndex == 0
-              ? FloatingActionButton.extended(
-                  onPressed: () async {
-                    final posState =
-                        _posKey.currentState;
-
-                    if (posState == null) {
-                      return;
-                    }
-
-                    await posState.openCart(
-                      context,
-                    );
-                  },
-                  icon: Badge(
-                    isLabelVisible:
-                        _cartCount > 0,
-                    label: Text(
-                      '$_cartCount',
-                    ),
-                    child: const Icon(
-                      Icons
-                          .shopping_cart_outlined,
-                    ),
-                  ),
-                  label: const Text(
-                    'Carrito',
-                  ),
-                )
-              : null,
-
       bottomNavigationBar:
           NavigationBar(
         selectedIndex: _currentIndex,

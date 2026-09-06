@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flex_color_picker/flex_color_picker.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 
 import '../../core/config/app_theme.dart';
 import '../../core/network/api_client.dart';
 import '../../core/services/catalog_service.dart';
 import '../../core/services/sync_service.dart';
 import '../../core/storage/app_storage.dart';
+import '../../core/database/pos_db_service.dart'; // Asegurar import para deleteDatabaseFile
+import '../../core/network/network_monitor.dart';
 import '../auth/login_screen.dart';
 import '../catalog/day_catalog_screen.dart';
 import '../catalog/catalog_admin_screen.dart';
@@ -140,6 +143,174 @@ class SettingsScreen extends StatelessWidget {
           content: Text(
             'No fue posible sincronizar: $error',
           ),
+        ),
+      );
+    }
+  }
+
+  // ============================================================
+  // LIMPIAR DATOS DEL DÍA (NUEVO)
+  // ============================================================
+
+  Future<void> _limpiarDia(BuildContext context) async {
+    // 1️⃣ Verificar conectividad
+    final networkMonitor = NetworkMonitor();
+    if (!networkMonitor.isOnline) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            '❌ No hay conexión a internet. Conéctate para poder sincronizar antes de limpiar.',
+          ),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    // 2️⃣ Diálogo de confirmación
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('⚠️ Limpiar datos del día'),
+        content: const Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Esta acción:',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            SizedBox(height: 8),
+            Text('• Eliminará TODAS las ventas del día actual del dispositivo.'),
+            Text('• Cerrará la sesión del día.'),
+            Text('• NO afectará al servidor (si sincronizas primero).'),
+            SizedBox(height: 12),
+            Text(
+              '⚠️ Esta operación NO se puede deshacer.',
+              style: TextStyle(color: Colors.red),
+            ),
+            SizedBox(height: 8),
+            Text(
+              'Antes de limpiar, se sincronizarán automáticamente las ventas pendientes con el servidor.',
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: FilledButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Limpiar de todos modos'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true || !context.mounted) return;
+
+    // 3️⃣ Iniciar proceso
+    // Mostrar diálogo de progreso
+    final progressDialog = showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => const AlertDialog(
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(height: 16),
+            Text('Sincronizando ventas pendientes...'),
+          ],
+        ),
+      ),
+    );
+
+    try {
+      // 4️⃣ Obtener datos de sesión
+      final companyId = await AppStorage().getEmpresaId() ?? 0;
+      final userId = await AppStorage().getUserId() ?? 0;
+      final businessDateStr = await AppStorage().getBusinessDate();
+      final businessDate = businessDateStr != null
+          ? DateTime.parse(businessDateStr)
+          : DateTime.now();
+
+      if (companyId <= 0 || userId <= 0) {
+        throw Exception('No hay sesión activa.');
+      }
+
+      // 5️⃣ Sincronizar ventas pendientes (todas)
+      final syncResult = await SyncService().syncPendingSales(
+        companyId: companyId,
+        userId: userId,
+        businessDate: businessDate,
+        // Sin límite, para sincronizar todo lo pendiente
+      );
+
+      // Si hay errores, mostramos pero continuamos con la limpieza (el usuario ya confirmó)
+      if (syncResult.failed > 0) {
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '⚠️ Se sincronizaron ${syncResult.synced} ventas, pero ${syncResult.failed} fallaron. La limpieza continuará.',
+            ),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+
+      // 6️⃣ Cerrar y eliminar base de datos del día
+      await PosDatabaseService().deleteDatabaseFile(
+        companyId: companyId,
+        userId: userId,
+        businessDate: businessDate,
+      );
+
+      // 7️⃣ Limpiar marcas de fecha en AppStorage
+      await AppStorage().saveBusinessDate(DateTime.now()); // opcional: resetear a hoy
+      await AppStorage().saveServerBusinessDate(DateTime.now());
+      // También podríamos limpiar el estado de la caja si existe
+      await AppStorage().saveOperationState({}); // limpia estado de operación
+
+      // 8️⃣ Cerrar diálogo de progreso
+      if (context.mounted) Navigator.of(context).pop(progressDialog);
+
+      // 9️⃣ Mostrar mensaje de éxito
+      if (!context.mounted) return;
+      await showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('✅ Datos del día eliminados'),
+          content: const Text(
+            'La base de datos del día se ha limpiado correctamente.\n\nSe recomienda reiniciar la aplicación para comenzar un nuevo día.',
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () {
+                Navigator.of(ctx).pop();
+                // Opcional: reiniciar la app a HomeShell
+                // Navigator.of(context).pushAndRemoveUntil(...);
+              },
+              child: const Text('Aceptar'),
+            ),
+          ],
+        ),
+      );
+    } catch (error) {
+      // Si algo falla, cerrar el progreso y mostrar error
+      if (context.mounted) Navigator.of(context).pop(progressDialog);
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('❌ Error al limpiar: $error'),
+          backgroundColor: Colors.red,
         ),
       );
     }
@@ -878,19 +1049,12 @@ class SettingsScreen extends StatelessWidget {
 
           const _SectionTitle('Sistema'),
 
+          // ✅ Reemplazo: "Limpiar datos del día" en lugar de "Catálogos del día"
           _SettingTile(
-            title: 'Catálogos del día',
-            subtitle:
-                'Descarga por internet y prepara la base del día.',
-            icon: Icons.download_outlined,
-            onTap: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) =>
-                      const DayCatalogScreen(),
-                ),
-              );
-            },
+            title: 'Limpiar datos del día',
+            subtitle: 'Elimina todas las ventas del día actual del dispositivo (requiere internet para sincronizar).',
+            icon: Icons.cleaning_services_outlined,
+            onTap: () => _limpiarDia(context),
           ),
 
           _SettingTile(

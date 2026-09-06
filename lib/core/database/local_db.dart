@@ -264,12 +264,57 @@ class LocalDb {
     return rows.isEmpty ? null : rows.first;
   }
 
-  Future<int> createProduct({int? id, required String code, required String name, required double price, double stock = 0, bool isActive = true, Map<String, dynamic>? data, String? updatedAt}) async =>
-      (await database).insert('products', {if (id != null) 'id': id, 'code': code, 'name': name, 'price': price, 'stock': stock, 'is_active': isActive ? 1 : 0, 'data_json': data == null ? null : jsonEncode(data), 'updated_at': updatedAt ?? DateTime.now().toIso8601String()}, conflictAlgorithm: ConflictAlgorithm.replace);
+  Future<int> createProduct({
+  int? id,
+  required String code,
+  required String name,
+  required double price,
+  double stock = 0,
+  bool isActive = true,
+  Map<String, dynamic>? data,
+  String? updatedAt,
+}) async =>
+    (await database).insert(
+      'products',
+      {
+        if (id != null) 'id': id,
+        'code': code,
+        'name': name,
+        'price': price,
+        'stock': stock,
+        'is_active': isActive ? 1 : 0,
+        'data_json': data == null ? null : jsonEncode(data),
+        'updated_at':
+            updatedAt ?? DateTime.now().toIso8601String(),
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
 
-  Future<int> updateProduct({required int id, required String code, required String name, required double price, required double stock, bool isActive = true, Map<String, dynamic>? data, String? updatedAt}) async =>
-      (await database).update('products', {'code': code, 'name': name, 'price': price, 'stock': stock, 'is_active': isActive ? 1 : 0, if (data != null) 'data_json': jsonEncode(data), 'updated_at': updatedAt ?? DateTime.now().toIso8601String()}, where: 'id = ?', whereArgs: [id]);
-
+Future<int> updateProduct({
+  required int id,
+  required String code,
+  required String name,
+  required double price,
+  required double stock,
+  bool isActive = true,
+  Map<String, dynamic>? data,
+  String? updatedAt,
+}) async =>
+    (await database).update(
+      'products',
+      {
+        'code': code,
+        'name': name,
+        'price': price,
+        'stock': stock,
+        'is_active': isActive ? 1 : 0,
+        if (data != null) 'data_json': jsonEncode(data),
+        'updated_at':
+            updatedAt ?? DateTime.now().toIso8601String(),
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
   Future<int> deleteProduct(int id) async => (await database).update('products', {'is_active': 0, 'updated_at': DateTime.now().toIso8601String()}, where: 'id = ?', whereArgs: [id]);
 
   Future<void> _upsertClientWithExecutor(dynamic executor, Map<String, dynamic> data) async {
@@ -318,7 +363,35 @@ class LocalDb {
   static const _catalogTables = {'taxes', 'payment_methods', 'units', 'categories', 'promotions', 'coupons'};
   void _validateCatalogTable(String table) { if (!_catalogTables.contains(table)) throw ArgumentError('Catálogo no permitido: $table'); }
   Future<int> createCatalogItem({required String table, required String name, String? code, double? rate, bool isActive = true, Map<String, dynamic>? data}) async { _validateCatalogTable(table); return (await database).insert(table, {'name': name.trim(), 'code': code?.trim(), if (table == 'taxes') 'rate': rate ?? 0, 'is_active': isActive ? 1 : 0, 'data_json': data == null ? null : jsonEncode(data), 'updated_at': DateTime.now().toIso8601String()}); }
-  Future<int> updateCatalogItem({required String table, required int id, required String name, String? code, double? rate, bool isActive = true, Map<String, dynamic>? data}) async { _validateCatalogTable(table); return (await database).update(table, {'name': name.trim(), 'code': code?.trim(), if (table == 'taxes') 'rate': rate ?? 0, 'is_active': isActive ? 1 : 0, if (data != null) 'data_json': jsonEncode(data), 'updated_at': DateTime.now().toIso8601String()}, where: 'id = ?', whereArgs: [id]); }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ✅ MÉTODO CORREGIDO: ahora acepta 'active' en lugar de 'isActive'
+  // ═══════════════════════════════════════════════════════════════════════════
+  Future<int> updateCatalogItem({
+    required String table,
+    required int id,
+    required String name,
+    String? code,
+    double? rate,
+    bool active = true,     // <-- Cambiado de isActive a active
+    Map<String, dynamic>? data,
+  }) async {
+    _validateCatalogTable(table);
+    return (await database).update(
+      table,
+      {
+        'name': name.trim(),
+        'code': code?.trim(),
+        if (table == 'taxes') 'rate': rate ?? 0,
+        'is_active': active ? 1 : 0,  // <-- Mapeo a is_active
+        if (data != null) 'data_json': jsonEncode(data),
+        'updated_at': DateTime.now().toIso8601String(),
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
   Future<int> deleteCatalogItem(String table, int id) async { _validateCatalogTable(table); return (await database).update(table, {'is_active': 0, 'updated_at': DateTime.now().toIso8601String()}, where: 'id = ?', whereArgs: [id]); }
   Future<int> restoreCatalogItem({required String table, required int id}) async { _validateCatalogTable(table); return (await database).update(table, {'is_active': 1, 'updated_at': DateTime.now().toIso8601String()}, where: 'id = ?', whereArgs: [id]); }
   Future<int> createClient({required String name, String? email, String? phone, String? rfc, bool isActive = true}) async => (await database).insert('clients', {'name': name.trim(), 'email': email?.trim(), 'phone': phone?.trim(), 'rfc': rfc?.trim(), 'is_active': isActive ? 1 : 0, 'updated_at': DateTime.now().toIso8601String()});
@@ -343,9 +416,26 @@ class LocalDb {
     await _processTombstones(data['tombstones']);
   }
 
-  Future<void> _upsertProductWithExecutor(dynamic executor, Map<String, dynamic> data) async {
-    final id = _toInt(data['id']); if (id <= 0) return;
-    await executor.insert('products', {'id': id, 'code': _stringValue(data, ['code', 'codigo', 'sku']) ?? '', 'name': _stringValue(data, ['name', 'nombre']) ?? '', 'price': _toDouble(data['price'] ?? data['precio'] ?? data['precio_venta']), 'stock': _toDouble(data['stock'] ?? data['existencia'] ?? data['cantidad']), 'is_active': _activeValue(data), 'data_json': jsonEncode(data), 'updated_at': _stringValue(data, ['updated_at', 'updatedAt']) ?? DateTime.now().toIso8601String()}, conflictAlgorithm: ConflictAlgorithm.replace);
+  Future<void> _upsertProductWithExecutor(
+  dynamic executor,
+  Map<String, dynamic> data,
+  ) async {
+    final id = _toInt(data['id']);
+    if (id <= 0) return;
+    await executor.insert(
+      'products',
+      {
+        'id': id,
+        'code': _stringValue(data, ['code', 'codigo', 'sku']) ?? '',
+        'name': _stringValue(data, ['name', 'nombre']) ?? '',
+        'price': _toDouble(data['price'] ?? data['precio'] ?? data['precio_venta']),
+        'stock': _toDouble(data['stock'] ?? data['existencia'] ?? data['cantidad']),
+        'is_active': _activeValue(data),
+        'data_json': jsonEncode(data),
+        'updated_at': _stringValue(data, ['updated_at', 'updatedAt']) ?? DateTime.now().toIso8601String(),
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
   }
   Future<void> upsertProductFromApi(Map<String, dynamic> data) async => _upsertProductWithExecutor(await database, data);
 
@@ -450,11 +540,6 @@ class LocalDb {
     final todayMonth = now.month;
     final todayDay = now.day;
 
-    // `business_date` conserva la fecha comercial original de la venta y no
-    // debe utilizarse para decidir la fecha local visible en esta pantalla.
-    // El backend puede entregar `created_at` en UTC, por ejemplo:
-    // 2026-09-03T02:23:44+00:00, que en México todavía puede corresponder
-    // al 02/09 en hora local.
     final rows = await db.query(
       'sales',
       orderBy: 'created_at DESC',
@@ -477,8 +562,6 @@ class LocalDb {
         }
       }
 
-      // Compatibilidad con registros antiguos que no tengan un created_at
-      // válido. En ese caso sí usamos business_date como respaldo.
       if (row['business_date']?.toString() ==
           '${todayYear.toString().padLeft(4, '0')}-'
           '${todayMonth.toString().padLeft(2, '0')}-'
@@ -859,7 +942,5 @@ class LocalDb {
       await db.close();
       _database = null;
     }
-    // No cerrar _salesChanges: es un notificador estático de proceso y
-    // LocalDb puede volver a abrirse después de cambiar de día.
   }
 }
