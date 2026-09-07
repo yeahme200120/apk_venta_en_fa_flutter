@@ -317,16 +317,16 @@ class SettingsScreen extends StatelessWidget {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                _deviceInfoRow(Icons.phone_android_outlined, 'Sistema operativo', os),
-                _deviceInfoRow(Icons.info_outline, 'Versión del SO', osVersion),
-                _deviceInfoRow(Icons.apps_outlined, 'Versión de la app', appVersion),
-                _deviceInfoRow(Icons.code, 'Dart runtime', dartVersion.split(' ').first),
-                _deviceInfoRow(Icons.person_outline, 'ID de usuario',
+                _deviceInfoRow(dialogContext, Icons.phone_android_outlined, 'Sistema operativo', os),
+                _deviceInfoRow(dialogContext, Icons.info_outline, 'Versión del SO', osVersion),
+                _deviceInfoRow(dialogContext, Icons.apps_outlined, 'Versión de la app', appVersion),
+                _deviceInfoRow(dialogContext, Icons.code, 'Dart runtime', dartVersion.split(' ').first),
+                _deviceInfoRow(dialogContext, Icons.person_outline, 'ID de usuario',
                     userId?.toString() ?? 'No disponible'),
-                _deviceInfoRow(Icons.business_outlined, 'ID de empresa',
+                _deviceInfoRow(dialogContext, Icons.business_outlined, 'ID de empresa',
                     companyId?.toString() ?? 'No disponible'),
-                _deviceInfoRow(Icons.wifi, 'Estado de red', networkStatus),
-                _deviceInfoRow(Icons.sync, 'Último acceso online',
+                _deviceInfoRow(dialogContext, Icons.wifi, 'Estado de red', networkStatus),
+                _deviceInfoRow(dialogContext, Icons.sync, 'Último acceso online',
                     lastOnlineAt ?? 'Sin conexión registrada'),
               ],
             ),
@@ -342,13 +342,13 @@ class SettingsScreen extends StatelessWidget {
     );
   }
 
-  Widget _deviceInfoRow(IconData icon, String label, String value) {
+  Widget _deviceInfoRow(BuildContext context, IconData icon, String label, String value) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 7),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, size: 18, color: const Color(0xFF9AC53B)),
+          Icon(icon, size: 18, color: Theme.of(context).colorScheme.primary),
           const SizedBox(width: 10),
           Expanded(
             child: Column(
@@ -883,9 +883,9 @@ class _UserProfileDialogState extends State<_UserProfileDialog> {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: const Color(0xFF9AC53B).withAlpha(18),
+        color: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.4),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFF9AC53B).withAlpha(55)),
+        border: Border.all(color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.3)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -893,7 +893,7 @@ class _UserProfileDialogState extends State<_UserProfileDialog> {
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Icon(Icons.business_outlined, color: Color(0xFF6B8E23)),
+              Icon(Icons.business_outlined, color: Theme.of(context).colorScheme.primary),
               const SizedBox(width: 10),
               Expanded(
                 child: Text(name, maxLines: 3, overflow: TextOverflow.ellipsis,
@@ -948,10 +948,11 @@ class _UserProfileDialogState extends State<_UserProfileDialog> {
                       width: 46,
                       height: 46,
                       decoration: BoxDecoration(
-                        color: const Color(0xFF9AC53B).withAlpha(25),
+                        color: Theme.of(context).colorScheme.primaryContainer,
                         borderRadius: BorderRadius.circular(14),
                       ),
-                      child: const Icon(Icons.person_outline, color: Color(0xFF6B8E23), size: 26),
+                      child: Icon(Icons.person_outline,
+                          color: Theme.of(context).colorScheme.onPrimaryContainer, size: 26),
                     ),
                     const SizedBox(width: 12),
                     const Expanded(
@@ -1213,12 +1214,13 @@ class _SectionTitle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Text(
         title,
-        style: const TextStyle(
-            fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF3A3A3A)),
+        style: TextStyle(
+            fontSize: 14, fontWeight: FontWeight.bold, color: cs.onSurfaceVariant),
       ),
     );
   }
@@ -1243,15 +1245,16 @@ class _SettingTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: cs.surface,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFF9AC53B).withAlpha(50)),
+        border: Border.all(color: cs.primary.withValues(alpha: 0.25)),
         boxShadow: [
           BoxShadow(
-            color: const Color(0xFF9AC53B).withAlpha(12),
+            color: cs.primary.withValues(alpha: 0.07),
             blurRadius: 8,
             offset: const Offset(0, 3),
           ),
@@ -1262,14 +1265,14 @@ class _SettingTile extends StatelessWidget {
           width: 42,
           height: 42,
           decoration: BoxDecoration(
-            color: const Color(0xFF9AC53B).withAlpha(18),
+            color: cs.primaryContainer,
             borderRadius: BorderRadius.circular(12),
           ),
-          child: Icon(icon, color: const Color(0xFF9AC53B)),
+          child: Icon(icon, color: cs.onPrimaryContainer),
         ),
         title: Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
         subtitle: Text(subtitle),
-        trailing: const Icon(Icons.chevron_right, color: Color(0xFF9AC53B)),
+        trailing: Icon(Icons.chevron_right, color: cs.primary),
         onTap: onTap,
       ),
     );

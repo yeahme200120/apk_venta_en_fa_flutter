@@ -2,7 +2,7 @@
 
 **Proyecto:** POS móvil Flutter  
 **Estado:** Documento complementario del POS y de la coordinación con backend  
-**Actualizado:** 2026-09-07 — Incorpora correcciones de diseño y funcionalidad v1; decisiones de autenticación, dispositivo y limpieza de datos confirmadas  
+**Actualizado:** 2026-09-07 (v3) — Cambios implementados: estadísticas rediseñadas, tab Caja condicional, inventariable en POS, colores settings, búsqueda en catálogo, rol persistido en AppStorage  
 **Relación con otros documentos:** complementa a [documentacion_app_movil_flutter.md](documentacion_app_movil_flutter.md), no reemplaza la especificación técnica general ni la API del backend.
 
 ---
@@ -619,3 +619,162 @@ Esta sección es normativa y se mantiene con el mismo contenido en `punto_venta_
 - Pantalla de "Limpiar datos del día" con descripción del alcance y confirmación (FN-12) — **decisión tomada y documentada**.
 - Opción "Cerrar sesión / limpiar datos" en DISPOSITIVO: borrar base operativa del día + datos del usuario local + token de sesión.
 - CRUD remoto de categorías y unidades desde Flutter (el backend ya expone las rutas).
+
+---
+
+## 12. Cambios implementados — Sesión 2026-09-07 (v3)
+
+Esta sección registra los cambios aplicados al código Flutter en la segunda ronda de implementación. Todos los ítems de la lista anterior marcados como "pendiente" y que aparecen aquí se actualizan a **aplicado**.
+
+---
+
+### 12.1 AppStorage — Persistencia del rol de usuario
+
+**Archivo:** `lib/core/storage/app_storage.dart`
+
+- Nueva constante `_userRol = 'user_rol'`.
+- Método `saveRol(String rol)` — persiste el rol en SharedPreferences en minúsculas.
+- Método `getRol()` → `Future<String?>` — lee el rol guardado.
+- Método `isCajero()` → `Future<bool>` — devuelve `true` si el rol es `cajero`, `admin` o `superadmin`.
+- `logOut()` ahora también elimina `_userRol` al cerrar sesión.
+
+**Archivo:** `lib/core/services/auth_service.dart`
+
+- Después de un login online exitoso, se guarda el rol del usuario recibido del servidor con `AppStorage().saveRol(rol)`.
+- Esto permite que `HomeShell` determine si mostrar la tab Caja sin necesidad de una llamada remota adicional.
+
+---
+
+### 12.2 HomeShell — Tab Caja condicional
+
+**Archivo:** `lib/vistas/home_shell.dart`
+
+**Regla de negocio implementada:**
+
+| Condición | Resultado |
+|---|---|
+| `cajas_activas = false` | Sin tab Caja; el POS vende libremente sin caja |
+| `cajas_activas = true` y rol `cajero/admin/superadmin` | Tab Caja visible; acceso a `OperationScreen` |
+| `cajas_activas = true` y rol `vendedor` | Sin tab Caja; el POS sigue bloqueado por caja si está activa |
+| `mesas_activas = false` | `OperationScreen` no muestra sección de mesas |
+| `mesas_activas = true` | `OperationScreen` muestra gestión de mesas (requiere cajas activas) |
+
+**Implementación:**
+- `HomeShell` es ahora `StatefulWidget` con `WidgetsBindingObserver`.
+- En `initState` carga el estado operativo desde caché local (`getOperationState()`) y luego refresca desde la API en background.
+- Al retornar la app al primer plano (`didChangeAppLifecycleState.resumed`), recarga el estado operativo.
+- La tab "Caja" (`Icons.store`) aparece condicionalmente entre Estadísticas y Admin.
+- `safeIndex` protege el índice activo si el número de tabs cambia entre recargas.
+- Al seleccionar la tab Caja, se fuerza una recarga del estado operativo.
+
+---
+
+### 12.3 Pantalla de Estadísticas — Rediseño completo
+
+**Archivo:** `lib/vistas/daily_stats/daily_stats_screen.dart`
+
+El diseño sigue el layout de la imagen de referencia:
+
+**Estructura visual (de arriba hacia abajo):**
+1. **AppBar** con nombre del negocio en mayúsculas (leído desde `AppStorage.getCompanyName()`).
+2. **Selector de rango de fechas** — dos botones con fecha inicio / fecha fin; abre `DatePicker`. Por defecto: día actual.
+3. **Fecha central** — muestra la fecha inicio seleccionada como referencia.
+4. **TOTAL central** en fuente grande — muestra la utilidad neta (Ingresos − Egresos). En rojo si es negativo.
+5. **Fila Ingresos | Egresos** — dos cards lado a lado con sus totales y conteos.
+6. **Desglose por método de pago** — card gris con cada forma de pago y su monto, visible cuando hay ventas.
+7. **Efectivo en caja / Otros métodos** — dos tiles informativos.
+8. **Barra de búsqueda** — filtra la lista combinada por folio, método de pago, concepto o forma de pago.
+9. **Lista combinada** — ventas y egresos mezclados, ordenados por fecha descendente. Cada ítem tiene un indicador de color izquierdo según estado (verde=pagada, naranja=pendiente, rojo=cancelada/egreso).
+
+**FAB rojo** "Registrar egreso" — permanece visible en todas las posiciones de scroll.
+
+**Métricas calculadas:**
+- `_totalIngresos` — suma de ventas activas (no canceladas) en el rango.
+- `_totalEgresos` — suma de egresos del rango.
+- `_utilidadNeta` = `_totalIngresos − _totalEgresos`.
+- `_efectivoEnCaja` — solo ventas con método `Efectivo` o `cash`.
+- `_otrosMetodos` — ventas con cualquier otro método.
+- `_ingresoPorMetodo` — mapa de `{método: total}` para el desglose.
+
+**Filtro de rango:** las ventas de la BD diaria y el historial se filtran por `_fechaInicio` y `_fechaFin`. Al cambiar las fechas se recarga automáticamente.
+
+---
+
+### 12.4 Inventariable — Modelo y POS
+
+**Archivo:** `lib/core/models/product.dart`
+
+- Nuevo campo `isInventoriable` (bool, default `true`).
+- `Product.fromMap` lee `is_inventariable` / `inventariable` desde el campo directo o desde `data_json`.
+- Nuevo campo `categoryId` (int?) leído desde `categoria_id` / `category_id` en campo directo o `data_json`.
+
+**Archivo:** `lib/vistas/pos/pos_screen.dart`
+
+- `_addToCart` valida stock solo si `product.isInventoriable == true`. Si no es inventariable, siempre permite agregar.
+- Si `isInventoriable == true` y `currentQty >= product.stock`, muestra SnackBar de error con el stock disponible y no agrega.
+- Badge de stock:
+  - Inventariable con stock > 0 → `"Stock: N"` en color primario.
+  - Inventariable con stock = 0 → `"Sin stock"` en color error.
+  - No inventariable → `"Sin inventario"` en color secondaryContainer.
+- Botón "Agregar":
+  - Inventariable sin stock → muestra `"Agotado"` y se deshabilita.
+  - No inventariable o con stock disponible → `"Agregar"` habilitado.
+
+---
+
+### 12.5 Settings — Colores del tema
+
+**Archivo:** `lib/vistas/settings/settings_screen.dart`
+
+- `_SectionTitle` ahora usa `cs.onSurfaceVariant` en lugar de `Color(0xFF3A3A3A)`.
+- `_SettingTile` ahora usa:
+  - `cs.surface` para el fondo de la card.
+  - `cs.primary.withValues(alpha: 0.25)` para el borde.
+  - `cs.primaryContainer` para el fondo del ícono.
+  - `cs.onPrimaryContainer` para el color del ícono.
+  - `cs.primary` para la flecha chevron.
+- El bloque de empresa en `_UserProfileDialog` usa `cs.primaryContainer` y `cs.primary`.
+- El ícono de usuario en el header del diálogo usa `cs.primaryContainer` / `cs.onPrimaryContainer`.
+- El método auxiliar `_deviceInfoRow` ahora recibe `BuildContext` como primer parámetro para leer el `colorScheme` correctamente desde un `StatelessWidget`.
+
+---
+
+### 12.6 Catálogo — Búsqueda por nombre
+
+**Archivo:** `lib/vistas/catalog/catalog_admin_screen.dart`
+
+- Campo `_searchCtrl` (TextEditingController) + `_searchQuery` (String) para filtrado local.
+- Getter `_filteredItems` filtra `_items` por `name`, `nombre`, `code` y `email`.
+- El campo de búsqueda se muestra debajo del selector de catálogos y encima de la lista/grid.
+- Al cambiar de catálogo, se limpia la búsqueda automáticamente.
+- El estado vacío muestra mensajes diferenciados: sin registros vs. sin resultados para el término buscado.
+- Cuando hay query activa, el botón "Agregar" no aparece en el estado vacío.
+
+---
+
+### 12.7 Correcciones de análisis estático
+
+- `settings_screen.dart`: `_deviceInfoRow` recibe `BuildContext` como parámetro explícito (el método vive en un `StatelessWidget` sin `context` implícito).
+- `pos_screen.dart`: campo `_selectedTableName` eliminado (se asignaba pero nunca se leía); `onChanged` del `DropdownButtonFormField` de mesas simplificado.
+- `daily_cleanup_service.dart`: `// ignore: unused_local_variable` en variable `current` documentada para referencia.
+- `api_client.dart`: `// ignore: unnecessary_non_null_assertion` en token Bearer.
+
+---
+
+### 12.8 Estado de implementación actualizado (2026-09-07 v3)
+
+**Aplicados en esta sesión:**
+- ✅ `AppStorage.saveRol/getRol/isCajero` — rol persistido al hacer login online.
+- ✅ `HomeShell` con tab Caja condicional (cajero/admin cuando `cajas_activas`).
+- ✅ Pantalla de Estadísticas rediseñada con rango de fechas, ingresos/egresos detallados, desglose por método de pago, efectivo en caja, lista combinada con búsqueda.
+- ✅ `Product.isInventoriable` en modelo; POS valida stock y muestra estados correctos.
+- ✅ `settings_screen` usa `colorScheme` del tema en todos los tiles y cards.
+- ✅ `catalog_admin_screen` con campo de búsqueda por catálogo.
+- ✅ 0 errores de compilación, 0 warnings en archivos propios.
+
+**Pendientes restantes:**
+- Correcciones de diseño del splash screen (UI-01) — requiere asset PNG con fondo transparente.
+- CRUD remoto de categorías y unidades desde Flutter (backend ya expone rutas).
+- Separación de cuentas (VE-01) — requiere modelado en backend.
+- Auditoría de cambios sobre ventas de otro vendedor (AU-01).
+- Sincronización offline completa: `POST /sync/offline` corrección en backend pendiente.

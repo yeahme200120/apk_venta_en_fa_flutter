@@ -21,8 +21,8 @@ class DailyCleanupService {
     final dir = Directory('${root.path}/app-data/companies/$companyId/users/$userId');
     await dir.create(recursive: true);
     final date = businessDate.toIso8601String().substring(0, 10);
+    // ignore: unused_local_variable
     final current = File('${dir.path}/pos_day_$date.sqlite');
-
     // El archivo diario es operativo. No lo respaldamos como fuente de verdad;
     // los pendientes ya están en LocalDb. Se puede borrar sin perder ventas.
     await _dayDb.deleteDatabaseFile(companyId: companyId, userId: userId, businessDate: businessDate);

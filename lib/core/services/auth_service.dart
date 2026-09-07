@@ -113,6 +113,12 @@ class AuthService {
       await AppStorage().saveCompanyName(companyName.toString());
     }
 
+    // Persistir el rol del usuario para uso offline (tab Caja, permisos).
+    final rolRaw = user['rol'] ?? user['role'] ?? user['tipo_usuario'] ?? '';
+    if (rolRaw.toString().trim().isNotEmpty) {
+      await AppStorage().saveRol(rolRaw.toString().trim().toLowerCase());
+    }
+
     final configuration = empresa['configuracion'];
     if (configuration is Map) {
       await AppStorage().saveOperationState({

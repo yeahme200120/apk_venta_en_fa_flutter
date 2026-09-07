@@ -20,94 +20,56 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
   List<Map<String, dynamic>> _items = [];
   int _loadGeneration = 0;
 
+  // Búsqueda dentro del catálogo activo
+  final TextEditingController _searchCtrl = TextEditingController();
+  String _searchQuery = '';
+
   // ============================================================
-  // CATÃLOGOS
-  //
-  // Los primeros 3 estÃ¡n habilitados (v1 bÃ¡sica).
-  // El resto se muestran como "PrÃ³ximamente" y estÃ¡n deshabilitados.
+  // CATÁLOGOS
+  // Primeros 3 habilitados (v1 básica). El resto: Próximamente.
   // ============================================================
 
   static const List<_CatalogInfo> _catalogs = [
-    _CatalogInfo(
-      title: 'CategorÃ­as',
-      icon: Icons.category_outlined,
-      color: Color(0xFFE91E63),
-      enabled: true,
-    ),
-    _CatalogInfo(
-      title: 'Productos',
-      icon: Icons.inventory_2_outlined,
-      color: Color(0xFF9AC53B),
-      enabled: true,
-    ),
-    _CatalogInfo(
-      title: 'Formas de pago',
-      icon: Icons.payments_outlined,
-      color: Color(0xFF4CAF50),
-      enabled: true,
-    ),
-    _CatalogInfo(
-      title: 'Clientes',
-      icon: Icons.people_outline,
-      color: Color(0xFF2196F3),
-      enabled: false,
-    ),
-    _CatalogInfo(
-      title: 'Impuestos',
-      icon: Icons.percent_outlined,
-      color: Color(0xFFFF9800),
-      enabled: false,
-    ),
-    _CatalogInfo(
-      title: 'Unidades',
-      icon: Icons.straighten_outlined,
-      color: Color(0xFF673AB7),
-      enabled: false,
-    ),
-    _CatalogInfo(
-      title: 'Promociones',
-      icon: Icons.local_offer_outlined,
-      color: Color(0xFF00A896),
-      enabled: false,
-    ),
-    _CatalogInfo(
-      title: 'Cupones',
-      icon: Icons.confirmation_number_outlined,
-      color: Color(0xFF795548),
-      enabled: false,
-    ),
+    _CatalogInfo(title: 'Categorías', icon: Icons.category_outlined, color: Color(0xFFE91E63), enabled: true),
+    _CatalogInfo(title: 'Productos', icon: Icons.inventory_2_outlined, color: Color(0xFF9AC53B), enabled: true),
+    _CatalogInfo(title: 'Formas de pago', icon: Icons.payments_outlined, color: Color(0xFF4CAF50), enabled: true),
+    _CatalogInfo(title: 'Clientes', icon: Icons.people_outline, color: Color(0xFF2196F3), enabled: false),
+    _CatalogInfo(title: 'Impuestos', icon: Icons.percent_outlined, color: Color(0xFFFF9800), enabled: false),
+    _CatalogInfo(title: 'Unidades', icon: Icons.straighten_outlined, color: Color(0xFF673AB7), enabled: false),
+    _CatalogInfo(title: 'Promociones', icon: Icons.local_offer_outlined, color: Color(0xFF00A896), enabled: false),
+    _CatalogInfo(title: 'Cupones', icon: Icons.confirmation_number_outlined, color: Color(0xFF795548), enabled: false),
   ];
 
   String get _currentTable {
     switch (_selectedCatalog) {
-      case 0:
-        return 'categories';
-      case 1:
-        return 'products';
-      case 2:
-        return 'payment_methods';
-      case 3:
-        return 'clients';
-      case 4:
-        return 'taxes';
-      case 5:
-        return 'units';
-      case 6:
-        return 'promotions';
-      case 7:
-        return 'coupons';
-      default:
-        return 'categories';
+      case 0: return 'categories';
+      case 1: return 'products';
+      case 2: return 'payment_methods';
+      case 3: return 'clients';
+      case 4: return 'taxes';
+      case 5: return 'units';
+      case 6: return 'promotions';
+      case 7: return 'coupons';
+      default: return 'categories';
     }
   }
 
   bool get _isProduct => _selectedCatalog == 1;
   bool get _isClient => _selectedCatalog == 3;
-
-  // Formas de pago: Ã­ndice 2 en el nuevo orden
   bool get _isPaymentMethod => _selectedCatalog == 2;
-
   _CatalogInfo get _currentCatalog => _catalogs[_selectedCatalog];
+
+  /// Items filtrados por la búsqueda activa.
+  List<Map<String, dynamic>> get _filteredItems {
+    if (_searchQuery.isEmpty) return _items;
+    final q = _searchQuery.toLowerCase();
+    return _items.where((item) {
+      final name = (item['name'] ?? item['nombre'] ?? '').toString().toLowerCase();
+      final code = (item['code'] ?? '').toString().toLowerCase();
+      final email = (item['email'] ?? '').toString().toLowerCase();
+      return name.contains(q) || code.contains(q) || email.contains(q);
+    }).toList();
+  }
 
   // ============================================================
   // CICLO DE VIDA
@@ -130,6 +92,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
   @override
   void dispose() {
     _isDisposed = true;
+    _searchCtrl.dispose();
     super.dispose();
   }
 
@@ -146,7 +109,6 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
 
     try {
       List<Map<String, dynamic>> data;
-
       if (catalogIndex == 1) {
         data = await _db.getAllProducts();
       } else if (catalogIndex == 3) {
@@ -166,34 +128,30 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
     } catch (e) {
       if (_isDisposed || !mounted) return;
       if (generation != _loadGeneration) return;
-
-      _safeSetState(() {
-        _items = [];
-        _loading = false;
-      });
+      _safeSetState(() { _items = []; _loading = false; });
       _showError('Error al cargar: $e');
     }
   }
 
   void _changeCatalog(int index) {
     if (_isDisposed || !mounted) return;
-    // Bloquear catÃ¡logos deshabilitados
     if (!_catalogs[index].enabled) {
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
         ..showSnackBar(const SnackBar(
-          content: Text('Esta secciÃ³n estarÃ¡ disponible en una prÃ³xima versiÃ³n.'),
+          content: Text('Esta sección estará disponible en una próxima versión.'),
           duration: Duration(seconds: 2),
         ));
       return;
     }
     if (index == _selectedCatalog) return;
-
     _loadGeneration++;
     _safeSetState(() {
       _selectedCatalog = index;
       _items = [];
       _loading = true;
+      _searchQuery = '';
+      _searchCtrl.clear();
     });
     _load();
   }
@@ -206,19 +164,14 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
     if (_isDisposed || !mounted) return;
     if (_isPaymentMethod) return;
 
-    final table = _currentTable;
-    final isProduct = _isProduct;
-    final isClient = _isClient;
-    final catalogTitle = _currentCatalog.title;
-
     final result = await Navigator.push<bool>(
       context,
       MaterialPageRoute(
         builder: (_) => CatalogEditScreen(
-          table: table,
-          isProduct: isProduct,
-          isClient: isClient,
-          catalogTitle: catalogTitle,
+          table: _currentTable,
+          isProduct: _isProduct,
+          isClient: _isClient,
+          catalogTitle: _currentCatalog.title,
           item: item,
         ),
       ),
@@ -227,29 +180,25 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
     if (_isDisposed || !mounted) return;
     if (result == true) {
       await _load();
-      // El CatalogEditScreen ya llama a LocalDb.notifySalesChanged() para productos.
-      // Para categorÃ­as y otros catÃ¡logos tambiÃ©n recargamos el catÃ¡logo en POS.
       if (!_isProduct) LocalDb.notifySalesChanged();
     }
   }
 
   // ============================================================
-  // TOGGLE ACTIVO (formas de pago usan switch)
+  // TOGGLE (formas de pago)
   // ============================================================
 
   Future<void> _toggleStatus(Map<String, dynamic> item) async {
     if (_isDisposed || !mounted) return;
     final id = _toIntOrNull(item['id']);
-    if (id == null) { _showError('ID invÃ¡lido'); return; }
+    if (id == null) { _showError('ID inválido'); return; }
 
     final currentActive = _isActive(item['is_active'] ?? item['active'] ?? item['activo'] ?? 1);
     final newActive = !currentActive;
 
-    // Validar que quede al menos una forma de pago activa
     if (_isPaymentMethod && !newActive) {
-      final activeCount = _items.where((i) {
-        return _isActive(i['is_active'] ?? i['active'] ?? i['activo'] ?? 1);
-      }).length;
+      final activeCount = _items.where((i) =>
+          _isActive(i['is_active'] ?? i['active'] ?? i['activo'] ?? 1)).length;
       if (activeCount <= 1) {
         _showError('Debes tener al menos una forma de pago activa.');
         return;
@@ -283,23 +232,17 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
 
     final name = item['name']?.toString() ?? item['nombre']?.toString() ?? 'registro';
     final id = _toIntOrNull(item['id']);
-    if (id == null) { _showError('ID invÃ¡lido'); return; }
+    if (id == null) { _showError('ID inválido'); return; }
 
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Desactivar registro'),
-        content: Text('Â¿Deseas desactivar "$name"?',
+        content: Text('¿Deseas desactivar "$name"?',
             maxLines: 4, overflow: TextOverflow.ellipsis),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('Cancelar'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('Desactivar'),
-          ),
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancelar')),
+          FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Desactivar')),
         ],
       ),
     );
@@ -380,9 +323,10 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
   @override
   Widget build(BuildContext context) {
     final catalog = _currentCatalog;
+    final cs = Theme.of(context).colorScheme;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('CatÃ¡logos de la empresa')),
+      appBar: AppBar(title: const Text('Catálogos de la empresa')),
       body: SafeArea(
         child: LayoutBuilder(
           builder: (context, constraints) {
@@ -392,12 +336,45 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
 
             return Column(
               children: [
+                // ── Selector de catálogos ─────────────────────
                 _buildCatalogSelector(isDesktop, isTablet),
                 const Divider(height: 1),
+
+                // ── Campo de búsqueda ─────────────────────────
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
+                  child: TextField(
+                    controller: _searchCtrl,
+                    decoration: InputDecoration(
+                      hintText: 'Buscar en ${catalog.title.toLowerCase()}...',
+                      hintStyle: TextStyle(color: cs.onSurfaceVariant, fontSize: 13),
+                      prefixIcon: Icon(Icons.search, color: cs.onSurfaceVariant, size: 20),
+                      suffixIcon: _searchQuery.isNotEmpty
+                          ? IconButton(
+                              icon: const Icon(Icons.clear, size: 18),
+                              onPressed: () => _safeSetState(() {
+                                _searchCtrl.clear();
+                                _searchQuery = '';
+                              }),
+                            )
+                          : null,
+                      filled: true,
+                      fillColor: cs.surfaceContainerHighest,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide.none,
+                      ),
+                      contentPadding: const EdgeInsets.symmetric(vertical: 10),
+                    ),
+                    onChanged: (v) => _safeSetState(() => _searchQuery = v),
+                  ),
+                ),
+
+                // ── Contenido del catálogo ────────────────────
                 Expanded(
                   child: _loading
                       ? const Center(child: CircularProgressIndicator())
-                      : _items.isEmpty
+                      : _filteredItems.isEmpty
                           ? _buildEmptyState(catalog)
                           : width >= 800
                               ? RefreshIndicator(onRefresh: _load, child: _buildGrid(width))
@@ -413,7 +390,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
   }
 
   // ============================================================
-  // SELECTOR DE CATÃLOGOS
+  // SELECTOR
   // ============================================================
 
   Widget _buildCatalogSelector(bool isDesktop, bool isTablet) {
@@ -421,8 +398,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
       height: 104,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
-        physics: const BouncingScrollPhysics(
-            parent: AlwaysScrollableScrollPhysics()),
+        physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
         padding: EdgeInsets.symmetric(
           horizontal: isDesktop ? 20 : isTablet ? 16 : 10,
           vertical: 8,
@@ -433,10 +409,10 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
           final catalog = _catalogs[index];
           final selected = index == _selectedCatalog;
           final enabled = catalog.enabled;
-          final width = isDesktop ? 128.0 : isTablet ? 118.0 : 108.0;
+          final itemWidth = isDesktop ? 128.0 : isTablet ? 118.0 : 108.0;
 
           return SizedBox(
-            width: width,
+            width: itemWidth,
             child: Opacity(
               opacity: enabled ? 1.0 : 0.45,
               child: Material(
@@ -446,22 +422,16 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
                   onTap: () => _changeCatalog(index),
                   child: AnimatedContainer(
                     duration: const Duration(milliseconds: 160),
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 7, vertical: 7),
+                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 7),
                     decoration: BoxDecoration(
                       color: selected
                           ? catalog.color
-                          : Theme.of(context)
-                              .colorScheme
-                              .surfaceContainerHighest,
+                          : Theme.of(context).colorScheme.surfaceContainerHighest,
                       borderRadius: BorderRadius.circular(14),
                       border: Border.all(
                         color: selected
                             ? catalog.color
-                            : Theme.of(context)
-                                .colorScheme
-                                .outlineVariant
-                                .withValues(alpha: 0.35),
+                            : Theme.of(context).colorScheme.outlineVariant.withValues(alpha: 0.35),
                         width: selected ? 1.5 : 1,
                       ),
                     ),
@@ -470,17 +440,12 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
                       children: [
                         Icon(catalog.icon,
                             size: isDesktop ? 24 : 22,
-                            color: selected
-                                ? Colors.white
-                                : catalog.color),
+                            color: selected ? Colors.white : catalog.color),
                         const SizedBox(height: 5),
                         Expanded(
                           child: Center(
                             child: Text(
-                              // Agregar "PrÃ³x." a catÃ¡logos deshabilitados
-                              enabled
-                                  ? catalog.title
-                                  : '${catalog.title}\n(PrÃ³x.)',
+                              enabled ? catalog.title : '${catalog.title}\n(Próx.)',
                               textAlign: TextAlign.center,
                               maxLines: 2,
                               overflow: TextOverflow.ellipsis,
@@ -490,9 +455,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
                                 fontWeight: FontWeight.w600,
                                 color: selected
                                     ? Colors.white
-                                    : Theme.of(context)
-                                        .colorScheme
-                                        .onSurface,
+                                    : Theme.of(context).colorScheme.onSurface,
                               ),
                             ),
                           ),
@@ -510,15 +473,15 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
   }
 
   // ============================================================
-  // LISTA / GRID DE ÃTEMS
+  // LISTA / GRID
   // ============================================================
 
   Widget _buildList() {
     return ListView.separated(
       padding: const EdgeInsets.all(12),
-      itemCount: _items.length,
+      itemCount: _filteredItems.length,
       separatorBuilder: (_, _) => const SizedBox(height: 8),
-      itemBuilder: (_, i) => _buildItemCard(_items[i], compact: true),
+      itemBuilder: (_, i) => _buildItemCard(_filteredItems[i], compact: true),
     );
   }
 
@@ -532,19 +495,16 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
         mainAxisSpacing: 14,
         mainAxisExtent: 155,
       ),
-      itemCount: _items.length,
-      itemBuilder: (_, i) => _buildItemCard(_items[i], compact: false),
+      itemCount: _filteredItems.length,
+      itemBuilder: (_, i) => _buildItemCard(_filteredItems[i], compact: false),
     );
   }
 
   Widget _buildItemCard(Map<String, dynamic> item, {required bool compact}) {
     final catalog = _currentCatalog;
-    final name = item['name']?.toString() ??
-        item['nombre']?.toString() ??
-        'Sin nombre';
+    final name = item['name']?.toString() ?? item['nombre']?.toString() ?? 'Sin nombre';
     final code = item['code']?.toString() ?? '';
-    final active = _isActive(
-        item['is_active'] ?? item['active'] ?? item['activo'] ?? 1);
+    final active = _isActive(item['is_active'] ?? item['active'] ?? item['activo'] ?? 1);
     final details = _buildDetails(item, code);
 
     return Card(
@@ -565,15 +525,13 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
                   Text(name,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                          fontWeight: FontWeight.w600, fontSize: 15)),
+                      style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
                   if (details.isNotEmpty) ...[
                     const SizedBox(height: 5),
                     Text(details,
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                            color: Colors.grey.shade600, fontSize: 12)),
+                        style: TextStyle(color: Colors.grey.shade600, fontSize: 12)),
                   ],
                   const SizedBox(height: 6),
                   _buildStatusBadge(active),
@@ -581,7 +539,6 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
               ),
             ),
             const SizedBox(width: 4),
-            // Formas de pago: switch; el resto: botones editar/desactivar
             if (_isPaymentMethod)
               _buildToggleSwitch(item, active)
             else
@@ -607,14 +564,13 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
       final stock = _toDouble(item['stock']);
       final parts = <String>[];
       if (code.isNotEmpty) parts.add(code);
-      final categoryName = _jsonValue(
-          item, ['categoria_nombre', 'category_name']);
+      final categoryName = _jsonValue(item, ['categoria_nombre', 'category_name']);
       if (categoryName != null && categoryName.toString().trim().isNotEmpty) {
         parts.add('Cat: ${categoryName.toString()}');
       }
       parts.add('Stock: ${stock.toStringAsFixed(0)}');
       parts.add('\$${price.toStringAsFixed(2)}');
-      return parts.join('  â€¢  ');
+      return parts.join('  •  ');
     }
     if (_isClient) {
       final parts = <String>[];
@@ -624,14 +580,14 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
       if (phone != null && phone.isNotEmpty) parts.add(phone);
       if (email != null && email.isNotEmpty) parts.add(email);
       if (rfc != null && rfc.isNotEmpty) parts.add('RFC: $rfc');
-      return parts.join('  â€¢  ');
+      return parts.join('  •  ');
     }
     if (_selectedCatalog == 4) {
       final rate = _toDouble(item['rate']);
       final parts = <String>[];
       if (code.isNotEmpty) parts.add(code);
       parts.add('Tasa: ${rate.toStringAsFixed(2)}%');
-      return parts.join('  â€¢  ');
+      return parts.join('  •  ');
     }
     return code;
   }
@@ -645,8 +601,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
           color: catalog.color.withValues(alpha: 0.12),
           borderRadius: BorderRadius.circular(size >= 48 ? 14 : 12),
         ),
-        child: Icon(catalog.icon,
-            color: catalog.color, size: size >= 48 ? 24 : 22),
+        child: Icon(catalog.icon, color: catalog.color, size: size >= 48 ? 24 : 22),
       ),
     );
   }
@@ -655,9 +610,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
       decoration: BoxDecoration(
-        color: active
-            ? Colors.green.withValues(alpha: 0.10)
-            : Colors.grey.withValues(alpha: 0.12),
+        color: active ? Colors.green.withValues(alpha: 0.10) : Colors.grey.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(20),
       ),
       child: Row(
@@ -682,8 +635,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
     );
   }
 
-  Widget _buildActions(Map<String, dynamic> item, bool active,
-      {required bool compact}) {
+  Widget _buildActions(Map<String, dynamic> item, bool active, {required bool compact}) {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -712,40 +664,41 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
         children: [
           ConstrainedBox(
-            constraints: BoxConstraints(
-              minHeight: MediaQuery.of(context).size.height * 0.5,
-            ),
+            constraints: BoxConstraints(minHeight: MediaQuery.of(context).size.height * 0.5),
             child: Center(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Container(
-                    width: 88,
-                    height: 88,
+                    width: 88, height: 88,
                     decoration: BoxDecoration(
                       color: catalog.color.withValues(alpha: 0.10),
                       shape: BoxShape.circle,
                     ),
-                    child: Icon(catalog.icon,
-                        size: 46, color: catalog.color.withOpacity(.55)),
+                    child: Icon(catalog.icon, size: 46, color: catalog.color.withValues(alpha: 0.55)),
                   ),
                   const SizedBox(height: 18),
-                  const Text('No hay registros',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                          fontSize: 20, fontWeight: FontWeight.w700)),
+                  Text(
+                    _searchQuery.isNotEmpty
+                        ? 'Sin resultados para "$_searchQuery"'
+                        : 'No hay registros',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+                  ),
                   const SizedBox(height: 8),
                   ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 420),
                     child: Text(
-                      'TodavÃ­a no existen registros en ${catalog.title.toLowerCase()}.',
+                      _searchQuery.isNotEmpty
+                          ? 'Intenta con otro término de búsqueda.'
+                          : 'Todavía no existen registros en ${catalog.title.toLowerCase()}.',
                       textAlign: TextAlign.center,
                       softWrap: true,
                       style: TextStyle(color: Colors.grey.shade600),
                     ),
                   ),
                   const SizedBox(height: 20),
-                  if (!_isPaymentMethod)
+                  if (!_isPaymentMethod && _searchQuery.isEmpty)
                     FilledButton.icon(
                       onPressed: () => _openEditor(),
                       icon: const Icon(Icons.add),
@@ -762,7 +715,6 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
 
   Widget _buildFAB(_CatalogInfo catalog) {
     if (_isPaymentMethod) return const SizedBox.shrink();
-
     return FloatingActionButton.extended(
       onPressed: () => _openEditor(),
       backgroundColor: catalog.color,
@@ -770,8 +722,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
       icon: const Icon(Icons.add),
       label: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 180),
-        child: Text('Nuevo ${catalog.title}',
-            maxLines: 1, overflow: TextOverflow.ellipsis),
+        child: Text('Nuevo ${catalog.title}', maxLines: 1, overflow: TextOverflow.ellipsis),
       ),
     );
   }
@@ -794,5 +745,3 @@ class _CatalogInfo {
     this.enabled = true,
   });
 }
-
-

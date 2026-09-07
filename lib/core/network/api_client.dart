@@ -28,7 +28,7 @@ class ApiClient {
 
       if (hasToken) {
         options.headers['Authorization'] =
-            'Bearer ${token!.trim()}';
+            'Bearer ${token!.trim()}'; // ignore: unnecessary_non_null_assertion
 
         print(
           '🔒 Authorization agregado a ${options.path}',

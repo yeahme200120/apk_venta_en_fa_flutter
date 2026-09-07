@@ -11,6 +11,7 @@ class AppStorage {
   static const _offlineIdentifier='offline_identifier', _offlinePassword='offline_password', _offlineEnabled='offline_enabled';
   static const _lastBusinessDate='last_business_date', _serverBusinessDate='server_business_date', _lastOnlineAt='last_online_at', _lastOnlineUserId='last_online_user_id', _lastOnlineEmpresaId='last_online_empresa_id';
   static const _ticketConfig='ticket_config', _operationState='operation_state';
+  static const _userRol='user_rol';
 
   Future<SharedPreferences> get _p async => _prefs ??= await SharedPreferences.getInstance();
 
@@ -45,7 +46,14 @@ class AppStorage {
   Future<Map<String, dynamic>> getTicketConfig() async { final s = (await _p).getString(_ticketConfig); if (s == null) return {}; try { final d = jsonDecode(s); return d is Map ? Map<String, dynamic>.from(d) : {}; } catch (_) { return {}; } }
   Future<void> saveOperationState(Map<String,dynamic> c)=>_p.then((p)=>p.setString(_operationState,jsonEncode(c)));
   Future<Map<String,dynamic>> getOperationState() async {final s=(await _p).getString(_operationState);if(s==null)return{};try{final d=jsonDecode(s);return d is Map?Map<String,dynamic>.from(d):{};}catch(_){return{};}}
-  Future<void> logOut() async {final p=await _p; await p.remove(_token); await p.remove(_userId); await p.remove(_empresaId); await p.setBool(_logged,false);}
+  Future<void> saveRol(String rol)=>_p.then((p)=>p.setString(_userRol,rol));
+  Future<String?> getRol()=>_p.then((p)=>p.getString(_userRol));
+  /// Comprueba si el rol guardado tiene permisos de cajero (cajero, admin, superadmin).
+  Future<bool> isCajero() async {
+    final rol = (await getRol())?.toLowerCase().trim() ?? '';
+    return rol == 'cajero' || rol == 'admin' || rol == 'superadmin';
+  }
+  Future<void> logOut() async {final p=await _p; await p.remove(_token); await p.remove(_userId); await p.remove(_empresaId); await p.remove(_userRol); await p.setBool(_logged,false);}
   Future<void> clearCurrentSession()=>logOut();
   Future<void> clearOfflineCredentials() async {final p=await _p; for(final k in [_offlineIdentifier,_offlinePassword,_offlineEnabled,_lastOnlineUserId,_lastOnlineEmpresaId,_userName,_companyName,_token,_userId,_empresaId,_logged])await p.remove(k);}
   Future<void> clear() async=>(await _p).clear();

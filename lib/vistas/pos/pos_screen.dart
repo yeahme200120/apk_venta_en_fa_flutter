@@ -1,4 +1,4 @@
-import 'dart:async';
+﻿import 'dart:async';
 
 import 'package:flutter/material.dart';
 
@@ -53,7 +53,6 @@ class PosScreenState extends State<PosScreen> {
   List<Map<String, dynamic>> _tables = const [];
 
   int? _selectedTableId;
-  String? _selectedTableName;
 
   ValueNotifier<List<CartItem>> get cartNotifier => _cartNotifier;
 
@@ -120,7 +119,7 @@ class PosScreenState extends State<PosScreen> {
         _isLoading = false;
       });
 
-      // Si la categoría seleccionada ya no existe, resetear
+      // Si la categorÃ­a seleccionada ya no existe, resetear
       if (_selectedCategoryId != null) {
         final exists = _categories.any((c) => _catId(c) == _selectedCategoryId);
         if (!exists && mounted) setState(() => _selectedCategoryId = null);
@@ -150,9 +149,12 @@ class PosScreenState extends State<PosScreen> {
       return;
     }
     await _loadProducts();
-    if (!mounted || !_refreshQueued) return;
-    _refreshQueued = false;
-    await _loadProducts();
+    // Si se encolaron más cambios mientras cargábamos, hacer otro refresh.
+    if (!mounted) return;
+    if (_refreshQueued) {
+      _refreshQueued = false;
+      await _loadProducts();
+    }
   }
 
   Future<void> _refreshAll() async {
@@ -165,7 +167,7 @@ class PosScreenState extends State<PosScreen> {
         try {
           await SyncService().syncPull();
         } catch (error) {
-          debugPrint('ℹ️ Actualización remota omitida: $error');
+          debugPrint('â„¹ï¸ ActualizaciÃ³n remota omitida: $error');
         }
       }
       await _loadProducts();
@@ -219,6 +221,27 @@ class PosScreenState extends State<PosScreen> {
   double get _total => _cartNotifier.value.fold(0, (sum, item) => sum + item.subtotal);
 
   void _addToCart(Product product) {
+    // Si es inventariable, verificar que tenga stock disponible.
+    if (product.isInventoriable) {
+      final currentQty = _cartNotifier.value
+          .where((item) => item.product.id == product.id)
+          .fold(0, (sum, item) => sum + item.quantity);
+      if (currentQty >= product.stock) {
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+            ..hideCurrentSnackBar()
+            ..showSnackBar(SnackBar(
+              content: Text(
+                'Stock insuficiente para "${product.name}". '
+                'Disponible: ${product.stock.toStringAsFixed(0)}',
+              ),
+              backgroundColor: Theme.of(context).colorScheme.error,
+              duration: const Duration(seconds: 2),
+            ));
+        }
+        return;
+      }
+    }
     final current = List<CartItem>.from(_cartNotifier.value);
     final index = current.indexWhere((item) => item.product.id == product.id);
     if (index >= 0) {
@@ -336,7 +359,7 @@ class PosScreenState extends State<PosScreen> {
       if (saleId != null) {
         final paid = await _db.payPendingSale(saleId, payments: payments, paymentMethod: cashAmount > 0 ? 'Efectivo' : 'Mixto', cashReceived: cashAmount, changeDue: change);
         if (!paid) {
-          if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('La venta pendiente ya no está disponible.')));
+          if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('La venta pendiente ya no estÃ¡ disponible.')));
           return false;
         }
       } else {
@@ -385,7 +408,7 @@ class PosScreenState extends State<PosScreen> {
       _setCart([]);
       _pendingSaleId = null;
       _selectedTableId = null;
-      _selectedTableName = null;
+      
     });
     await _loadProducts();
     if (!mounted) return false;
@@ -396,7 +419,7 @@ class PosScreenState extends State<PosScreen> {
   }
 
   // ============================================================
-  // DIÁLOGO DE PAGO
+  // DIÃLOGO DE PAGO
   // ============================================================
 
   Future<Map<String, dynamic>?> _showPaymentDialog() async {
@@ -409,7 +432,7 @@ class PosScreenState extends State<PosScreen> {
   }
 
   // ============================================================
-  // OPERACIÓN
+  // OPERACIÃ“N
   // ============================================================
 
   Future<void> _openOperation() async {
@@ -418,7 +441,7 @@ class PosScreenState extends State<PosScreen> {
   }
 
   // ============================================================
-  // FILTRO POR CATEGORÍA (panel lateral)
+  // FILTRO POR CATEGORÃA (panel lateral)
   // ============================================================
 
   void _openCategoryFilter() {
@@ -438,7 +461,7 @@ class PosScreenState extends State<PosScreen> {
                 child: Row(
                   children: [
                     const Expanded(
-                      child: Text('Filtrar por categoría', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+                      child: Text('Filtrar por categorÃ­a', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
                     ),
                     IconButton(
                       onPressed: () => Navigator.of(sheetCtx).pop(),
@@ -452,7 +475,7 @@ class PosScreenState extends State<PosScreen> {
                 child: ListView(
                   shrinkWrap: true,
                   children: [
-                    // Opción "Todos"
+                    // OpciÃ³n "Todos"
                     ListTile(
                       leading: Icon(
                         Icons.all_inclusive,
@@ -544,7 +567,7 @@ class PosScreenState extends State<PosScreen> {
                 clipBehavior: Clip.none,
                 children: [
                   IconButton(
-                    tooltip: items.isEmpty ? 'Carrito vacío' : 'Abrir carrito',
+                    tooltip: items.isEmpty ? 'Carrito vacÃ­o' : 'Abrir carrito',
                     onPressed: _openCart,
                     icon: const Icon(Icons.shopping_cart_outlined),
                   ),
@@ -619,28 +642,26 @@ class PosScreenState extends State<PosScreen> {
                                             )),
                                   ],
                                   onChanged: (tableId) {
-                                    final table = _tables.where((item) => item['id'] == tableId).firstOrNull;
                                     setState(() {
                                       _selectedTableId = tableId;
-                                      _selectedTableName = table?['nombre']?.toString();
                                     });
                                   },
                                 ),
                               if (_mesasActivas) const SizedBox(height: 10),
 
-                              // ----- MÉTRICAS COMPACTAS (UNA FILA) -----
+                              // ----- MÃ‰TRICAS COMPACTAS (UNA FILA) -----
                               _buildMetricsRow(context),
                               const SizedBox(height: 12),
 
-                              // ----- BÚSQUEDA + BOTÓN FILTRO -----
+                              // ----- BÃšSQUEDA + BOTÃ“N FILTRO -----
                               _buildSearch(context),
                               const SizedBox(height: 10),
 
-                              // ----- CHIPS DE CATEGORÍA -----
+                              // ----- CHIPS DE CATEGORÃA -----
                               if (_categories.isNotEmpty) _buildCategoryChips(context),
                               if (_categories.isNotEmpty) const SizedBox(height: 10),
 
-                              // ----- TÍTULO SECCIÓN -----
+                              // ----- TÃTULO SECCIÃ“N -----
                               Text(
                                 'Productos',
                                 style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800, color: colorScheme.onSurface),
@@ -718,7 +739,7 @@ class PosScreenState extends State<PosScreen> {
   // WIDGETS DE UI
   // ============================================================
 
-  /// Productos filtrados por texto y categoría.
+  /// Productos filtrados por texto y categorÃ­a.
   List<Product> get _filteredProducts {
     final query = _searchController.text.trim().toLowerCase();
     return _products.where((product) {
@@ -730,21 +751,18 @@ class PosScreenState extends State<PosScreen> {
 
       if (_selectedCategoryId == null) return true;
 
-      // Filtrar por categoría usando data_json del producto
+      // Filtrar por categorÃ­a usando data_json del producto
       // El campo categoria_id se guarda en data_json al crear/editar
       return _productCategoryId(product) == _selectedCategoryId;
     }).toList();
   }
 
   int? _productCategoryId(Product product) {
-    // Product no tiene categoryId directo; se buscará en la BD via data_json.
-    // Como aproximación rápida usamos el índice guardado en la lista _products,
-    // que proviene de getProducts() que incluye data_json como campo extra.
-    // En su defecto retorna null (se muestra en "Todos").
-    return null; // TODO: ampliar Product.fromMap con categoryId desde data_json
+    // Product.fromMap ya lee categoryId desde data_json (implementado en tarea 4).
+    return product.categoryId;
   }
 
-  /// Cards de métricas en una sola fila horizontal compacta.
+  /// Cards de mÃ©tricas en una sola fila horizontal compacta.
   Widget _buildMetricsRow(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     return SizedBox(
@@ -765,7 +783,7 @@ class PosScreenState extends State<PosScreen> {
     );
   }
 
-  /// Chips de categoría horizontal.
+  /// Chips de categorÃ­a horizontal.
   Widget _buildCategoryChips(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     return SizedBox(
@@ -813,7 +831,7 @@ class PosScreenState extends State<PosScreen> {
     );
   }
 
-  /// Campo de búsqueda con sombra reducida + botón de filtro por categoría.
+  /// Campo de bÃºsqueda con sombra reducida + botÃ³n de filtro por categorÃ­a.
   Widget _buildSearch(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final hasFilter = _selectedCategoryId != null;
@@ -827,7 +845,7 @@ class PosScreenState extends State<PosScreen> {
               color: colorScheme.surface,
               borderRadius: BorderRadius.circular(12),
               border: Border.all(color: colorScheme.primary.withAlpha(45)),
-              // Sombra mínima
+              // Sombra mÃ­nima
               boxShadow: [
                 BoxShadow(
                   color: Colors.black.withAlpha(10),
@@ -855,7 +873,7 @@ class PosScreenState extends State<PosScreen> {
           ),
         ),
         const SizedBox(width: 8),
-        // Botón filtro por categoría
+        // BotÃ³n filtro por categorÃ­a
         GestureDetector(
           onTap: _openCategoryFilter,
           child: AnimatedContainer(
@@ -949,41 +967,63 @@ class PosScreenState extends State<PosScreen> {
         Text(product.name, maxLines: 2, overflow: TextOverflow.ellipsis,
             style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15, color: colorScheme.onSurface)),
         const SizedBox(height: 6),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          decoration: BoxDecoration(
-            color: product.stock > 0 ? colorScheme.primary.withAlpha(23) : colorScheme.error.withAlpha(20),
-            borderRadius: BorderRadius.circular(999),
-          ),
-          child: Text(
-            'Stock: ${product.stock.toStringAsFixed(0)}',
-            style: TextStyle(
-              fontSize: 11,
-              color: product.stock > 0 ? colorScheme.primary : colorScheme.error,
-              fontWeight: FontWeight.w600,
+        if (product.isInventoriable)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: product.stock > 0 ? colorScheme.primary.withAlpha(23) : colorScheme.error.withAlpha(20),
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Text(
+              product.stock > 0
+                  ? 'Stock: ${product.stock.toStringAsFixed(0)}'
+                  : 'Sin stock',
+              style: TextStyle(
+                fontSize: 11,
+                color: product.stock > 0 ? colorScheme.primary : colorScheme.error,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          )
+        else
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: colorScheme.secondaryContainer.withAlpha(80),
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Text(
+              'Sin inventario',
+              style: TextStyle(
+                fontSize: 11,
+                color: colorScheme.onSecondaryContainer,
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ),
-        ),
       ],
     );
   }
 
   Widget _productBottomActions(BuildContext context, Product product, {bool fullWidth = false}) {
     final colorScheme = Theme.of(context).colorScheme;
+    // Un producto inventariable con stock = 0 no se puede agregar.
+    final sinStock = product.isInventoriable && product.stock <= 0;
     if (fullWidth) {
       return Row(
         children: [
           Expanded(child: Text('\$${product.price.toStringAsFixed(2)}',
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: colorScheme.onSurface))),
           ElevatedButton(
-            onPressed: () => _addToCart(product),
+            onPressed: sinStock ? null : () => _addToCart(product),
             style: ElevatedButton.styleFrom(
               backgroundColor: colorScheme.primary,
               foregroundColor: colorScheme.onPrimary,
+              disabledBackgroundColor: colorScheme.surfaceContainerHighest,
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
             ),
-            child: const Text('Agregar'),
+            child: Text(sinStock ? 'Agotado' : 'Agregar'),
           ),
         ],
       );
@@ -995,14 +1035,15 @@ class PosScreenState extends State<PosScreen> {
             style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: colorScheme.onSurface))),
         const SizedBox(height: 8),
         ElevatedButton(
-          onPressed: () => _addToCart(product),
+          onPressed: sinStock ? null : () => _addToCart(product),
           style: ElevatedButton.styleFrom(
             backgroundColor: colorScheme.primary,
             foregroundColor: colorScheme.onPrimary,
+            disabledBackgroundColor: colorScheme.surfaceContainerHighest,
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
           ),
-          child: const Text('Agregar'),
+          child: Text(sinStock ? 'Agotado' : 'Agregar'),
         ),
       ],
     );
@@ -1010,7 +1051,7 @@ class PosScreenState extends State<PosScreen> {
 }
 
 // ============================================================
-// DIÁLOGO DE PAGO — TAREA 6: errores siempre DENTRO del diálogo
+// DIÃLOGO DE PAGO â€” TAREA 6: errores siempre DENTRO del diÃ¡logo
 // ============================================================
 
 class _PaymentDialog extends StatefulWidget {
@@ -1034,7 +1075,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
   final List<_PaymentRowData> _rows = [];
   int _nextRowId = 0;
 
-  // Error visible DENTRO del diálogo (tarea 6)
+  // Error visible DENTRO del diÃ¡logo (tarea 6)
   String? _inlineError;
 
   @override
@@ -1167,7 +1208,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                 ),
                 const SizedBox(height: 8),
 
-                // ── ERROR INLINE (TAREA 6) ──────────────────────────
+                // â”€â”€ ERROR INLINE (TAREA 6) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 if (_inlineError != null)
                   Container(
                     width: double.infinity,
@@ -1192,7 +1233,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                       ],
                     ),
                   ),
-                // ────────────────────────────────────────────────────
+                // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
                 _buildSummary(),
               ],
@@ -1399,7 +1440,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
 }
 
 // ============================================================
-// MÉTRICA COMPACTA
+// MÃ‰TRICA COMPACTA
 // ============================================================
 
 class _CompactMetric extends StatelessWidget {
@@ -1441,3 +1482,4 @@ class _CompactMetric extends StatelessWidget {
     );
   }
 }
+
