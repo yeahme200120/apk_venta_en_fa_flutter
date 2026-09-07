@@ -114,7 +114,11 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
 
     _salesChangesSubscription = LocalDb.salesChanges.listen((_) {
       if (!mounted || _syncing) return;
-      if (_refreshing) { _refreshQueued = true; return; }
+      if (_refreshing) {
+        _refreshQueued = true;
+        return;
+      }
+      _refreshQueued = false;
       _refreshSilently();
     });
 
@@ -376,12 +380,15 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
       'registrado_at': now,
       'sync_status': 'pending',
     });
+    // Forzar recarga aunque _refreshing esté ocupado
+    _refreshing = false;
     await _refreshSilently();
   }
 
   Future<void> _eliminarEgreso(int id) async {
     final db = await _historyDb.database;
     await db.delete('daily_expenses', where: 'id = ?', whereArgs: [id]);
+    _refreshing = false;
     await _refreshSilently();
   }
 
@@ -457,12 +464,14 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
       'registrado_at': now,
       'sync_status': 'pending',
     });
+    _refreshing = false;
     await _refreshSilently();
   }
 
   Future<void> _eliminarIngreso(int id) async {
     final db = await _historyDb.database;
     await db.delete('daily_incomes', where: 'id = ?', whereArgs: [id]);
+    _refreshing = false;
     await _refreshSilently();
   }
 
@@ -1027,7 +1036,7 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
                     )
                   else
                     SliverPadding(
-                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 100),
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 120),
                       sliver: SliverList(
                         delegate: SliverChildBuilderDelegate(
                           (context, i) => Padding(
@@ -1041,12 +1050,14 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
                 ],
               ),
             ),
-      floatingActionButton: FloatingActionButton(
+      floatingActionButton: FloatingActionButton.extended(
         onPressed: _mostrarMenuMovimiento,
         backgroundColor: Theme.of(context).colorScheme.primary,
         foregroundColor: Theme.of(context).colorScheme.onPrimary,
-        child: const Icon(Icons.add),
+        icon: const Icon(Icons.add),
+        label: const Text('Movimiento'),
       ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
     );
   }
 

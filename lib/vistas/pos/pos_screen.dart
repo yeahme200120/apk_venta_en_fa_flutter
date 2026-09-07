@@ -353,17 +353,20 @@ class PosScreenState extends State<PosScreen> {
 
     final cashAmount = breakdown.cashAmount;
     final change = breakdown.change;
+    // cash_received debe ser el efectivo neto recibido (lo que queda en caja),
+    // no el billete completo. cashAmount - change = efectivo real retenido.
+    final cashNet = (cashAmount - change).clamp(0.0, double.infinity).toDouble();
     var saleId = _pendingSaleId;
 
     try {
       if (saleId != null) {
-        final paid = await _db.payPendingSale(saleId, payments: payments, paymentMethod: cashAmount > 0 ? 'Efectivo' : 'Mixto', cashReceived: cashAmount, changeDue: change);
+        final paid = await _db.payPendingSale(saleId, payments: payments, paymentMethod: cashAmount > 0 ? 'Efectivo' : 'Mixto', cashReceived: cashNet, changeDue: change);
         if (!paid) {
-          if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('La venta pendiente ya no estÃ¡ disponible.')));
+          if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('La venta pendiente ya no está disponible.')));
           return false;
         }
       } else {
-        saleId = await _db.saveSale(uuid: uuid, items: saleItems, payments: payments, total: _total, status: 'paid', syncStatus: 'pending', paymentMethod: cashAmount > 0 ? 'Efectivo' : 'Mixto', cashReceived: cashAmount, changeDue: change);
+        saleId = await _db.saveSale(uuid: uuid, items: saleItems, payments: payments, total: _total, status: 'paid', syncStatus: 'pending', paymentMethod: cashAmount > 0 ? 'Efectivo' : 'Mixto', cashReceived: cashNet, changeDue: change);
       }
     } on StateError catch (error) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error.message)));
@@ -424,10 +427,25 @@ class PosScreenState extends State<PosScreen> {
 
   Future<Map<String, dynamic>?> _showPaymentDialog() async {
     if (!mounted) return null;
+    // Cargar métodos de pago activos desde la BD local
+    List<String> activeMethods;
+    try {
+      final rows = await _db.getPaymentMethods();
+      activeMethods = rows
+          .map((r) => (r['name'] ?? r['nombre'] ?? '').toString().trim())
+          .where((n) => n.isNotEmpty)
+          .toList();
+    } catch (_) {
+      activeMethods = ['Efectivo', 'Tarjeta', 'Transferencia', 'Cheque'];
+    }
+    if (activeMethods.isEmpty) {
+      activeMethods = ['Efectivo', 'Tarjeta', 'Transferencia', 'Cheque'];
+    }
+    if (!mounted) return null;
     return showDialog<Map<String, dynamic>>(
       context: context,
       barrierDismissible: false,
-      builder: (_) => _PaymentDialog(total: _total),
+      builder: (_) => _PaymentDialog(total: _total, methods: activeMethods),
     );
   }
 
@@ -1055,8 +1073,9 @@ class PosScreenState extends State<PosScreen> {
 // ============================================================
 
 class _PaymentDialog extends StatefulWidget {
-  const _PaymentDialog({required this.total});
+  const _PaymentDialog({required this.total, required this.methods});
   final double total;
+  final List<String> methods; // métodos de pago activos desde la BD
 
   @override
   State<_PaymentDialog> createState() => _PaymentDialogState();
@@ -1070,7 +1089,9 @@ class _PaymentRowData {
 }
 
 class _PaymentDialogState extends State<_PaymentDialog> {
-  static const List<String> _methods = ['Efectivo', 'Tarjeta', 'Transferencia', 'Cheque'];
+  // La lista de métodos viene de la BD; si está vacía usamos el fallback.
+  List<String> get _methods =>
+      widget.methods.isNotEmpty ? widget.methods : ['Efectivo', 'Tarjeta', 'Transferencia', 'Cheque'];
 
   final List<_PaymentRowData> _rows = [];
   int _nextRowId = 0;
