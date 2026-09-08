@@ -277,7 +277,7 @@ class LocalDb {
     (await database).insert(
       'products',
       {
-        if (id != null) 'id': id,
+        'id': ?id,
         'code': code,
         'name': name,
         'price': price,
@@ -403,15 +403,33 @@ Future<int> updateProduct({
     final db = await database;
     await db.transaction((txn) async {
       if (data['empresa'] is Map) await _upsertCompanyWithExecutor(txn, Map<String, dynamic>.from(data['empresa']));
-      for (final p in _asList(data['productos'])) await _upsertProductWithExecutor(txn, p);
-      for (final c in _asList(data['clientes'])) await _upsertClientWithExecutor(txn, c);
-      for (final x in _asList(data['impuestos'])) await _upsertCatalogWithExecutor(txn, table: 'taxes', data: x, includeRate: true);
-      for (final x in _asList(data['formas_pago'])) await _upsertCatalogWithExecutor(txn, table: 'payment_methods', data: x);
-      for (final x in _asList(data['unidades_medida'])) await _upsertCatalogWithExecutor(txn, table: 'units', data: x);
-      for (final x in _asList(data['categorias'])) await _upsertCatalogWithExecutor(txn, table: 'categories', data: x);
-      for (final x in _asList(data['promociones'])) await _upsertCatalogWithExecutor(txn, table: 'promotions', data: x);
-      for (final x in _asList(data['cupones'])) await _upsertCatalogWithExecutor(txn, table: 'coupons', data: x);
-      if (data['versiones'] is Map) for (final e in (data['versiones'] as Map).entries) await txn.insert('catalog_sync', {'catalog': e.key.toString(), 'version': e.value?.toString(), 'synced_at': DateTime.now().toIso8601String()}, conflictAlgorithm: ConflictAlgorithm.replace);
+      for (final p in _asList(data['productos'])) {
+        await _upsertProductWithExecutor(txn, p);
+      }
+      for (final c in _asList(data['clientes'])) {
+        await _upsertClientWithExecutor(txn, c);
+      }
+      for (final x in _asList(data['impuestos'])) {
+        await _upsertCatalogWithExecutor(txn, table: 'taxes', data: x, includeRate: true);
+      }
+      for (final x in _asList(data['formas_pago'])) {
+        await _upsertCatalogWithExecutor(txn, table: 'payment_methods', data: x);
+      }
+      for (final x in _asList(data['unidades_medida'])) {
+        await _upsertCatalogWithExecutor(txn, table: 'units', data: x);
+      }
+      for (final x in _asList(data['categorias'])) {
+        await _upsertCatalogWithExecutor(txn, table: 'categories', data: x);
+      }
+      for (final x in _asList(data['promociones'])) {
+        await _upsertCatalogWithExecutor(txn, table: 'promotions', data: x);
+      }
+      for (final x in _asList(data['cupones'])) {
+        await _upsertCatalogWithExecutor(txn, table: 'coupons', data: x);
+      }
+      if (data['versiones'] is Map) for (final e in (data['versiones'] as Map).entries) {
+        await txn.insert('catalog_sync', {'catalog': e.key.toString(), 'version': e.value?.toString(), 'synced_at': DateTime.now().toIso8601String()}, conflictAlgorithm: ConflictAlgorithm.replace);
+      }
     });
     await _processTombstones(data['tombstones']);
   }

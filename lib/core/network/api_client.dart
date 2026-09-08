@@ -567,13 +567,11 @@ class ApiClient {
   }) {
     final payload = <String, dynamic>{
       'nombre': name.trim(),
-      if (capacity != null)
-        'capacidad': capacity,
+      'capacidad': ?capacity,
       if (notes != null &&
           notes.trim().isNotEmpty)
         'notas': notes.trim(),
-      if (active != null)
-        'activo': active,
+      'activo': ?active,
     };
 
     if (id == null) {

@@ -194,7 +194,7 @@ class _CartScreenState
                                 separatorBuilder:
                                     (
                                   _,
-                                  __,
+                                  _,
                                 ) =>
                                         const SizedBox(
                                   height:

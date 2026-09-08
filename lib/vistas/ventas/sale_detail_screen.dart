@@ -96,6 +96,21 @@ class SaleDetailScreen extends StatelessWidget {
                   ),
                 ),
               ),
+              // Mostrar cambio si lo hay
+              if (sale.changeDue != null && sale.changeDue! > 0.005) ...[
+                const SizedBox(height: 4),
+                Card(
+                  color: Colors.blue.shade50,
+                  child: ListTile(
+                    leading: const Icon(Icons.undo_outlined, color: Colors.blue),
+                    title: const Text('Cambio devuelto'),
+                    trailing: Text(
+                      '- \$${sale.changeDue!.toStringAsFixed(2)}',
+                      style: const TextStyle(color: Colors.blue, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ),
+              ],
               const SizedBox(height: 16),
             ],
             const Text('Productos', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),

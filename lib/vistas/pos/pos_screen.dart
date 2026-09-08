@@ -353,20 +353,38 @@ class PosScreenState extends State<PosScreen> {
 
     final cashAmount = breakdown.cashAmount;
     final change = breakdown.change;
-    // cash_received debe ser el efectivo neto recibido (lo que queda en caja),
-    // no el billete completo. cashAmount - change = efectivo real retenido.
     final cashNet = (cashAmount - change).clamp(0.0, double.infinity).toDouble();
+
+    // Ajustar los pagos para que el efectivo refleje lo retenido en caja
+    // (sin el cambio devuelto). Otros métodos se mantienen igual.
+    final adjustedPayments = <Map<String, dynamic>>[];
+    double cashAdjusted = cashNet;
+    for (final p in payments) {
+      final method = (p['method'] ?? '').toString();
+      final amount = (p['amount'] is num) ? (p['amount'] as num).toDouble() : 0.0;
+      if (method.toLowerCase() == 'efectivo' && cashAdjusted > 0) {
+        final take = cashAdjusted.clamp(0.0, amount);
+        if (take > 0) {
+          adjustedPayments.add({...p, 'amount': take});
+          cashAdjusted -= take;
+        }
+        // Si take == 0 se omite la fila (el cambio consumió todo ese pago)
+      } else {
+        adjustedPayments.add(p);
+      }
+    }
+
     var saleId = _pendingSaleId;
 
     try {
       if (saleId != null) {
-        final paid = await _db.payPendingSale(saleId, payments: payments, paymentMethod: cashAmount > 0 ? 'Efectivo' : 'Mixto', cashReceived: cashNet, changeDue: change);
+        final paid = await _db.payPendingSale(saleId, payments: adjustedPayments, paymentMethod: cashAmount > 0 ? 'Efectivo' : 'Mixto', cashReceived: cashNet, changeDue: change);
         if (!paid) {
           if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('La venta pendiente ya no está disponible.')));
           return false;
         }
       } else {
-        saleId = await _db.saveSale(uuid: uuid, items: saleItems, payments: payments, total: _total, status: 'paid', syncStatus: 'pending', paymentMethod: cashAmount > 0 ? 'Efectivo' : 'Mixto', cashReceived: cashNet, changeDue: change);
+        saleId = await _db.saveSale(uuid: uuid, items: saleItems, payments: adjustedPayments, total: _total, status: 'paid', syncStatus: 'pending', paymentMethod: cashAmount > 0 ? 'Efectivo' : 'Mixto', cashReceived: cashNet, changeDue: change);
       }
     } on StateError catch (error) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error.message)));
@@ -394,7 +412,7 @@ class PosScreenState extends State<PosScreen> {
               unitPrice: (item['unit_price'] is num) ? (item['unit_price'] as num).toDouble() : 0.0,
               total: (item['total'] is num) ? (item['total'] as num).toDouble() : 0.0,
             )).toList(),
-            payments: payments.map((item) => SalePaymentModel(
+            payments: adjustedPayments.map((item) => SalePaymentModel(
               id: 0, saleId: 0,
               method: item['method']?.toString() ?? '',
               amount: (item['amount'] is num) ? (item['amount'] as num).toDouble() : 0.0,

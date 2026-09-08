@@ -55,7 +55,9 @@ class AppStorage {
   }
   Future<void> logOut() async {final p=await _p; await p.remove(_token); await p.remove(_userId); await p.remove(_empresaId); await p.remove(_userRol); await p.setBool(_logged,false);}
   Future<void> clearCurrentSession()=>logOut();
-  Future<void> clearOfflineCredentials() async {final p=await _p; for(final k in [_offlineIdentifier,_offlinePassword,_offlineEnabled,_lastOnlineUserId,_lastOnlineEmpresaId,_userName,_companyName,_token,_userId,_empresaId,_logged])await p.remove(k);}
+  Future<void> clearOfflineCredentials() async {final p=await _p; for(final k in [_offlineIdentifier,_offlinePassword,_offlineEnabled,_lastOnlineUserId,_lastOnlineEmpresaId,_userName,_companyName,_token,_userId,_empresaId,_logged]) {
+    await p.remove(k);
+  }}
   Future<void> clear() async=>(await _p).clear();
   String _dateOnly(DateTime d)=>'${d.year.toString().padLeft(4,'0')}-${d.month.toString().padLeft(2,'0')}-${d.day.toString().padLeft(2,'0')}';
 }
