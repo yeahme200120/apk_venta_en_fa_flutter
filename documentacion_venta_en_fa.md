@@ -778,3 +778,116 @@ El diseño sigue el layout de la imagen de referencia:
 - Separación de cuentas (VE-01) — requiere modelado en backend.
 - Auditoría de cambios sobre ventas de otro vendedor (AU-01).
 - Sincronización offline completa: `POST /sync/offline` corrección en backend pendiente.
+
+---
+
+## 13. Cambios implementados — Sesión 2026-09-07 (v4)
+
+**Actualizado:** 2026-09-07 — Correcciones de runtime, métodos de pago dinámicos, ingresos manuales, tab Mes en estadísticas.
+
+---
+
+### 13.1 Corrección LateInitializationError en estadísticas
+
+`_fechaInicio` y `_fechaFin` declarados con `late` lanzaban `LateInitializationError` cuando el `StreamSubscription` de `LocalDb.salesChanges` disparaba antes de que `initState` los inicializara. **Fix:** declarar los valores directamente en la definición del campo (eliminando `late`).
+
+---
+
+### 13.2 Correcciones de actualización en tiempo real
+
+**Estadísticas:**
+- `_guardarEgreso`, `_guardarIngreso`, `_eliminarEgreso`, `_eliminarIngreso` forzaban `_refreshing = false` antes de llamar `_refreshSilently()` para garantizar que `setState` se ejecute aunque hubiera una carga en progreso.
+- El listener del stream `LocalDb.salesChanges` ahora resetea `_refreshQueued = false` antes de llamar `_refreshSilently`.
+
+**POS:**
+- Corregida lógica de `_handleSalesChanged` para procesar correctamente el `_refreshQueued` pendiente.
+- `_productCategoryId(product)` ahora devuelve `product.categoryId` (antes siempre devolvía `null`, lo que vaciaba el catálogo al seleccionar cualquier categoría).
+
+---
+
+### 13.3 Métodos de pago dinámicos en el diálogo de cobro
+
+**Archivo:** `lib/vistas/pos/pos_screen.dart`
+
+- `_PaymentDialog` recibe `List<String> methods` como parámetro — ya no es una lista estática hardcodeada.
+- `_showPaymentDialog()` llama `_db.getPaymentMethods()` antes de abrir el diálogo y pasa los métodos activos. Si la consulta falla o la lista está vacía, usa el fallback estático `['Efectivo', 'Tarjeta', 'Transferencia', 'Cheque']`.
+- Solo los métodos marcados como activos en el administrador de catálogo aparecen en el cobro.
+
+---
+
+### 13.4 Efectivo en caja — cálculo correcto
+
+**Archivo:** `lib/vistas/pos/pos_screen.dart`
+
+`cash_received` guardaba `cashAmount` (el billete completo entregado). El valor correcto para la caja es el efectivo **neto retenido**:
+
+```
+cashNet = (cashAmount − change).clamp(0, ∞)
+```
+
+Se guarda `cashReceived: cashNet` en `saveSale` y `payPendingSale`. El campo `change_due` sigue guardando el cambio a devolver.
+
+---
+
+### 13.5 Ingresos manuales en estadísticas
+
+**Archivo:** `lib/vistas/daily_stats/daily_stats_screen.dart`
+
+- Nuevo modelo `_Ingreso` con los mismos campos que `_Egreso`.
+- Nueva tabla SQLite `daily_incomes` (creada on-the-fly en la BD del historial).
+- CRUD completo: `_loadIngresos`, `_guardarIngreso`, `_eliminarIngreso`, `_confirmarEliminarIngreso`, `_buildIngresoTile`.
+- El FAB fue reemplazado por `FloatingActionButton.extended` ("Movimiento") con `centerFloat` que abre `_mostrarMenuMovimiento` — un `BottomSheet` con dos opciones: "Registrar ingreso" (verde) y "Registrar egreso" (rojo).
+- El diálogo unificado `_MovimientoDialog` maneja ambos tipos según el `_TipoMovimiento` recibido.
+- `_totalIngresos` = ventas activas + ingresos manuales del rango.
+- Los ingresos manuales aparecen en la lista combinada con indicador verde izquierdo y prefijo `+ $`.
+
+---
+
+### 13.6 Pestaña Mes en estadísticas
+
+**Archivo:** `lib/vistas/daily_stats/daily_stats_screen.dart`  
+**API:** `GET /api/v1/estadisticas/mes` (ya existente en el backend)  
+**Nuevo método:** `ApiClient.getMonthStats()`
+
+La pantalla de estadísticas ahora tiene un `TabBar` con dos pestañas:
+
+| Pestaña | Descripción |
+|---|---|
+| **Día** | Vista actual con rango de fechas seleccionable, ingresos/egresos, desglose por método, lista combinada |
+| **Mes** | Resumen del mes calendario actual con totales, desglose por método y barras de ventas por día |
+
+**Datos del tab Mes:**
+- `_mesTotal` — ingresos del mes (ventas + ingresos manuales).
+- `_mesEgresos` — egresos manuales del mes.
+- `_mesTransacciones` — número de ventas del mes.
+- `_mesTicketPromedio` — promedio por venta.
+- `_mesPorMetodo` — mapa `{método: total}` del mes.
+- `_mesPorDia` — lista de días con total, mostrada como barras de progreso (`LinearProgressIndicator`).
+- `_mesIngresos` — ingresos manuales del mes (mostrados en la card de Ingresos).
+
+**Fuentes de datos:**
+1. `LocalDb.getSales()` filtrado por rango del mes actual (sin necesidad de BD del día).
+2. `LocalDb.database` → tablas `daily_expenses` y `daily_incomes` filtradas por el mes.
+3. `ApiClient.getMonthStats()` → `GET /api/v1/estadisticas/mes` — complementa/actualiza el total si la API devuelve un valor mayor (ventas sincronizadas).
+
+El tab Mes se carga al entrar por primera vez (`_tabController.addListener`) o al hacer pull-to-refresh.
+
+---
+
+### 13.7 Estado de implementación actualizado (2026-09-07 v4)
+
+**Aplicados en esta sesión:**
+- ✅ LateInitializationError en estadísticas resuelto.
+- ✅ Métodos de pago activos desde la BD en el diálogo de cobro.
+- ✅ `cash_received` guardado como efectivo neto (sin el cambio).
+- ✅ Ingresos manuales: CRUD completo, card verde, FAB "Movimiento".
+- ✅ Pestaña Mes en estadísticas con barras de ventas por día.
+- ✅ `ApiClient.getMonthStats()` → `GET /api/v1/estadisticas/mes`.
+- ✅ 0 errores y 0 warnings en archivos modificados.
+
+**Pendientes restantes:**
+- Logo PNG con fondo transparente (requiere Pillow o herramienta gráfica externa).
+- Generación de iconos con `flutter_launcher_icons` (pendiente del asset transparente).
+- CRUD remoto de categorías y unidades desde Flutter.
+- Separación de cuentas (VE-01) — requiere backend.
+- Auditoría de cambios sobre ventas de otro vendedor (AU-01).

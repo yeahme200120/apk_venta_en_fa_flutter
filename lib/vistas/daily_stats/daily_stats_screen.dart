@@ -67,7 +67,7 @@ class DailyStatsScreen extends StatefulWidget {
 }
 
 class _DailyStatsScreenState extends State<DailyStatsScreen>
-    with WidgetsBindingObserver {
+    with WidgetsBindingObserver, TickerProviderStateMixin {
   final LocalDb _historyDb = LocalDb();
   final PosDatabaseService _dayDb = PosDatabaseService();
   final SyncService _syncService = SyncService();
@@ -83,6 +83,19 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   List<Map<String, dynamic>> _sales = const [];
   List<_Egreso> _egresos = const [];
   List<_Ingreso> _ingresos = const []; // ingresos manuales (no ventas)
+
+  // ── Tab controller ─────────────────────────────────────────
+  late TabController _tabController;
+
+  // ── Datos del mes ──────────────────────────────────────────
+  bool _loadingMes = true;
+  double _mesTotal = 0;
+  int _mesTransacciones = 0;
+  double _mesTicketPromedio = 0;
+  double _mesEgresos = 0;
+  double _mesIngresos = 0; // ingresos manuales del mes
+  Map<String, double> _mesPorMetodo = {};
+  List<Map<String, dynamic>> _mesPorDia = []; // {dia, total, cantidad}
 
   // Nombre del negocio
   String _companyName = '';
@@ -109,6 +122,14 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   @override
   void initState() {
     super.initState();
+
+    _tabController = TabController(length: 2, vsync: this);
+    _tabController.addListener(() {
+      // Al cambiar al tab Mes, cargar datos si no están listos
+      if (_tabController.index == 1 && _loadingMes) {
+        _loadMonthStats();
+      }
+    });
 
     WidgetsBinding.instance.addObserver(this);
 
@@ -145,6 +166,7 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   void dispose() {
     _salesChangesSubscription?.cancel();
     _salesChangesSubscription = null;
+    _tabController.dispose();
     _searchCtrl.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
@@ -516,6 +538,129 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
       }
     });
     await _loadStats();
+  }
+
+  // ============================================================
+  // DATOS DEL MES
+  // ============================================================
+
+  Future<void> _loadMonthStats() async {
+    if (!mounted) return;
+    setState(() => _loadingMes = true);
+
+    final hoy = DateTime.now();
+    final inicioMes = DateTime(hoy.year, hoy.month, 1);
+    final finMes = DateTime(hoy.year, hoy.month + 1, 0, 23, 59, 59);
+
+    try {
+      // ── 1. Ventas del mes desde historial local ─────────────
+      final allSales = await _historyDb.getSales();
+      final salesMes = allSales.where((s) {
+        final st = (s['status'] ?? '').toString().toLowerCase();
+        if (st == 'cancelled' || st == 'cancelado' || st == 'cancelada') {
+          return false;
+        }
+        DateTime? dt = _dateValue(s['created_at']);
+        dt ??= _dateValue(s['paid_at']);
+        if (dt == null) {
+          final bd = s['business_date']?.toString().trim() ?? '';
+          if (bd.isNotEmpty) dt = DateTime.tryParse(bd);
+        }
+        if (dt == null) return false;
+        return !dt.isBefore(inicioMes) && !dt.isAfter(finMes);
+      }).toList();
+
+      double totalMes = 0;
+      final porMetodo = <String, double>{};
+      final porDia = <String, double>{}; // 'YYYY-MM-DD' -> total
+
+      for (final s in salesMes) {
+        final t = _toDouble(s['total']);
+        totalMes += t;
+        final method = _metodoVenta(s);
+        porMetodo[method] = (porMetodo[method] ?? 0) + t;
+
+        DateTime? dt = _dateValue(s['created_at']);
+        dt ??= _dateValue(s['paid_at']);
+        if (dt != null) {
+          final key = '${dt.year.toString().padLeft(4,'0')}-'
+              '${dt.month.toString().padLeft(2,'0')}-'
+              '${dt.day.toString().padLeft(2,'0')}';
+          porDia[key] = (porDia[key] ?? 0) + t;
+        }
+      }
+
+      // ── 2. Egresos e ingresos manuales del mes ──────────────
+      double egresosMes = 0;
+      double ingresosManualesMes = 0;
+      try {
+        final db = await _historyDb.database;
+        await db.execute('''CREATE TABLE IF NOT EXISTS daily_expenses (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, uuid TEXT NOT NULL UNIQUE,
+          concepto TEXT NOT NULL, monto REAL NOT NULL, forma_pago TEXT,
+          registrado_at TEXT NOT NULL, sync_status TEXT NOT NULL DEFAULT 'pending'
+        )''');
+        await db.execute('''CREATE TABLE IF NOT EXISTS daily_incomes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, uuid TEXT NOT NULL UNIQUE,
+          concepto TEXT NOT NULL, monto REAL NOT NULL, forma_pago TEXT,
+          registrado_at TEXT NOT NULL, sync_status TEXT NOT NULL DEFAULT 'pending'
+        )''');
+
+        final egresosRows = await db.query(
+          'daily_expenses',
+          where: 'registrado_at >= ? AND registrado_at <= ?',
+          whereArgs: [inicioMes.toIso8601String(), finMes.toIso8601String()],
+        );
+        egresosMes = egresosRows.fold(0.0, (s, r) => s + _toDouble(r['monto']));
+
+        final ingresosRows = await db.query(
+          'daily_incomes',
+          where: 'registrado_at >= ? AND registrado_at <= ?',
+          whereArgs: [inicioMes.toIso8601String(), finMes.toIso8601String()],
+        );
+        ingresosManualesMes = ingresosRows.fold(0.0, (s, r) => s + _toDouble(r['monto']));
+      } catch (_) {}
+
+      // ── 3. Intentar complementar con API ───────────────────
+      try {
+        final offline = await AppStorage().isOfflineSession();
+        if (!offline) {
+          final resp = await _apiClient.getMonthStats();
+          if (resp['success'] == true && resp['data'] is Map) {
+            final data = resp['data'] as Map;
+            final apiTotal = _toDouble(data['total_monto'] ?? data['total_ventas']);
+            // Si la API tiene más datos (ventas sincronizadas), tomar el mayor
+            if (apiTotal > totalMes) {
+              totalMes = apiTotal;
+            }
+          }
+        }
+      } catch (_) {
+        // Offline o API no disponible: usar solo local
+      }
+
+      // ── 4. Construir lista por día ──────────────────────────
+      final diasList = porDia.entries
+          .map((e) => {'dia': e.key, 'total': e.value})
+          .toList()
+        ..sort((a, b) => (a['dia'] as String).compareTo(b['dia'] as String));
+
+      if (!mounted) return;
+      setState(() {
+        _mesTotal = totalMes + ingresosManualesMes;
+        _mesTransacciones = salesMes.length;
+        _mesTicketPromedio = salesMes.isEmpty ? 0 : totalMes / salesMes.length;
+        _mesEgresos = egresosMes;
+        _mesIngresos = ingresosManualesMes;
+        _mesPorMetodo = porMetodo;
+        _mesPorDia = diasList.cast<Map<String, dynamic>>();
+        _loadingMes = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _loadingMes = false);
+      debugPrint('Error cargando stats del mes: $e');
+    }
   }
 
   // ============================================================
@@ -959,14 +1104,48 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
                 : const Icon(Icons.sync),
           ),
         ],
+        bottom: TabBar(
+          controller: _tabController,
+          labelColor: cs.primary,
+          unselectedLabelColor: cs.onSurfaceVariant,
+          indicatorColor: cs.primary,
+          tabs: const [
+            Tab(icon: Icon(Icons.today_outlined, size: 18), text: 'Día'),
+            Tab(icon: Icon(Icons.calendar_month_outlined, size: 18), text: 'Mes'),
+          ],
+        ),
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : RefreshIndicator(
-              onRefresh: _loadStats,
-              child: CustomScrollView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                slivers: [
+      body: TabBarView(
+        controller: _tabController,
+        children: [
+          // ── TAB DÍA ────────────────────────────────────────
+          _buildDayTab(cs),
+          // ── TAB MES ────────────────────────────────────────
+          _buildMonthTab(cs),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _mostrarMenuMovimiento,
+        backgroundColor: cs.primary,
+        foregroundColor: cs.onPrimary,
+        icon: const Icon(Icons.add),
+        label: const Text('Movimiento'),
+      ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
+    );
+  }
+
+  // ============================================================
+  // TAB DÍA (contenido actual)
+  // ============================================================
+
+  Widget _buildDayTab(ColorScheme cs) {
+    if (_loading) return const Center(child: CircularProgressIndicator());
+    return RefreshIndicator(
+      onRefresh: _loadStats,
+      child: CustomScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        slivers: [
                   // ── SELECTOR DE RANGO ──────────────────────────
                   SliverToBoxAdapter(
                     child: Padding(
@@ -1049,20 +1228,238 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
                     ),
                 ],
               ),
-            ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _mostrarMenuMovimiento,
-        backgroundColor: Theme.of(context).colorScheme.primary,
-        foregroundColor: Theme.of(context).colorScheme.onPrimary,
-        icon: const Icon(Icons.add),
-        label: const Text('Movimiento'),
-      ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
-    );
+            );
   }
 
   // ============================================================
-  // WIDGETS DE UI
+  // TAB MES
+  // ============================================================
+
+  Widget _buildMonthTab(ColorScheme cs) {
+    if (_loadingMes) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const CircularProgressIndicator(),
+            const SizedBox(height: 12),
+            Text('Cargando estadísticas del mes...',
+                style: TextStyle(color: cs.onSurfaceVariant)),
+          ],
+        ),
+      );
+    }
+
+    final hoy = DateTime.now();
+    final mesNombre = _mesNombre(hoy.month);
+    final utilidadMes = _mesTotal - _mesEgresos;
+
+    return RefreshIndicator(
+      onRefresh: () async {
+        setState(() => _loadingMes = true);
+        await _loadMonthStats();
+      },
+      child: CustomScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        slivers: [
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+              child: Row(
+                children: [
+                  Icon(Icons.calendar_month_outlined, color: cs.primary, size: 18),
+                  const SizedBox(width: 8),
+                  Text('$mesNombre ${hoy.year}',
+                      style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: cs.onSurfaceVariant)),
+                ],
+              ),
+            ),
+          ),
+          // TOTAL DEL MES
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              child: Column(children: [
+                Text('TOTAL DEL MES',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700,
+                        color: cs.onSurfaceVariant, letterSpacing: 1.5)),
+                const SizedBox(height: 4),
+                Text('\$${utilidadMes.toStringAsFixed(2)}',
+                    style: TextStyle(fontSize: 32, fontWeight: FontWeight.w900,
+                        color: utilidadMes >= 0 ? cs.onSurface : Colors.red.shade700)),
+              ]),
+            ),
+          ),
+          // INGRESOS / EGRESOS MES
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: IntrinsicHeight(
+                child: Row(children: [
+                  Expanded(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF4CAF50).withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: const Color(0xFF4CAF50).withValues(alpha: 0.35)),
+                      ),
+                      child: Column(children: [
+                        Text('Ingresos', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: Colors.green.shade700)),
+                        const SizedBox(height: 4),
+                        FittedBox(fit: BoxFit.scaleDown,
+                            child: Text('\$${_mesTotal.toStringAsFixed(2)}',
+                                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: Colors.green.shade700))),
+                        if (_mesTransacciones > 0) ...[
+                          const SizedBox(height: 2),
+                          Text('$_mesTransacciones venta(s)', style: TextStyle(fontSize: 10, color: Colors.green.shade600)),
+                        ],
+                        if (_mesIngresos > 0) ...[
+                          const SizedBox(height: 1),
+                          Text('+ ingr. manuales \$${_mesIngresos.toStringAsFixed(2)}',
+                              style: TextStyle(fontSize: 9, color: Colors.green.shade500)),
+                        ],
+                      ]),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 12),
+                      decoration: BoxDecoration(
+                        color: Colors.red.shade50,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: Colors.red.shade200),
+                      ),
+                      child: Column(children: [
+                        Text('Egresos', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: Colors.red.shade700)),
+                        const SizedBox(height: 4),
+                        FittedBox(fit: BoxFit.scaleDown,
+                            child: Text('\$${_mesEgresos.toStringAsFixed(2)}',
+                                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: Colors.red.shade700))),
+                      ]),
+                    ),
+                  ),
+                ]),
+              ),
+            ),
+          ),
+          // MÉTRICAS RÁPIDAS
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: Row(children: [
+                Expanded(child: _InfoTile(
+                  icon: Icons.receipt_long_outlined, label: 'Ticket promedio',
+                  value: '\$${_mesTicketPromedio.toStringAsFixed(2)}', color: cs.primary)),
+                const SizedBox(width: 10),
+                Expanded(child: _InfoTile(
+                  icon: Icons.trending_up, label: 'Transacciones',
+                  value: '$_mesTransacciones', color: cs.secondary)),
+              ]),
+            ),
+          ),
+          // DESGLOSE POR MÉTODO
+          if (_mesPorMetodo.isNotEmpty)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                child: Container(
+                  decoration: BoxDecoration(color: cs.surfaceContainerHighest, borderRadius: BorderRadius.circular(14)),
+                  padding: const EdgeInsets.all(12),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text('Desglose por método',
+                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: cs.onSurfaceVariant)),
+                    const SizedBox(height: 8),
+                    ..._mesPorMetodo.entries.map((e) => Padding(
+                          padding: const EdgeInsets.only(bottom: 5),
+                          child: Row(children: [
+                            Icon(_iconMetodo(e.key), size: 16, color: cs.primary),
+                            const SizedBox(width: 8),
+                            Expanded(child: Text(e.key, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500))),
+                            Text('\$${e.value.toStringAsFixed(2)}',
+                                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: cs.onSurface)),
+                          ]),
+                        )),
+                  ]),
+                ),
+              ),
+            ),
+          // VENTAS POR DÍA
+          if (_mesPorDia.isNotEmpty) ...[
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: Text('Ventas por día',
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: cs.onSurface)),
+              ),
+            ),
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 120),
+              sliver: SliverList(
+                delegate: SliverChildBuilderDelegate(
+                  (context, i) {
+                    final d = _mesPorDia[i];
+                    final dia = d['dia']?.toString() ?? '';
+                    final total = _toDouble(d['total']);
+                    String diaLabel = dia;
+                    try {
+                      final dt = DateTime.parse(dia);
+                      diaLabel = '${dt.day.toString().padLeft(2, '0')}/${dt.month.toString().padLeft(2, '0')}';
+                    } catch (_) {}
+                    final maxTotal = _mesPorDia
+                        .map((x) => _toDouble(x['total']))
+                        .fold(0.0, (a, b) => a > b ? a : b);
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: Row(children: [
+                        SizedBox(width: 48,
+                            child: Text(diaLabel,
+                                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: cs.onSurfaceVariant))),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(4),
+                            child: LinearProgressIndicator(
+                              value: maxTotal > 0 ? total / maxTotal : 0,
+                              backgroundColor: cs.surfaceContainerHighest,
+                              color: cs.primary,
+                              minHeight: 10,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        SizedBox(width: 80,
+                            child: Text('\$${total.toStringAsFixed(0)}',
+                                textAlign: TextAlign.right,
+                                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: cs.onSurface))),
+                      ]),
+                    );
+                  },
+                  childCount: _mesPorDia.length,
+                ),
+              ),
+            ),
+          ] else
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 120),
+                child: _buildEmptyState(),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  String _mesNombre(int mes) {
+    const nombres = ['', 'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+        'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+    return mes >= 1 && mes <= 12 ? nombres[mes] : '';
+  }
+
+  // ============================================================
+  // WIDGETS AUXILIARES DEL TAB DÍA
   // ============================================================
 
   /// Selector de rango de fechas (Fecha Inicio / Fecha Fin).

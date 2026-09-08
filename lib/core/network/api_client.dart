@@ -354,6 +354,25 @@ class ApiClient {
   // ============================================================
   // PERMISOS
   // ============================================================
+  // ESTADÍSTICAS DEL MES
+  // ============================================================
+
+  Future<Map<String, dynamic>> getMonthStats() async {
+    try {
+      final response = await _dio.get('/api/v1/estadisticas/mes');
+      if (response.statusCode == 200 && response.data is Map) {
+        return Map<String, dynamic>.from(response.data as Map);
+      }
+      throw Exception('No se pudieron cargar las estadísticas del mes');
+    } on DioException catch (e) {
+      throw Exception(parseApiError(e.response?.data,
+          fallback: 'No se pudieron cargar las estadísticas del mes'));
+    }
+  }
+
+  // ============================================================
+  // PERMISOS
+  // ============================================================
 
   Future<Map<String, dynamic>> getPermissions() async {
     try {
