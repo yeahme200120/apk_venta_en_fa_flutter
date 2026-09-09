@@ -37,6 +37,7 @@ class SaleDetailScreen extends StatelessWidget {
     }
   }
 
+
   @override
   Widget build(BuildContext context) {
     final paymentStatus = sale.status ?? sale.syncStatus;
