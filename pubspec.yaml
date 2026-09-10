@@ -38,7 +38,7 @@ dependencies:
   shared_preferences: ^2.5.3
   connectivity_plus: ^6.1.1
   internet_connection_checker_plus: ^2.0.4
-  print_bluetooth_thermal: ^1.2.2
+  print_bluetooth_thermal: ^1.2.4
   esc_pos_printer_plus: ^0.1.1
   esc_pos_utils_plus: ^2.0.4
   permission_handler: ^13.0.1

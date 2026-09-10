@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:sqflite/sqflite.dart';
+
 import '../database/local_db.dart';
 import '../database/pos_db_service.dart';
 import '../network/api_client.dart';
@@ -23,7 +25,7 @@ class SyncResult {
 /// Coordinador único de sincronización.
 ///
 /// LocalDb:
-///   histórico + ventas multidía.
+///   histórico + ventas multidía + relación producto local/servidor.
 ///
 /// PosDatabaseService:
 ///   operación de la base diaria.
@@ -40,9 +42,9 @@ class SyncService {
     ApiClient? apiClient,
     PosDatabaseService? posDbService,
     LocalDb? localDb,
-  })  : _apiClient = apiClient ?? ApiClient(),
-        _dayDb = posDbService ?? PosDatabaseService(),
-        _historyDb = localDb ?? LocalDb();
+  }) : _apiClient = apiClient ?? ApiClient(),
+       _dayDb = posDbService ?? PosDatabaseService(),
+       _historyDb = localDb ?? LocalDb();
 
   static bool _running = false;
 
@@ -94,9 +96,8 @@ class SyncService {
       for (final sale in historical) {
         total++;
 
-        final ok = await _syncHistoricalSale(
-          sale,
-        );
+        final ok =
+            await _syncHistoricalSale(sale);
 
         if (ok) {
           synced++;
@@ -153,9 +154,7 @@ class SyncService {
     int saleId,
   ) async {
     final sale =
-        await _historyDb.getSaleById(
-      saleId,
-    );
+        await _historyDb.getSaleById(saleId);
 
     if (sale == null) {
       return false;
@@ -209,17 +208,17 @@ class SyncService {
       await _historyDb.markSaleAsSynced(
         id,
         serverResponse: {
-          'server_id': sale['server_id'],
-          'folio': sale['server_folio'],
+          'server_id':
+              sale['server_id'],
+          'folio':
+              sale['server_folio'],
         },
       );
 
       return true;
     }
 
-    await _historyDb.markSaleSyncing(
-      id,
-    );
+    await _historyDb.markSaleSyncing(id);
 
     try {
       final venta =
@@ -229,9 +228,7 @@ class SyncService {
 
       final payload =
           <String, dynamic>{
-        'ventas': [
-          venta,
-        ],
+        'ventas': [venta],
       };
 
       print(
@@ -267,6 +264,10 @@ class SyncService {
           'El servidor no confirmó la venta sincronizada.',
         );
       }
+
+      await _applyHistoricalProductMappings(
+        response,
+      );
 
       await _historyDb.markSaleAsSynced(
         id,
@@ -340,15 +341,12 @@ class SyncService {
     }
 
     final attempts =
-        _toInt(
-      item['attempts'],
-    );
+        _toInt(item['attempts']);
 
     try {
       final decoded =
           jsonDecode(
-        item['payload']
-                ?.toString() ??
+        item['payload']?.toString() ??
             '{}',
       );
 
@@ -368,6 +366,8 @@ class SyncService {
         rawPayload,
         uuidLocal: uuid,
         businessDate: date,
+        companyId: companyId,
+        userId: userId,
       );
 
       final ventas =
@@ -409,6 +409,10 @@ class SyncService {
         );
       }
 
+      await _applyHistoricalProductMappings(
+        response,
+      );
+
       await _dayDb.markOutboxSynced(
         companyId: companyId,
         userId: userId,
@@ -445,6 +449,8 @@ class SyncService {
     Map<String, dynamic> payload, {
     required String uuidLocal,
     required DateTime businessDate,
+    required int companyId,
+    required int userId,
   }) async {
     final ventas =
         payload['ventas'];
@@ -483,8 +489,11 @@ class SyncService {
         );
 
         normalizedVentas.add(
-          _normalizeVenta(
+          await _normalizeVenta(
             venta,
+            companyId: companyId,
+            userId: userId,
+            businessDate: businessDate,
           ),
         );
       }
@@ -512,8 +521,11 @@ class SyncService {
 
     return {
       'ventas': [
-        _normalizeVenta(
+        await _normalizeVenta(
           venta,
+          companyId: companyId,
+          userId: userId,
+          businessDate: businessDate,
         ),
       ],
     };
@@ -523,9 +535,13 @@ class SyncService {
   // NORMALIZAR VENTA
   // ============================================================
 
-  Map<String, dynamic> _normalizeVenta(
-    Map<String, dynamic> venta,
-  ) {
+  Future<Map<String, dynamic>>
+      _normalizeVenta(
+    Map<String, dynamic> venta, {
+    required int companyId,
+    required int userId,
+    required DateTime businessDate,
+  }) async {
     final normalized =
         <String, dynamic>{
       'uuid_local':
@@ -535,8 +551,11 @@ class SyncService {
       'cliente_id':
           venta['cliente_id'],
       'productos':
-          _normalizeProducts(
+          await _normalizeProducts(
         venta['productos'],
+        companyId: companyId,
+        userId: userId,
+        businessDate: businessDate,
       ),
       'pagos':
           _normalizePayments(
@@ -576,16 +595,32 @@ class SyncService {
   // PRODUCTOS
   // ============================================================
 
-  List<Map<String, dynamic>>
+  Future<List<Map<String, dynamic>>>
       _normalizeProducts(
-    dynamic value,
-  ) {
+    dynamic value, {
+    required int companyId,
+    required int userId,
+    required DateTime businessDate,
+  }) async {
     if (value is! List) {
       return [];
     }
 
     final result =
         <Map<String, dynamic>>[];
+
+    Database? dayDatabase;
+
+    try {
+      dayDatabase =
+          await _dayDb.open(
+        companyId: companyId,
+        userId: userId,
+        businessDate: businessDate,
+      );
+    } catch (_) {
+      dayDatabase = null;
+    }
 
     for (final raw in value) {
       if (raw is! Map) {
@@ -597,10 +632,12 @@ class SyncService {
         raw,
       );
 
-      final productoId =
+      final localProductId =
           _toInt(
-        item['producto_id'] ??
-            item['product_id'],
+        item['producto_local_id'] ??
+            item['product_local_id'] ??
+            item['product_id'] ??
+            item['producto_id'],
       );
 
       final cantidad =
@@ -609,30 +646,262 @@ class SyncService {
             item['quantity'],
       );
 
-      if (productoId <= 0 ||
+      if (localProductId <= 0 ||
           cantidad <= 0) {
         continue;
       }
 
-      result.add({
-        'producto_id':
-            productoId,
-        'cantidad':
-            cantidad,
+      Map<String, dynamic>?
+          product;
+
+      final embeddedProduct =
+          item['producto'];
+
+      if (embeddedProduct is Map) {
+        product =
+            Map<String, dynamic>.from(
+          embeddedProduct,
+        );
+      }
+
+      if (product == null &&
+          dayDatabase != null) {
+        product =
+            await _getDayProduct(
+          dayDatabase,
+          localProductId,
+        );
+      }
+
+      product ??=
+          await _historyDb
+              .getProductById(
+        localProductId,
+      );
+
+      final serverProductId =
+          _extractServerProductId(
+        product,
+      );
+
+      final code =
+          _firstNonEmpty(
+        item['codigo'],
+        item['code'],
+        product?['code'],
+        product?['codigo'],
+      );
+
+      final name =
+          _firstNonEmpty(
+        item['nombre'],
+        item['name'],
+        product?['name'],
+        product?['nombre'],
+      );
+
+      final description =
+          _firstNonEmpty(
+        item['descripcion'],
+        item['description'],
+        product?['descripcion'],
+        product?['description'],
+      );
+
+      final unitPrice =
+          _toDouble(
+        item['precio_unitario'] ??
+            item['precio'] ??
+            item['unit_price'] ??
+            product?['price'] ??
+            product?['precio'],
+      );
+
+      final cost =
+          _toDouble(
+        item['costo'] ??
+            item['cost'] ??
+            product?['cost'] ??
+            product?['costo'],
+      );
+
+      final tax =
+          _toDouble(
+        item['impuesto'] ??
+            item['tax'] ??
+            product?['tax'] ??
+            product?['impuesto'],
+      );
+
+      final stock =
+          _toDouble(
+        item['stock'] ??
+            product?['stock'],
+      );
+
+      final stockMinimo =
+          _toDouble(
+        item['stock_minimo'] ??
+            item['stock_min'] ??
+            product?['stock_minimo'] ??
+            product?['stock_min'],
+      );
+
+      final activo =
+          _toBool(
+        item['activo'] ??
+            item['active'] ??
+            product?['activo'] ??
+            product?['is_active'],
+        defaultValue: true,
+      );
+
+      final line =
+          <String, dynamic>{
+        'producto_local_id':
+            localProductId,
+
+        if (serverProductId > 0)
+          'producto_id':
+              serverProductId,
+
+        if (code != null &&
+            code.isNotEmpty)
+          'codigo': code,
+
+        if (name != null &&
+            name.isNotEmpty)
+          'nombre': name,
+
+        if (description != null &&
+            description.isNotEmpty)
+          'descripcion':
+              description,
+
+        'cantidad': cantidad,
+
         'precio_unitario':
-            _toDouble(
-          item['precio_unitario'] ??
-              item['precio'] ??
-              item['unit_price'],
-        ),
+            unitPrice,
+
+        'costo': cost,
+
+        'impuesto': tax,
+
+        'stock': stock,
+
+        'stock_minimo':
+            stockMinimo,
+
+        'activo': activo,
+
         'descuento':
             _toDouble(
           item['descuento'],
         ),
-      });
+      };
+
+      result.add(line);
     }
 
     return result;
+  }
+
+  // ============================================================
+  // OBTENER PRODUCTO DE LA BASE DIARIA
+  // ============================================================
+
+  Future<Map<String, dynamic>?>
+      _getDayProduct(
+    Database db,
+    int localProductId,
+  ) async {
+    try {
+      final columns =
+          await _tableColumns(
+        db,
+        'products',
+      );
+
+      if (columns.contains(
+        'server_id',
+      )) {
+        final result =
+            await db.query(
+          'products',
+          where:
+              'id = ? OR server_id = ?',
+          whereArgs: [
+            localProductId,
+            localProductId,
+          ],
+          limit: 1,
+        );
+
+        if (result.isNotEmpty) {
+          return Map<String, dynamic>.from(
+            result.first,
+          );
+        }
+      }
+
+      final result =
+          await db.query(
+        'products',
+        where: 'id = ?',
+        whereArgs: [
+          localProductId,
+        ],
+        limit: 1,
+      );
+
+      if (result.isEmpty) {
+        return null;
+      }
+
+      return Map<String, dynamic>.from(
+        result.first,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // ============================================================
+  // MAPEAR PRODUCTOS LOCAL ↔ SERVIDOR
+  // ============================================================
+
+  Future<void>
+      _applyHistoricalProductMappings(
+    Map<String, dynamic> response,
+  ) async {
+    final rawMappings =
+        response[
+          'productos_sincronizados'
+        ];
+
+    if (rawMappings is! List ||
+        rawMappings.isEmpty) {
+      return;
+    }
+
+    try {
+      await _historyDb
+          .applySyncProductMappings(
+        rawMappings,
+      );
+
+      print(
+        '✅ Mapeos de productos aplicados: '
+        '${rawMappings.length}',
+      );
+    } catch (e) {
+      print(
+        '⚠️ No fue posible aplicar los mapeos '
+        'producto local/servidor: $e',
+      );
+
+      rethrow;
+    }
   }
 
   // ============================================================
@@ -662,11 +931,12 @@ class SyncService {
 
       final method =
           item['forma_pago']
-                  ?.toString()
-                  .trim()
-                  .isNotEmpty ==
-              true
-              ? item['forma_pago'].toString()
+                      ?.toString()
+                      .trim()
+                      .isNotEmpty ==
+                  true
+              ? item['forma_pago']
+                  .toString()
               : item['method']
                       ?.toString() ??
                   'Efectivo';
@@ -686,10 +956,13 @@ class SyncService {
             _mapPaymentMethod(
           method,
         ),
-        'monto': amount,
+        'monto':
+            roundMoney(amount),
         'cambio':
-            _toDouble(
-          item['cambio'],
+            roundMoney(
+          _toDouble(
+            item['cambio'],
+          ),
         ),
         'referencia':
             item['referencia'],
@@ -703,11 +976,12 @@ class SyncService {
   // CONSTRUIR PAYLOAD DESDE SQLITE
   // ============================================================
 
-  Map<String, dynamic> _buildPayload(
+  Future<Map<String, dynamic>>
+      _buildPayload(
     Map<String, dynamic> sale,
     List<Map<String, dynamic>> items,
     List<Map<String, dynamic>> payments,
-  ) {
+  ) async {
     final total =
         _toDouble(
       sale['total'],
@@ -748,8 +1022,7 @@ class SyncService {
         amount =
             original - changeDue;
 
-        change =
-            changeDue;
+        change = changeDue;
 
         cashAdjusted = true;
       }
@@ -768,13 +1041,9 @@ class SyncService {
           method,
         ),
         'monto':
-            roundMoney(
-          amount,
-        ),
+            roundMoney(amount),
         'cambio':
-            roundMoney(
-          change,
-        ),
+            roundMoney(change),
         'referencia':
             payment['referencia'],
       });
@@ -793,7 +1062,8 @@ class SyncService {
       if (normalizedPayments
           .isNotEmpty) {
         final first =
-            normalizedPayments[0];
+            normalizedPayments
+                .first;
 
         first['monto'] =
             roundMoney(
@@ -802,7 +1072,8 @@ class SyncService {
               ) +
               difference,
         );
-      } else if (difference > 0) {
+      } else if (difference >
+          0) {
         normalizedPayments.add({
           'forma_pago':
               'Efectivo',
@@ -810,10 +1081,8 @@ class SyncService {
               roundMoney(
             difference,
           ),
-          'cambio':
-              0.0,
-          'referencia':
-              null,
+          'cambio': 0.0,
+          'referencia': null,
         });
       }
     }
@@ -827,19 +1096,14 @@ class SyncService {
               .toIso8601String(),
     );
 
-    /*
-     * IMPORTANTE:
-     *
-     * precio_unitario es el nombre requerido
-     * por /api/v1/sync/offline.
-     */
     final normalizedProducts =
         <Map<String, dynamic>>[];
 
     for (final item in items) {
-      final productoId =
+      final localProductId =
           _toInt(
-        item['product_id'] ??
+        item['producto_local_id'] ??
+            item['product_id'] ??
             item['producto_id'],
       );
 
@@ -849,22 +1113,131 @@ class SyncService {
             item['cantidad'],
       );
 
-      if (productoId <= 0 ||
+      if (localProductId <= 0 ||
           cantidad <= 0) {
         continue;
       }
 
+      final product =
+          await _historyDb
+              .getProductById(
+        localProductId,
+      );
+
+      final serverProductId =
+          _extractServerProductId(
+        product,
+      );
+
+      final code =
+          _firstNonEmpty(
+        item['codigo'],
+        item['code'],
+        product?['code'],
+        product?['codigo'],
+      );
+
+      final name =
+          _firstNonEmpty(
+        item['nombre'],
+        item['name'],
+        product?['name'],
+        product?['nombre'],
+      );
+
+      final description =
+          _firstNonEmpty(
+        item['descripcion'],
+        item['description'],
+        product?['descripcion'],
+        product?['description'],
+      );
+
+      final unitPrice =
+          _toDouble(
+        item['unit_price'] ??
+            item['precio_unitario'] ??
+            item['precio'] ??
+            product?['price'] ??
+            product?['precio'],
+      );
+
+      final cost =
+          _toDouble(
+        item['costo'] ??
+            item['cost'] ??
+            product?['cost'] ??
+            product?['costo'],
+      );
+
+      final tax =
+          _toDouble(
+        item['impuesto'] ??
+            item['tax'] ??
+            product?['tax'] ??
+            product?['impuesto'],
+      );
+
+      final stock =
+          _toDouble(
+        item['stock'] ??
+            product?['stock'],
+      );
+
+      final stockMinimo =
+          _toDouble(
+        item['stock_minimo'] ??
+            item['stock_min'] ??
+            product?['stock_minimo'] ??
+            product?['stock_min'],
+      );
+
+      final activo =
+          _toBool(
+        item['activo'] ??
+            item['active'] ??
+            product?['activo'] ??
+            product?['is_active'],
+        defaultValue: true,
+      );
+
       normalizedProducts.add({
-        'producto_id':
-            productoId,
-        'cantidad':
-            cantidad,
+        'producto_local_id':
+            localProductId,
+
+        if (serverProductId > 0)
+          'producto_id':
+              serverProductId,
+
+        if (code != null &&
+            code.isNotEmpty)
+          'codigo': code,
+
+        if (name != null &&
+            name.isNotEmpty)
+          'nombre': name,
+
+        if (description != null &&
+            description.isNotEmpty)
+          'descripcion':
+              description,
+
+        'cantidad': cantidad,
+
         'precio_unitario':
-            _toDouble(
-          item['unit_price'] ??
-              item['precio_unitario'] ??
-              item['precio'],
-        ),
+            unitPrice,
+
+        'costo': cost,
+
+        'impuesto': tax,
+
+        'stock': stock,
+
+        'stock_minimo':
+            stockMinimo,
+
+        'activo': activo,
+
         'descuento':
             _toDouble(
           item['descuento'],
@@ -919,7 +1292,8 @@ class SyncService {
       businessDate: businessDate,
     );
 
-    final rows = await db.query(
+    final rows =
+        await db.query(
       'sales',
       where:
           "sync_status IN ('pending','failed','syncing')",
@@ -949,7 +1323,8 @@ class SyncService {
       );
 
       final payments =
-          await _dayDb.getSalePayments(
+          await _dayDb
+              .getSalePayments(
         db,
         _toInt(
           sale['id'],
@@ -982,22 +1357,34 @@ class SyncService {
     final cursor =
         await _historyDb
             .getCatalogCursor(
-              'global',
-            );
+      'global',
+    );
+
+    final String? catalogDate =
+        force
+            ? null
+            : cursor ??
+                versions['global'];
+
+    final DateTime? desde =
+        catalogDate == null ||
+                catalogDate.trim().isEmpty
+            ? null
+            : DateTime.tryParse(
+                catalogDate,
+              );
 
     final response =
         await _apiClient.getCatalog(
-      desde: force
-          ? null
-          : cursor ??
-              versions['global'],
+      desde: desde?.toIso8601String(),
     );
 
     if (response.isEmpty) {
       return;
     }
 
-    await _historyDb.syncCatalogs(
+    await _historyDb
+        .syncCatalogs(
       response,
     );
 
@@ -1010,14 +1397,12 @@ class SyncService {
     final nextVersion =
         response['version']
                 ?.toString() ??
-            (
-              response['versiones']
-                      is Map
-                  ? (response['versiones']
-                          as Map)['global']
-                      ?.toString()
-                  : null
-            );
+            (response['versiones']
+                    is Map
+                ? (response['versiones']
+                        as Map)['global']
+                    ?.toString()
+                : null);
 
     if (nextCursor != null ||
         nextVersion != null) {
@@ -1039,8 +1424,8 @@ class SyncService {
     final cursor =
         await _historyDb
             .getCatalogCursor(
-              'server_changes',
-            );
+      'server_changes',
+    );
 
     print(
       '⬇️ Iniciando SYNC PULL '
@@ -1056,20 +1441,6 @@ class SyncService {
       '⬇️ SYNC PULL recibido.',
     );
 
-    /*
-     * El backend devuelve:
-     *
-     * {
-     *   cambios: {
-     *     productos: [],
-     *     clientes: [],
-     *     ...
-     *     ventas: []
-     *   },
-     *   tombstones: {},
-     *   cursor: "..."
-     * }
-     */
     final cambios =
         response['cambios'];
 
@@ -1079,7 +1450,8 @@ class SyncService {
     final serverData =
         <String, dynamic>{};
 
-    List<Map<String, dynamic>> ventas =
+    List<Map<String, dynamic>>
+        ventas =
         <Map<String, dynamic>>[];
 
     if (cambios is Map) {
@@ -1088,14 +1460,10 @@ class SyncService {
         cambios,
       );
 
-      /*
-       * EXTRAER VENTAS.
-       *
-       * Separamos ventas de catálogos porque necesitan
-       * sus propias tablas de cabecera, detalles y pagos.
-       */
       final rawVentas =
-          cambiosMap.remove('ventas');
+          cambiosMap.remove(
+        'ventas',
+      );
 
       if (rawVentas is List) {
         ventas = rawVentas
@@ -1115,9 +1483,6 @@ class SyncService {
             .toList();
       }
 
-      /*
-       * Catálogos existentes.
-       */
       serverData.addAll(
         cambiosMap,
       );
@@ -1128,35 +1493,25 @@ class SyncService {
       '${ventas.length}',
     );
 
-    /*
-     * Procesar catálogos y tombstones.
-     */
     if (tombstones != null) {
-      serverData['tombstones'] =
+      serverData[
+          'tombstones'] =
           tombstones;
     }
 
     if (serverData.isNotEmpty) {
-      await _historyDb.syncCatalogs(
+      await _historyDb
+          .syncCatalogs(
         serverData,
       );
     }
 
-    /*
-     * Procesar ventas.
-     */
     if (ventas.isNotEmpty) {
       await _upsertServerSales(
         ventas,
       );
     }
 
-    /*
-     * IMPORTANTE:
-     *
-     * El cursor se guarda únicamente después de
-     * haber procesado correctamente las ventas.
-     */
     final nextCursor =
         response['next_cursor']
                 ?.toString() ??
@@ -1173,7 +1528,8 @@ class SyncService {
       );
 
       print(
-        '✅ Cursor actualizado: $nextCursor',
+        '✅ Cursor actualizado: '
+        '$nextCursor',
       );
     }
 
@@ -1194,11 +1550,9 @@ class SyncService {
     final db =
         await _historyDb.database;
 
-    /*
-     * Deduplicación dentro de la misma respuesta.
-     */
     final uniqueSales =
-        <String, Map<String, dynamic>>{};
+        <String,
+            Map<String, dynamic>>{};
 
     for (final venta in ventas) {
       final uuid =
@@ -1280,14 +1634,12 @@ class SyncService {
     final existing =
         await txn.query(
       'sales',
-      where: 'uuid_local = ?',
+      where:
+          'uuid_local = ?',
       whereArgs: [uuid],
       limit: 1,
     );
 
-    /*
-     * Venta ya existente localmente.
-     */
     if (existing.isNotEmpty) {
       final localSale =
           Map<String, dynamic>.from(
@@ -1299,10 +1651,6 @@ class SyncService {
         localSale['id'],
       );
 
-      /*
-       * NUNCA reemplazar una venta que todavía está
-       * pendiente de enviar.
-       */
       if (_isLocalSalePending(
         localSale,
       )) {
@@ -1324,9 +1672,6 @@ class SyncService {
       return 'updated';
     }
 
-    /*
-     * Venta que todavía no existe localmente.
-     */
     final saleId =
         await _insertServerSale(
       txn,
@@ -1368,7 +1713,8 @@ class SyncService {
 
     final paymentMethod =
         payments.isNotEmpty
-            ? payments.first['method']
+            ? payments.first[
+                'method']
             : null;
 
     final cashReceived =
@@ -1384,59 +1730,39 @@ class SyncService {
     return txn.insert(
       'sales',
       {
-        'uuid_local':
-            uuid,
-
+        'uuid_local': uuid,
         'total':
             _toDouble(
           venta['total'],
         ),
-
         'status':
             _normalizeSaleStatus(
           estado,
         ),
-
-        /*
-         * Venta recibida del servidor ya está
-         * sincronizada.
-         */
         'sync_status':
             'synced',
-
         'payment_method':
             paymentMethod,
-
         'cash_received':
             cashReceived,
-
         'change_due':
             changeDue,
-
         'mesa_id':
             venta['mesa_id'],
-
         'mesa_nombre':
             venta['mesa_nombre']
                 ?.toString(),
-
-        /*
-         * Guardamos created_at en hora local
-         * para que getTodaySales() pueda encontrarla.
-         */
         'created_at':
             _serverLocalDate(
           venta['created_at'] ??
               venta['fecha'],
         ),
-
         'updated_at':
             _serverLocalDate(
           venta['updated_at'] ??
               venta['created_at'] ??
               venta['fecha'],
         ),
-
         'paid_at':
             estado.toLowerCase() ==
                     'pagado'
@@ -1453,7 +1779,8 @@ class SyncService {
   // ACTUALIZAR VENTA SERVIDOR
   // ============================================================
 
-  Future<void> _updateExistingServerSale(
+  Future<void>
+      _updateExistingServerSale(
     dynamic txn,
     int saleId,
     Map<String, dynamic> venta,
@@ -1475,7 +1802,8 @@ class SyncService {
 
     final paymentMethod =
         payments.isNotEmpty
-            ? payments.first['method']
+            ? payments.first[
+                'method']
             : null;
 
     await txn.update(
@@ -1485,48 +1813,38 @@ class SyncService {
             _toDouble(
           venta['total'],
         ),
-
         'status':
             _normalizeSaleStatus(
           estado,
         ),
-
         'sync_status':
             'synced',
-
         'payment_method':
             paymentMethod,
-
         'cash_received':
             _cashReceived(
           payments,
         ),
-
         'change_due':
             _cashChange(
           payments,
         ),
-
         'mesa_id':
             venta['mesa_id'],
-
         'mesa_nombre':
             venta['mesa_nombre']
                 ?.toString(),
-
         'created_at':
             _serverLocalDate(
           venta['created_at'] ??
               venta['fecha'],
         ),
-
         'updated_at':
             _serverLocalDate(
           venta['updated_at'] ??
               venta['created_at'] ??
               venta['fecha'],
         ),
-
         'paid_at':
             estado.toLowerCase() ==
                     'pagado'
@@ -1551,7 +1869,8 @@ class SyncService {
   // REEMPLAZAR DETALLES Y PAGOS
   // ============================================================
 
-  Future<void> _replaceServerSaleChildren(
+  Future<void>
+      _replaceServerSaleChildren(
     dynamic txn,
     int saleId,
     Map<String, dynamic> venta,
@@ -1562,21 +1881,18 @@ class SyncService {
 
     await txn.delete(
       'sale_items',
-      where: 'sale_id = ?',
+      where:
+          'sale_id = ?',
       whereArgs: [saleId],
     );
 
     await txn.delete(
       'sale_payments',
-      where: 'sale_id = ?',
+      where:
+          'sale_id = ?',
       whereArgs: [saleId],
     );
 
-    /*
-     * ----------------------------------------------------------
-     * DETALLES
-     * ----------------------------------------------------------
-     */
     final detalles =
         venta['detalles'];
 
@@ -1633,8 +1949,8 @@ class SyncService {
         name ??=
             detalle['nombre']
                 ?.toString() ??
-                detalle['name']
-                    ?.toString();
+            detalle['name']
+                ?.toString();
 
         final itemTotal =
             total > 0
@@ -1647,21 +1963,16 @@ class SyncService {
         await txn.insert(
           'sale_items',
           {
-            'sale_id':
-                saleId,
-
+            'sale_id': saleId,
             'product_id':
                 productId,
-
             'name':
-                name ?? 'Producto',
-
+                name ??
+                    'Producto',
             'quantity':
                 quantity,
-
             'unit_price':
                 unitPrice,
-
             'total':
                 itemTotal,
           },
@@ -1669,11 +1980,6 @@ class SyncService {
       }
     }
 
-    /*
-     * ----------------------------------------------------------
-     * PAGOS
-     * ----------------------------------------------------------
-     */
     final pagos =
         venta['pagos'];
 
@@ -1690,12 +1996,13 @@ class SyncService {
 
         final method =
             pago['forma_pago']
-                    ?.toString()
-                    .trim()
-                    .isNotEmpty ==
-                true
-                ? pago['forma_pago']
-                    .toString()
+                        ?.toString()
+                        .trim()
+                        .isNotEmpty ==
+                    true
+                ? pago[
+                    'forma_pago']
+                  .toString()
                 : pago['method']
                         ?.toString() ??
                     'Efectivo';
@@ -1713,14 +2020,11 @@ class SyncService {
         await txn.insert(
           'sale_payments',
           {
-            'sale_id':
-                saleId,
-
+            'sale_id': saleId,
             'method':
                 _mapPaymentMethod(
               method,
             ),
-
             'amount':
                 roundMoney(
               amount,
@@ -1740,11 +2044,8 @@ class SyncService {
   ) {
     return (
       venta['uuid'] ??
-          venta['uuid_local']
-    )
-        ?.toString()
-        .trim() ??
-        '';
+      venta['uuid_local']
+    ).toString().trim();
   }
 
   // ============================================================
@@ -1771,7 +2072,8 @@ class SyncService {
   // PAGOS SERVIDOR
   // ============================================================
 
-  List<Map<String, dynamic>> _serverPayments(
+  List<Map<String, dynamic>>
+      _serverPayments(
     Map<String, dynamic> venta,
   ) {
     final raw =
@@ -1817,9 +2119,7 @@ class SyncService {
           method,
         ),
         'amount':
-            roundMoney(
-          amount,
-        ),
+            roundMoney(amount),
         'cambio':
             roundMoney(
           _toDouble(
@@ -1841,8 +2141,7 @@ class SyncService {
   ) {
     var total = 0.0;
 
-    for (final payment
-        in payments) {
+    for (final payment in payments) {
       final method =
           payment['method']
                   ?.toString() ??
@@ -1859,9 +2158,7 @@ class SyncService {
       }
     }
 
-    return roundMoney(
-      total,
-    );
+    return roundMoney(total);
   }
 
   // ============================================================
@@ -1873,17 +2170,13 @@ class SyncService {
   ) {
     var total = 0.0;
 
-    for (final payment
-        in payments) {
-      total +=
-          _toDouble(
+    for (final payment in payments) {
+      total += _toDouble(
         payment['cambio'],
       );
     }
 
-    return roundMoney(
-      total,
-    );
+    return roundMoney(total);
   }
 
   // ============================================================
@@ -1937,9 +2230,7 @@ class SyncService {
     }
 
     final text =
-        value
-                ?.toString()
-                .trim() ??
+        value?.toString().trim() ??
             '';
 
     if (text.isEmpty) {
@@ -1951,8 +2242,7 @@ class SyncService {
         DateTime.tryParse(text);
 
     if (parsed != null) {
-      return parsed
-          .toIso8601String();
+      return parsed.toIso8601String();
     }
 
     return text;
@@ -1972,9 +2262,7 @@ class SyncService {
     }
 
     final text =
-        value
-                ?.toString()
-                .trim() ??
+        value?.toString().trim() ??
             '';
 
     if (text.isEmpty) {
@@ -1995,6 +2283,156 @@ class SyncService {
   }
 
   // ============================================================
+  // COLUMNAS SQLITE
+  // ============================================================
+
+  Future<Set<String>>
+      _tableColumns(
+    Database db,
+    String table,
+  ) async {
+    try {
+      final result =
+          await db.rawQuery(
+        'PRAGMA table_info($table)',
+      );
+
+      return result
+          .map(
+            (row) =>
+                row['name']
+                    ?.toString() ??
+                '',
+          )
+          .where(
+            (name) =>
+                name.isNotEmpty,
+          )
+          .toSet();
+    } catch (_) {
+      return <String>{};
+    }
+  }
+
+  // ============================================================
+  // EXTRAER SERVER ID DEL PRODUCTO
+  // ============================================================
+
+  int _extractServerProductId(
+    Map<String, dynamic>?
+        product,
+  ) {
+    if (product == null) {
+      return 0;
+    }
+
+    final serverId =
+        _toInt(
+      product['server_id'] ??
+          product[
+              'producto_server_id'],
+    );
+
+    if (serverId > 0) {
+      return serverId;
+    }
+
+    /*
+     * Para la base diaria existente:
+     *
+     * products.id = ID del producto del servidor.
+     *
+     * Para LocalDb nueva:
+     * products.server_id = ID real del servidor.
+     *
+     * No usamos id como server_id en LocalDb cuando
+     * existe server_id pero está vacío.
+     */
+    if (!product.containsKey(
+          'server_id',
+        ) &&
+        !product.containsKey(
+          'producto_server_id',
+        )) {
+      return _toInt(
+        product['id'],
+      );
+    }
+
+    return 0;
+  }
+
+  // ============================================================
+  // PRIMER VALOR NO VACÍO
+  // ============================================================
+
+  String? _firstNonEmpty(
+    dynamic a,
+    dynamic b,
+    dynamic c,
+    dynamic d,
+  ) {
+    final values = [
+      a,
+      b,
+      c,
+      d,
+    ];
+
+    for (final value in values) {
+      final text =
+          value?.toString().trim() ??
+              '';
+
+      if (text.isNotEmpty) {
+        return text;
+      }
+    }
+
+    return null;
+  }
+
+  // ============================================================
+  // BOOLEAN
+  // ============================================================
+
+  bool _toBool(
+    dynamic value, {
+    bool defaultValue = false,
+  }) {
+    if (value is bool) {
+      return value;
+    }
+
+    if (value is num) {
+      return value != 0;
+    }
+
+    final text =
+        value
+                ?.toString()
+                .trim()
+                .toLowerCase() ??
+            '';
+
+    if (text == 'true' ||
+        text == '1' ||
+        text == 'yes' ||
+        text == 'si' ||
+        text == 'sí') {
+      return true;
+    }
+
+    if (text == 'false' ||
+        text == '0' ||
+        text == 'no') {
+      return false;
+    }
+
+    return defaultValue;
+  }
+
+  // ============================================================
   // CONVERSION
   // ============================================================
 
@@ -2010,7 +2448,8 @@ class SyncService {
     }
 
     return int.tryParse(
-          value?.toString() ?? '',
+          value?.toString() ??
+              '',
         ) ??
         0;
   }
@@ -2025,8 +2464,7 @@ class SyncService {
     var text =
         value?.toString() ?? '';
 
-    text =
-        text.replaceAll(
+    text = text.replaceAll(
       ',',
       '.',
     );
@@ -2092,10 +2530,8 @@ class SyncService {
       return 'Transferencia';
     }
 
-    if (normalized ==
-            'crédito' ||
-        normalized ==
-            'credito') {
+    if (normalized == 'crédito' ||
+        normalized == 'credito') {
       return 'Crédito';
     }
 
