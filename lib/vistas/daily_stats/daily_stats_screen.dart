@@ -7,6 +7,7 @@ import '../../core/database/local_db.dart';
 import '../../core/database/pos_db_service.dart';
 import '../../core/models/sale_model.dart';
 import '../../core/network/api_client.dart';
+import '../../core/services/printer_service.dart';
 import '../../core/services/sync_service.dart';
 import '../../core/storage/app_storage.dart';
 import '../ventas/sale_detail_screen.dart';
@@ -63,26 +64,42 @@ class DailyStatsScreen extends StatefulWidget {
   const DailyStatsScreen({super.key});
 
   @override
-  State<DailyStatsScreen> createState() => _DailyStatsScreenState();
+  State<DailyStatsScreen> createState() =>
+      _DailyStatsScreenState();
 }
 
-class _DailyStatsScreenState extends State<DailyStatsScreen>
-    with WidgetsBindingObserver, TickerProviderStateMixin {
+class _DailyStatsScreenState
+    extends State<DailyStatsScreen>
+    with
+        WidgetsBindingObserver,
+        TickerProviderStateMixin {
   final LocalDb _historyDb = LocalDb();
-  final PosDatabaseService _dayDb = PosDatabaseService();
-  final SyncService _syncService = SyncService();
-  final ApiClient _apiClient = ApiClient();
+  final PosDatabaseService _dayDb =
+      PosDatabaseService();
+  final SyncService _syncService =
+      SyncService();
+  final ApiClient _apiClient =
+      ApiClient();
+  final PrinterService _printerService =
+      PrinterService();
 
-  StreamSubscription<void>? _salesChangesSubscription;
+  StreamSubscription<void>?
+      _salesChangesSubscription;
+
   bool _refreshQueued = false;
 
   bool _loading = true;
   bool _refreshing = false;
   bool _syncing = false;
 
-  List<Map<String, dynamic>> _sales = const [];
-  List<_Egreso> _egresos = const [];
-  List<_Ingreso> _ingresos = const [];
+  bool _printingMovement = false;
+
+  List<Map<String, dynamic>> _sales =
+      const [];
+  List<_Egreso> _egresos =
+      const [];
+  List<_Ingreso> _ingresos =
+      const [];
 
   late TabController _tabController;
 
@@ -93,7 +110,8 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   double _mesEgresos = 0;
   double _mesIngresos = 0;
   Map<String, double> _mesPorMetodo = {};
-  List<Map<String, dynamic>> _mesPorDia = [];
+  List<Map<String, dynamic>> _mesPorDia =
+      [];
 
   String _companyName = '';
 
@@ -112,25 +130,36 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
     59,
   );
 
-  final TextEditingController _searchCtrl = TextEditingController();
+  final TextEditingController _searchCtrl =
+      TextEditingController();
+
   String _searchQuery = '';
 
   @override
   void initState() {
     super.initState();
 
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController =
+        TabController(
+      length: 2,
+      vsync: this,
+    );
 
     _tabController.addListener(() {
-      if (_tabController.index == 1 && _loadingMes) {
+      if (_tabController.index == 1 &&
+          _loadingMes) {
         _loadMonthStats();
       }
     });
 
-    WidgetsBinding.instance.addObserver(this);
+    WidgetsBinding.instance
+        .addObserver(this);
 
-    _salesChangesSubscription = LocalDb.salesChanges.listen((_) {
-      if (!mounted || _syncing) return;
+    _salesChangesSubscription =
+        LocalDb.salesChanges.listen((_) {
+      if (!mounted || _syncing) {
+        return;
+      }
 
       if (_refreshing) {
         _refreshQueued = true;
@@ -144,19 +173,32 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
     _initialize();
   }
 
+  // ============================================================
+  // INICIALIZACIÓN
+  // ============================================================
+
   Future<void> _initialize() async {
-    final name = await AppStorage().getCompanyName();
+    final name =
+        await AppStorage()
+            .getCompanyName();
 
     if (mounted) {
-      setState(() => _companyName = name ?? '');
+      setState(
+        () => _companyName =
+            name ?? '',
+      );
     }
 
     await _loadStats();
 
-    if (!mounted) return;
+    if (!mounted) {
+      return;
+    }
 
     try {
-      final offline = await AppStorage().isOfflineSession();
+      final offline =
+          await AppStorage()
+              .isOfflineSession();
 
       if (!offline) {
         await _syncUploadThenPull();
@@ -166,30 +208,47 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
         }
       }
     } catch (e) {
-      debugPrint('ℹ️ Pull inicial no disponible: $e');
+      debugPrint(
+        'ℹ️ Pull inicial no disponible: $e',
+      );
     }
   }
 
   @override
   void dispose() {
-    _salesChangesSubscription?.cancel();
-    _salesChangesSubscription = null;
+    _salesChangesSubscription
+        ?.cancel();
+
+    _salesChangesSubscription =
+        null;
+
     _tabController.dispose();
     _searchCtrl.dispose();
-    WidgetsBinding.instance.removeObserver(this);
+
+    WidgetsBinding.instance
+        .removeObserver(this);
+
     super.dispose();
   }
 
   @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && mounted && !_syncing) {
+  void didChangeAppLifecycleState(
+    AppLifecycleState state,
+  ) {
+    if (state ==
+            AppLifecycleState.resumed &&
+        mounted &&
+        !_syncing) {
       _syncAndRefreshOnResume();
     }
   }
 
-  Future<void> _syncAndRefreshOnResume() async {
+  Future<void>
+      _syncAndRefreshOnResume() async {
     try {
-      final offline = await AppStorage().isOfflineSession();
+      final offline =
+          await AppStorage()
+              .isOfflineSession();
 
       if (!offline) {
         await _syncUploadThenPull();
@@ -206,27 +265,45 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   // ============================================================
 
   Future<void> _loadStats() async {
-    if (!mounted || _refreshing) return;
+    if (!mounted || _refreshing) {
+      return;
+    }
 
     _refreshing = true;
 
     try {
-      final sales = await _loadSalesInRange();
-      final egresos = await _loadEgresos();
-      final ingresos = await _loadIngresos();
+      final sales =
+          await _loadSalesInRange();
 
-      if (!mounted) return;
+      final egresos =
+          await _loadEgresos();
+
+      final ingresos =
+          await _loadIngresos();
+
+      if (!mounted) {
+        return;
+      }
 
       setState(() {
-        _sales = List<Map<String, dynamic>>.from(sales);
+        _sales =
+            List<Map<String, dynamic>>
+                .from(
+          sales,
+        );
+
         _egresos = egresos;
         _ingresos = ingresos;
         _loading = false;
       });
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted) {
+        return;
+      }
 
-      setState(() => _loading = false);
+      setState(
+        () => _loading = false,
+      );
 
       _showMessage(
         'No fue posible cargar las ventas: $error',
@@ -238,20 +315,37 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
     }
   }
 
-  Future<void> _refreshSilently() async {
-    if (!mounted || _refreshing || _syncing) return;
+  Future<void>
+      _refreshSilently() async {
+    if (!mounted ||
+        _refreshing ||
+        _syncing) {
+      return;
+    }
 
     _refreshing = true;
 
     try {
-      final sales = await _loadSalesInRange();
-      final egresos = await _loadEgresos();
-      final ingresos = await _loadIngresos();
+      final sales =
+          await _loadSalesInRange();
 
-      if (!mounted) return;
+      final egresos =
+          await _loadEgresos();
+
+      final ingresos =
+          await _loadIngresos();
+
+      if (!mounted) {
+        return;
+      }
 
       setState(() {
-        _sales = List<Map<String, dynamic>>.from(sales);
+        _sales =
+            List<Map<String, dynamic>>
+                .from(
+          sales,
+        );
+
         _egresos = egresos;
         _ingresos = ingresos;
       });
@@ -263,12 +357,20 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   }
 
   void _scheduleQueuedRefresh() {
-    if (!_refreshQueued || !mounted || _syncing || _refreshing) return;
+    if (!_refreshQueued ||
+        !mounted ||
+        _syncing ||
+        _refreshing) {
+      return;
+    }
 
     _refreshQueued = false;
 
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && !_syncing && !_refreshing) {
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) {
+      if (mounted &&
+          !_syncing &&
+          !_refreshing) {
         _refreshSilently();
       }
     });
@@ -278,130 +380,250 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   // VENTAS EN RANGO
   // ============================================================
 
-  Future<List<Map<String, dynamic>>> _loadSalesInRange() async {
-    final inicioClave = _dayDb.dateKey(_fechaInicio);
-    final finClave = _dayDb.dateKey(_fechaFin);
-    final esHoy = inicioClave == _dayDb.dateKey(DateTime.now());
+  Future<List<Map<String, dynamic>>>
+      _loadSalesInRange() async {
+    final inicioClave =
+        _dayDb.dateKey(
+      _fechaInicio,
+    );
 
-    // CORRECCIÓN:
-    // Estas variables deben existir dentro del método porque se utilizan
-    // para consultar la base operativa del día.
-    final companyId = await AppStorage().getEmpresaId() ?? 0;
-    final userId = await AppStorage().getUserId() ?? 0;
+    final finClave =
+        _dayDb.dateKey(
+      _fechaFin,
+    );
 
-    List<Map<String, dynamic>> historySales;
+    final esHoy =
+        inicioClave ==
+            _dayDb.dateKey(
+              DateTime.now(),
+            );
+
+    final companyId =
+        await AppStorage()
+                .getEmpresaId() ??
+            0;
+
+    final userId =
+        await AppStorage()
+                .getUserId() ??
+            0;
+
+    List<Map<String, dynamic>>
+        historySales;
 
     try {
       if (esHoy) {
-        historySales = await _historyDb.getTodaySales();
+        historySales =
+            await _historyDb
+                .getTodaySales();
       } else {
-        historySales = await _historyDb.getSales(
-          businessDate: inicioClave,
+        historySales =
+            await _historyDb.getSales(
+          businessDate:
+              inicioClave,
         );
 
         if (inicioClave != finClave) {
-          historySales = await _historyDb.getSales();
+          historySales =
+              await _historyDb
+                  .getSales();
         }
       }
     } catch (_) {
       historySales = [];
     }
 
-    List<Map<String, dynamic>> daySales = [];
+    List<Map<String, dynamic>>
+        daySales = [];
 
-    if (companyId > 0 && userId > 0 && esHoy) {
+    if (companyId > 0 &&
+        userId > 0 &&
+        esHoy) {
       try {
-        daySales = await _dayDb.getTodaySales(
-          companyId: companyId,
-          userId: userId,
-          businessDate: DateTime.now(),
+        daySales =
+            await _dayDb.getTodaySales(
+          companyId:
+              companyId,
+          userId:
+              userId,
+          businessDate:
+              DateTime.now(),
         );
-      } catch (_) {
-        // BD del día no disponible.
-      }
+      } catch (_) {}
     }
 
-    final unique = <String, Map<String, dynamic>>{};
+    final unique =
+        <String, Map<String, dynamic>>{};
 
-    for (final raw in daySales) {
-      final sale = Map<String, dynamic>.from(raw);
-      final uuid = sale['uuid_local']?.toString().trim() ?? '';
+    for (final raw
+        in daySales) {
+      final sale =
+          Map<String, dynamic>.from(
+        raw,
+      );
 
-      sale['_source'] = 'day';
+      final uuid =
+          sale['uuid_local']
+                  ?.toString()
+                  .trim() ??
+              '';
 
-      unique[uuid.isEmpty ? 'day-${sale['id']}' : uuid] = sale;
+      sale['_source'] =
+          'day';
+
+      unique[
+              uuid.isEmpty
+                  ? 'day-${sale['id']}'
+                  : uuid] =
+          sale;
     }
 
-    for (final raw in historySales) {
-      final sale = Map<String, dynamic>.from(raw);
-      final uuid = sale['uuid_local']?.toString().trim() ?? '';
+    for (final raw
+        in historySales) {
+      final sale =
+          Map<String, dynamic>.from(
+        raw,
+      );
 
-      sale['_source'] = 'history';
+      final uuid =
+          sale['uuid_local']
+                  ?.toString()
+                  .trim() ??
+              '';
+
+      sale['_source'] =
+          'history';
 
       if (uuid.isEmpty) {
-        unique['history-${sale['id']}'] = sale;
+        unique[
+                'history-${sale['id']}'] =
+            sale;
         continue;
       }
 
-      if (!unique.containsKey(uuid)) {
+      if (!unique.containsKey(
+        uuid,
+      )) {
         unique[uuid] = sale;
         continue;
       }
 
-      final current = unique[uuid]!;
-      final cUpdated = _dateValue(current['updated_at']);
-      final hUpdated = _dateValue(sale['updated_at']);
+      final current =
+          unique[uuid]!;
+
+      final cUpdated =
+          _dateValue(
+        current['updated_at'],
+      );
+
+      final hUpdated =
+          _dateValue(
+        sale['updated_at'],
+      );
 
       if (hUpdated != null &&
-          (cUpdated == null || hUpdated.isAfter(cUpdated))) {
+          (cUpdated == null ||
+              hUpdated
+                  .isAfter(
+                cUpdated,
+              ))) {
         unique[uuid] = sale;
         continue;
       }
 
-      if ((hUpdated == null && cUpdated == null) ||
+      if ((hUpdated == null &&
+              cUpdated == null) ||
           (hUpdated != null &&
               cUpdated != null &&
-              hUpdated.isAtSameMomentAs(cUpdated))) {
-        if ((sale['sync_status']?.toString().toLowerCase() ?? '') ==
+              hUpdated.isAtSameMomentAs(
+                cUpdated,
+              ))) {
+        if ((sale['sync_status']
+                        ?.toString()
+                        .toLowerCase() ??
+                    '') ==
                 'synced' &&
-            (current['sync_status']?.toString().toLowerCase() ?? '') !=
+            (current[
+                        'sync_status']
+                    ?.toString()
+                    .toLowerCase() ??
+                '') !=
                 'synced') {
           unique[uuid] = sale;
         }
       }
     }
 
-    final result = unique.values.where((s) {
-      DateTime? dt = _dateValue(s['created_at']);
+    final result =
+        unique.values.where((s) {
+      DateTime? dt =
+          _dateValue(
+        s['created_at'],
+      );
 
-      dt ??= _dateValue(s['paid_at']);
+      dt ??=
+          _dateValue(
+        s['paid_at'],
+      );
 
       if (dt == null) {
-        final bd = s['business_date']?.toString().trim() ?? '';
+        final bd =
+            s['business_date']
+                    ?.toString()
+                    .trim() ??
+                '';
 
         if (bd.isNotEmpty) {
-          dt = DateTime.tryParse(bd);
+          dt =
+              DateTime.tryParse(
+            bd,
+          );
         }
       }
 
-      if (dt == null) return true;
+      if (dt == null) {
+        return true;
+      }
 
-      return !dt.isBefore(_fechaInicio) && !dt.isAfter(_fechaFin);
+      return !dt.isBefore(
+            _fechaInicio,
+          ) &&
+          !dt.isAfter(
+            _fechaFin,
+          );
     }).toList();
 
-    result.sort((a, b) {
-      final dateA =
-          _dateValue(a['created_at']) ??
-          _dateValue(a['paid_at']) ??
-          DateTime.fromMillisecondsSinceEpoch(0);
+    result.sort(
+      (a, b) {
+        final dateA =
+            _dateValue(
+                  a['created_at'],
+                ) ??
+                _dateValue(
+                  a['paid_at'],
+                ) ??
+                DateTime
+                    .fromMillisecondsSinceEpoch(
+                  0,
+                );
 
-      final dateB =
-          _dateValue(b['created_at']) ??
-          _dateValue(b['paid_at']) ??
-          DateTime.fromMillisecondsSinceEpoch(0);
+        final dateB =
+            _dateValue(
+                  b['created_at'],
+                ) ??
+                _dateValue(
+                  b['paid_at'],
+                ) ??
+                DateTime
+                    .fromMillisecondsSinceEpoch(
+                  0,
+                );
 
-      return dateB.compareTo(dateA);
-    });
+        return dateB.compareTo(
+          dateA,
+        );
+      },
+    );
 
     return result;
   }
@@ -410,9 +632,11 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   // EGRESOS
   // ============================================================
 
-  Future<List<_Egreso>> _loadEgresos() async {
+  Future<List<_Egreso>>
+      _loadEgresos() async {
     try {
-      final db = await _historyDb.database;
+      final db =
+          await _historyDb.database;
 
       await db.execute('''
         CREATE TABLE IF NOT EXISTS daily_expenses (
@@ -426,30 +650,58 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
         )
       ''');
 
-      final inicio = _fechaInicio.toIso8601String();
-      final fin = _fechaFin.toIso8601String();
+      final inicio =
+          _fechaInicio
+              .toIso8601String();
 
-      final rows = await db.query(
+      final fin =
+          _fechaFin
+              .toIso8601String();
+
+      final rows =
+          await db.query(
         'daily_expenses',
-        where: 'registrado_at >= ? AND registrado_at <= ?',
-        whereArgs: [inicio, fin],
-        orderBy: 'registrado_at DESC',
+        where:
+            'registrado_at >= ? AND registrado_at <= ?',
+        whereArgs: [
+          inicio,
+          fin,
+        ],
+        orderBy:
+            'registrado_at DESC',
       );
 
       return rows.map((r) {
         final ts =
-            DateTime.tryParse(r['registrado_at']?.toString() ?? '') ??
-            DateTime.now();
+            DateTime.tryParse(
+                  r['registrado_at']
+                          ?.toString() ??
+                      '',
+                ) ??
+                DateTime.now();
 
         return _Egreso(
-          id: (r['id'] as num).toInt(),
-          uuid: r['uuid']?.toString() ?? '',
-          concepto: r['concepto']?.toString() ?? '',
-          monto: r['monto'] is num
-              ? (r['monto'] as num).toDouble()
-              : 0.0,
-          formaPago: r['forma_pago']?.toString(),
-          registradoAt: ts.toLocal(),
+          id:
+              (r['id'] as num)
+                  .toInt(),
+          uuid:
+              r['uuid']
+                      ?.toString() ??
+                  '',
+          concepto:
+              r['concepto']
+                      ?.toString() ??
+                  '',
+          monto:
+              r['monto'] is num
+                  ? (r['monto'] as num)
+                      .toDouble()
+                  : 0.0,
+          formaPago:
+              r['forma_pago']
+                  ?.toString(),
+          registradoAt:
+              ts.toLocal(),
         );
       }).toList();
     } catch (_) {
@@ -462,49 +714,81 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
     required double monto,
     String? formaPago,
   }) async {
-    final db = await _historyDb.database;
-    final now = DateTime.now().toIso8601String();
+    final db =
+        await _historyDb.database;
 
-    await db.insert('daily_expenses', {
-      'uuid': 'egreso_${DateTime.now().millisecondsSinceEpoch}',
-      'concepto': concepto,
-      'monto': monto,
-      'forma_pago': formaPago,
-      'registrado_at': now,
-      'sync_status': 'pending',
-    });
+    final now =
+        DateTime.now()
+            .toIso8601String();
 
-    _refreshing = false;
-    await _refreshSilently();
-  }
-
-  Future<void> _eliminarEgreso(int id) async {
-    final db = await _historyDb.database;
-
-    await db.delete(
+    await db.insert(
       'daily_expenses',
-      where: 'id = ?',
-      whereArgs: [id],
+      {
+        'uuid':
+            'egreso_${DateTime.now().millisecondsSinceEpoch}',
+        'concepto':
+            concepto,
+        'monto':
+            monto,
+        'forma_pago':
+            formaPago,
+        'registrado_at':
+            now,
+        'sync_status':
+            'pending',
+      },
     );
 
     _refreshing = false;
+
+    await _refreshSilently();
+  }
+
+  Future<void> _eliminarEgreso(
+    int id,
+  ) async {
+    final db =
+        await _historyDb.database;
+
+    await db.delete(
+      'daily_expenses',
+      where:
+          'id = ?',
+      whereArgs: [
+        id,
+      ],
+    );
+
+    _refreshing = false;
+
     await _refreshSilently();
   }
 
   Future<void> _agregarEgreso() async {
-    if (!mounted) return;
+    if (!mounted) {
+      return;
+    }
 
     await showDialog<void>(
       context: context,
-      builder: (ctx) => _MovimientoDialog(
-        tipo: _TipoMovimiento.egreso,
-        onGuardar: (concepto, monto, formaPago) async {
+      builder: (ctx) =>
+          _MovimientoDialog(
+        tipo:
+            _TipoMovimiento.egreso,
+        onGuardar: (
+          concepto,
+          monto,
+          formaPago,
+        ) async {
           Navigator.of(ctx).pop();
 
           await _guardarEgreso(
-            concepto: concepto,
-            monto: monto,
-            formaPago: formaPago,
+            concepto:
+                concepto,
+            monto:
+                monto,
+            formaPago:
+                formaPago,
           );
         },
       ),
@@ -512,12 +796,14 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   }
 
   // ============================================================
-  // INGRESOS MANUALES
+  // INGRESOS
   // ============================================================
 
-  Future<List<_Ingreso>> _loadIngresos() async {
+  Future<List<_Ingreso>>
+      _loadIngresos() async {
     try {
-      final db = await _historyDb.database;
+      final db =
+          await _historyDb.database;
 
       await db.execute('''
         CREATE TABLE IF NOT EXISTS daily_incomes (
@@ -531,30 +817,58 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
         )
       ''');
 
-      final inicio = _fechaInicio.toIso8601String();
-      final fin = _fechaFin.toIso8601String();
+      final inicio =
+          _fechaInicio
+              .toIso8601String();
 
-      final rows = await db.query(
+      final fin =
+          _fechaFin
+              .toIso8601String();
+
+      final rows =
+          await db.query(
         'daily_incomes',
-        where: 'registrado_at >= ? AND registrado_at <= ?',
-        whereArgs: [inicio, fin],
-        orderBy: 'registrado_at DESC',
+        where:
+            'registrado_at >= ? AND registrado_at <= ?',
+        whereArgs: [
+          inicio,
+          fin,
+        ],
+        orderBy:
+            'registrado_at DESC',
       );
 
       return rows.map((r) {
         final ts =
-            DateTime.tryParse(r['registrado_at']?.toString() ?? '') ??
-            DateTime.now();
+            DateTime.tryParse(
+                  r['registrado_at']
+                          ?.toString() ??
+                      '',
+                ) ??
+                DateTime.now();
 
         return _Ingreso(
-          id: (r['id'] as num).toInt(),
-          uuid: r['uuid']?.toString() ?? '',
-          concepto: r['concepto']?.toString() ?? '',
-          monto: r['monto'] is num
-              ? (r['monto'] as num).toDouble()
-              : 0.0,
-          formaPago: r['forma_pago']?.toString(),
-          registradoAt: ts.toLocal(),
+          id:
+              (r['id'] as num)
+                  .toInt(),
+          uuid:
+              r['uuid']
+                      ?.toString() ??
+                  '',
+          concepto:
+              r['concepto']
+                      ?.toString() ??
+                  '',
+          monto:
+              r['monto'] is num
+                  ? (r['monto'] as num)
+                      .toDouble()
+                  : 0.0,
+          formaPago:
+              r['forma_pago']
+                  ?.toString(),
+          registradoAt:
+              ts.toLocal(),
         );
       }).toList();
     } catch (_) {
@@ -567,49 +881,81 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
     required double monto,
     String? formaPago,
   }) async {
-    final db = await _historyDb.database;
-    final now = DateTime.now().toIso8601String();
+    final db =
+        await _historyDb.database;
 
-    await db.insert('daily_incomes', {
-      'uuid': 'ingreso_${DateTime.now().millisecondsSinceEpoch}',
-      'concepto': concepto,
-      'monto': monto,
-      'forma_pago': formaPago,
-      'registrado_at': now,
-      'sync_status': 'pending',
-    });
+    final now =
+        DateTime.now()
+            .toIso8601String();
 
-    _refreshing = false;
-    await _refreshSilently();
-  }
-
-  Future<void> _eliminarIngreso(int id) async {
-    final db = await _historyDb.database;
-
-    await db.delete(
+    await db.insert(
       'daily_incomes',
-      where: 'id = ?',
-      whereArgs: [id],
+      {
+        'uuid':
+            'ingreso_${DateTime.now().millisecondsSinceEpoch}',
+        'concepto':
+            concepto,
+        'monto':
+            monto,
+        'forma_pago':
+            formaPago,
+        'registrado_at':
+            now,
+        'sync_status':
+            'pending',
+      },
     );
 
     _refreshing = false;
+
+    await _refreshSilently();
+  }
+
+  Future<void> _eliminarIngreso(
+    int id,
+  ) async {
+    final db =
+        await _historyDb.database;
+
+    await db.delete(
+      'daily_incomes',
+      where:
+          'id = ?',
+      whereArgs: [
+        id,
+      ],
+    );
+
+    _refreshing = false;
+
     await _refreshSilently();
   }
 
   Future<void> _agregarIngreso() async {
-    if (!mounted) return;
+    if (!mounted) {
+      return;
+    }
 
     await showDialog<void>(
       context: context,
-      builder: (ctx) => _MovimientoDialog(
-        tipo: _TipoMovimiento.ingreso,
-        onGuardar: (concepto, monto, formaPago) async {
+      builder: (ctx) =>
+          _MovimientoDialog(
+        tipo:
+            _TipoMovimiento.ingreso,
+        onGuardar: (
+          concepto,
+          monto,
+          formaPago,
+        ) async {
           Navigator.of(ctx).pop();
 
           await _guardarIngreso(
-            concepto: concepto,
-            monto: monto,
-            formaPago: formaPago,
+            concepto:
+                concepto,
+            monto:
+                monto,
+            formaPago:
+                formaPago,
           );
         },
       ),
@@ -617,33 +963,779 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   }
 
   // ============================================================
-  // SELECTOR DE RANGO
+  // IMPRIMIR INGRESO
+  // ============================================================
+
+  Future<void> _imprimirIngreso(
+    _Ingreso ingreso,
+  ) async {
+    if (_printingMovement ||
+        _syncing) {
+      return;
+    }
+
+    setState(() {
+      _printingMovement =
+          true;
+    });
+
+    try {
+      var connected =
+          await _printerService
+              .bluetoothConnected();
+
+      if (!connected) {
+        connected =
+            await _printerService
+                .reconnectSelectedPrinter();
+      }
+
+      if (!connected) {
+        throw Exception(
+          'No hay una impresora Bluetooth conectada. '
+          'Selecciona una impresora desde '
+          'Configuración > Impresoras.',
+        );
+      }
+
+      final movement =
+          <String, dynamic>{
+        'id':
+            ingreso.id,
+        'uuid':
+            ingreso.uuid,
+        'folio':
+            ingreso.uuid,
+        'concepto':
+            ingreso.concepto,
+        'monto':
+            ingreso.monto,
+        'importe':
+            ingreso.monto,
+        'amount':
+            ingreso.monto,
+        'formaPago':
+            ingreso.formaPago,
+        'paymentMethod':
+            ingreso.formaPago,
+        'fecha':
+            ingreso.registradoAt
+                .toIso8601String(),
+        'createdAt':
+            ingreso.registradoAt
+                .toIso8601String(),
+      };
+
+      final result =
+          await _printerService
+              .printIncome(
+        movement,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      if (!result.success) {
+        _showMessage(
+          result.message.isEmpty
+              ? 'No fue posible imprimir el ingreso.'
+              : result.message,
+          isError: true,
+        );
+
+        return;
+      }
+
+      _showMessage(
+        'Ingreso impreso correctamente.',
+      );
+    } catch (error) {
+      if (mounted) {
+        _showMessage(
+          'No fue posible imprimir el ingreso: $error',
+          isError: true,
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _printingMovement =
+              false;
+        });
+      }
+    }
+  }
+
+  // ============================================================
+  // IMPRIMIR EGRESO
+  // ============================================================
+
+  Future<void> _imprimirEgreso(
+    _Egreso egreso,
+  ) async {
+    if (_printingMovement ||
+        _syncing) {
+      return;
+    }
+
+    setState(() {
+      _printingMovement =
+          true;
+    });
+
+    try {
+      var connected =
+          await _printerService
+              .bluetoothConnected();
+
+      if (!connected) {
+        connected =
+            await _printerService
+                .reconnectSelectedPrinter();
+      }
+
+      if (!connected) {
+        throw Exception(
+          'No hay una impresora Bluetooth conectada. '
+          'Selecciona una impresora desde '
+          'Configuración > Impresoras.',
+        );
+      }
+
+      final movement =
+          <String, dynamic>{
+        'id':
+            egreso.id,
+        'uuid':
+            egreso.uuid,
+        'folio':
+            egreso.uuid,
+        'concepto':
+            egreso.concepto,
+        'monto':
+            egreso.monto,
+        'importe':
+            egreso.monto,
+        'amount':
+            egreso.monto,
+        'formaPago':
+            egreso.formaPago,
+        'paymentMethod':
+            egreso.formaPago,
+        'fecha':
+            egreso.registradoAt
+                .toIso8601String(),
+        'createdAt':
+            egreso.registradoAt
+                .toIso8601String(),
+      };
+
+      final result =
+          await _printerService
+              .printExpense(
+        movement,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      if (!result.success) {
+        _showMessage(
+          result.message.isEmpty
+              ? 'No fue posible imprimir el egreso.'
+              : result.message,
+          isError: true,
+        );
+
+        return;
+      }
+
+      _showMessage(
+        'Egreso impreso correctamente.',
+      );
+    } catch (error) {
+      if (mounted) {
+        _showMessage(
+          'No fue posible imprimir el egreso: $error',
+          isError: true,
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _printingMovement =
+              false;
+        });
+      }
+    }
+  }
+
+  // ============================================================
+  // DETALLE INGRESO
+  // ============================================================
+
+  Future<void> _detalleIngreso(
+    _Ingreso ingreso,
+  ) async {
+    await _showMovementDetail(
+      titulo:
+          'Detalle del ingreso',
+      tipo:
+          'INGRESO',
+      concepto:
+          ingreso.concepto,
+      monto:
+          ingreso.monto,
+      formaPago:
+          ingreso.formaPago,
+      fecha:
+          ingreso.registradoAt,
+      uuid:
+          ingreso.uuid,
+      color:
+          Colors.green,
+      onPrint: () =>
+          _imprimirIngreso(
+        ingreso,
+      ),
+    );
+  }
+
+  // ============================================================
+  // DETALLE EGRESO
+  // ============================================================
+
+  Future<void> _detalleEgreso(
+    _Egreso egreso,
+  ) async {
+    await _showMovementDetail(
+      titulo:
+          'Detalle del egreso',
+      tipo:
+          'EGRESO',
+      concepto:
+          egreso.concepto,
+      monto:
+          egreso.monto,
+      formaPago:
+          egreso.formaPago,
+      fecha:
+          egreso.registradoAt,
+      uuid:
+          egreso.uuid,
+      color:
+          Colors.red,
+      onPrint: () =>
+          _imprimirEgreso(
+        egreso,
+      ),
+    );
+  }
+
+  Future<void> _showMovementDetail({
+    required String titulo,
+    required String tipo,
+    required String concepto,
+    required double monto,
+    required String? formaPago,
+    required DateTime fecha,
+    required String uuid,
+    required Color color,
+    required Future<void> Function()
+        onPrint,
+  }) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled:
+          true,
+      backgroundColor:
+          Colors.transparent,
+      builder: (ctx) {
+        return SafeArea(
+          child: Container(
+            decoration:
+                const BoxDecoration(
+              color: Colors.white,
+              borderRadius:
+                  BorderRadius.vertical(
+                top: Radius.circular(
+                  24,
+                ),
+              ),
+            ),
+            padding:
+                const EdgeInsets.fromLTRB(
+              20,
+              12,
+              20,
+              20,
+            ),
+            child:
+                SingleChildScrollView(
+              child:
+                  Column(
+                mainAxisSize:
+                    MainAxisSize.min,
+                crossAxisAlignment:
+                    CrossAxisAlignment
+                        .start,
+                children: [
+                  Center(
+                    child:
+                        Container(
+                      width:
+                          42,
+                      height:
+                          4,
+                      decoration:
+                          BoxDecoration(
+                        color:
+                            Colors.black12,
+                        borderRadius:
+                            BorderRadius.circular(
+                          20,
+                        ),
+                      ),
+                    ),
+                  ),
+
+                  const SizedBox(
+                    height:
+                        18,
+                  ),
+
+                  Row(
+                    children: [
+                      Container(
+                        width:
+                            52,
+                        height:
+                            52,
+                        decoration:
+                            BoxDecoration(
+                          color:
+                              color.withAlpha(
+                            25,
+                          ),
+                          borderRadius:
+                              BorderRadius.circular(
+                            15,
+                          ),
+                        ),
+                        child:
+                            Icon(
+                          tipo ==
+                                  'INGRESO'
+                              ? Icons
+                                  .arrow_downward_rounded
+                              : Icons
+                                  .arrow_upward_rounded,
+                          color:
+                              color,
+                        ),
+                      ),
+
+                      const SizedBox(
+                        width:
+                            14,
+                      ),
+
+                      Expanded(
+                        child:
+                            Column(
+                          crossAxisAlignment:
+                              CrossAxisAlignment
+                                  .start,
+                          children: [
+                            Text(
+                              titulo,
+                              style:
+                                  TextStyle(
+                                fontSize:
+                                    13,
+                                color:
+                                    color,
+                                fontWeight:
+                                    FontWeight
+                                        .w600,
+                              ),
+                            ),
+                            const SizedBox(
+                              height:
+                                  3,
+                            ),
+                            Text(
+                              concepto,
+                              maxLines:
+                                  2,
+                              overflow:
+                                  TextOverflow
+                                      .ellipsis,
+                              style:
+                                  const TextStyle(
+                                fontSize:
+                                    20,
+                                fontWeight:
+                                    FontWeight
+                                        .bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+
+                  const SizedBox(
+                    height:
+                        18,
+                  ),
+
+                  Container(
+                    width:
+                        double.infinity,
+                    padding:
+                        const EdgeInsets.all(
+                      18,
+                    ),
+                    decoration:
+                        BoxDecoration(
+                      color:
+                          color.withAlpha(
+                        18,
+                      ),
+                      borderRadius:
+                          BorderRadius.circular(
+                        16,
+                      ),
+                      border:
+                          Border.all(
+                        color:
+                            color.withAlpha(
+                          45,
+                        ),
+                      ),
+                    ),
+                    child:
+                        Column(
+                      children: [
+                        const Text(
+                          'Monto',
+                          style:
+                              TextStyle(
+                            fontSize:
+                                13,
+                            color:
+                                Colors.black54,
+                          ),
+                        ),
+                        const SizedBox(
+                          height:
+                              4,
+                        ),
+                        Text(
+                          '${tipo == 'INGRESO' ? '+' : '-'} \$${monto.toStringAsFixed(2)}',
+                          style:
+                              TextStyle(
+                            fontSize:
+                                30,
+                            fontWeight:
+                                FontWeight
+                                    .bold,
+                            color:
+                                color,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  const SizedBox(
+                    height:
+                        18,
+                  ),
+
+                  _detailRow(
+                    'Concepto',
+                    concepto,
+                  ),
+
+                  _detailRow(
+                    'Forma de pago',
+                    formaPago == null ||
+                            formaPago
+                                .trim()
+                                .isEmpty
+                        ? 'Sin especificar'
+                        : formaPago,
+                  ),
+
+                  _detailRow(
+                    'Fecha',
+                    _formatDateTime(
+                      fecha.toIso8601String(),
+                    ),
+                  ),
+
+                  _detailRow(
+                    'UUID',
+                    uuid,
+                  ),
+
+                  const SizedBox(
+                    height:
+                        18,
+                  ),
+
+                  SizedBox(
+                    width:
+                        double.infinity,
+                    child:
+                        FilledButton.icon(
+                      onPressed:
+                          _printingMovement
+                              ? null
+                              : () async {
+                                  Navigator.of(
+                                    ctx,
+                                  ).pop();
+
+                                  await onPrint();
+                                },
+                      icon:
+                          const Icon(
+                        Icons.print_outlined,
+                      ),
+                      label:
+                          Text(
+                        'Imprimir $tipo',
+                      ),
+                    ),
+                  ),
+
+                  const SizedBox(
+                    height:
+                        4,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _detailRow(
+    String label,
+    String value,
+  ) {
+    return Padding(
+      padding:
+          const EdgeInsets.symmetric(
+        vertical: 7,
+      ),
+      child:
+          Row(
+        crossAxisAlignment:
+            CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width:
+                110,
+            child:
+                Text(
+              label,
+              style:
+                  const TextStyle(
+                fontSize:
+                    13,
+                color:
+                    Colors.black54,
+              ),
+            ),
+          ),
+          const SizedBox(
+            width:
+                10,
+          ),
+          Expanded(
+            child:
+                Text(
+              value,
+              style:
+                  const TextStyle(
+                fontWeight:
+                    FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ============================================================
+  // ELIMINAR EGRESO
+  // ============================================================
+
+  Future<void>
+      _confirmarEliminarEgreso(
+    _Egreso e,
+  ) async {
+    final confirmed =
+        await showDialog<bool>(
+      context: context,
+      builder: (ctx) =>
+          AlertDialog(
+        title:
+            const Text(
+          'Eliminar egreso',
+        ),
+        content:
+            Text(
+          '¿Eliminar "${e.concepto}"?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () =>
+                Navigator.of(ctx)
+                    .pop(false),
+            child:
+                const Text(
+              'Cancelar',
+            ),
+          ),
+          FilledButton(
+            style:
+                FilledButton.styleFrom(
+              backgroundColor:
+                  Colors.red,
+            ),
+            onPressed: () =>
+                Navigator.of(ctx)
+                    .pop(true),
+            child:
+                const Text(
+              'Eliminar',
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      await _eliminarEgreso(
+        e.id,
+      );
+    }
+  }
+
+  // ============================================================
+  // ELIMINAR INGRESO
+  // ============================================================
+
+  Future<void>
+      _confirmarEliminarIngreso(
+    _Ingreso i,
+  ) async {
+    final confirmed =
+        await showDialog<bool>(
+      context: context,
+      builder: (ctx) =>
+          AlertDialog(
+        title:
+            const Text(
+          'Eliminar ingreso',
+        ),
+        content:
+            Text(
+          '¿Eliminar "${i.concepto}"?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () =>
+                Navigator.of(ctx)
+                    .pop(false),
+            child:
+                const Text(
+              'Cancelar',
+            ),
+          ),
+          FilledButton(
+            style:
+                FilledButton.styleFrom(
+              backgroundColor:
+                  Colors.red,
+            ),
+            onPressed: () =>
+                Navigator.of(ctx)
+                    .pop(true),
+            child:
+                const Text(
+              'Eliminar',
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      await _eliminarIngreso(
+        i.id,
+      );
+    }
+  }
+
+  // ============================================================
+  // SELECTOR FECHA
   // ============================================================
 
   Future<void> _seleccionarFecha({
     required bool esInicio,
   }) async {
-    final inicial = esInicio ? _fechaInicio : _fechaFin;
+    final inicial =
+        esInicio
+            ? _fechaInicio
+            : _fechaFin;
 
-    final picked = await showDatePicker(
+    final picked =
+        await showDatePicker(
       context: context,
-      initialDate: inicial,
-      firstDate: DateTime(2020),
-      lastDate: DateTime.now().add(const Duration(days: 1)),
+      initialDate:
+          inicial,
+      firstDate:
+          DateTime(2020),
+      lastDate:
+          DateTime.now().add(
+        const Duration(
+          days: 1,
+        ),
+      ),
     );
 
-    if (picked == null || !mounted) return;
+    if (picked == null ||
+        !mounted) {
+      return;
+    }
 
     setState(() {
       if (esInicio) {
-        _fechaInicio = DateTime(
+        _fechaInicio =
+            DateTime(
           picked.year,
           picked.month,
           picked.day,
         );
 
-        if (_fechaInicio.isAfter(_fechaFin)) {
-          _fechaFin = DateTime(
+        if (_fechaInicio
+            .isAfter(
+          _fechaFin,
+        )) {
+          _fechaFin =
+              DateTime(
             picked.year,
             picked.month,
             picked.day,
@@ -653,7 +1745,8 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
           );
         }
       } else {
-        _fechaFin = DateTime(
+        _fechaFin =
+            DateTime(
           picked.year,
           picked.month,
           picked.day,
@@ -662,8 +1755,12 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
           59,
         );
 
-        if (_fechaFin.isBefore(_fechaInicio)) {
-          _fechaInicio = DateTime(
+        if (_fechaFin
+            .isBefore(
+          _fechaInicio,
+        )) {
+          _fechaInicio =
+              DateTime(
             picked.year,
             picked.month,
             picked.day,
@@ -680,13 +1777,26 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   // ============================================================
 
   Future<void> _loadMonthStats() async {
-    if (!mounted) return;
+    if (!mounted) {
+      return;
+    }
 
-    setState(() => _loadingMes = true);
+    setState(
+      () => _loadingMes = true,
+    );
 
-    final hoy = DateTime.now();
-    final inicioMes = DateTime(hoy.year, hoy.month, 1);
-    final finMes = DateTime(
+    final hoy =
+        DateTime.now();
+
+    final inicioMes =
+        DateTime(
+      hoy.year,
+      hoy.month,
+      1,
+    );
+
+    final finMes =
+        DateTime(
       hoy.year,
       hoy.month + 1,
       0,
@@ -696,10 +1806,16 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
     );
 
     try {
-      final allSales = await _historyDb.getSales();
+      final allSales =
+          await _historyDb
+              .getSales();
 
-      final salesMes = allSales.where((s) {
-        final st = (s['status'] ?? '').toString().toLowerCase();
+      final salesMes =
+          allSales.where((s) {
+        final st =
+            (s['status'] ?? '')
+                .toString()
+                .toLowerCase();
 
         if (st == 'cancelled' ||
             st == 'cancelado' ||
@@ -707,37 +1823,77 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
           return false;
         }
 
-        DateTime? dt = _dateValue(s['created_at']);
+        DateTime? dt =
+            _dateValue(
+          s['created_at'],
+        );
 
-        dt ??= _dateValue(s['paid_at']);
+        dt ??=
+            _dateValue(
+          s['paid_at'],
+        );
 
         if (dt == null) {
-          final bd = s['business_date']?.toString().trim() ?? '';
+          final bd =
+              s['business_date']
+                      ?.toString()
+                      .trim() ??
+                  '';
 
           if (bd.isNotEmpty) {
-            dt = DateTime.tryParse(bd);
+            dt =
+                DateTime.tryParse(
+              bd,
+            );
           }
         }
 
-        if (dt == null) return false;
+        if (dt == null) {
+          return false;
+        }
 
-        return !dt.isBefore(inicioMes) && !dt.isAfter(finMes);
+        return !dt.isBefore(
+              inicioMes,
+            ) &&
+            !dt.isAfter(
+              finMes,
+            );
       }).toList();
 
       double totalMes = 0;
-      final porMetodo = <String, double>{};
-      final porDia = <String, double>{};
 
-      for (final s in salesMes) {
-        final t = _toDouble(s['total']);
+      final porMetodo =
+          <String, double>{};
+
+      final porDia =
+          <String, double>{};
+
+      for (final s
+          in salesMes) {
+        final t =
+            _toDouble(
+          s['total'],
+        );
+
         totalMes += t;
 
-        final method = _metodoVenta(s);
-        porMetodo[method] = (porMetodo[method] ?? 0) + t;
+        final method =
+            _metodoVenta(s);
 
-        DateTime? dt = _dateValue(s['created_at']);
+        porMetodo[method] =
+            (porMetodo[method] ??
+                0) +
+            t;
 
-        dt ??= _dateValue(s['paid_at']);
+        DateTime? dt =
+            _dateValue(
+          s['created_at'],
+        );
+
+        dt ??=
+            _dateValue(
+          s['paid_at'],
+        );
 
         if (dt != null) {
           final key =
@@ -745,15 +1901,21 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
               '${dt.month.toString().padLeft(2, '0')}-'
               '${dt.day.toString().padLeft(2, '0')}';
 
-          porDia[key] = (porDia[key] ?? 0) + t;
+          porDia[key] =
+              (porDia[key] ?? 0) +
+              t;
         }
       }
 
-      double egresosMes = 0;
-      double ingresosManualesMes = 0;
+      double egresosMes =
+          0;
+
+      double ingresosManualesMes =
+          0;
 
       try {
-        final db = await _historyDb.database;
+        final db =
+            await _historyDb.database;
 
         await db.execute('''
           CREATE TABLE IF NOT EXISTS daily_expenses (
@@ -779,50 +1941,81 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
           )
         ''');
 
-        final egresosRows = await db.query(
+        final egresosRows =
+            await db.query(
           'daily_expenses',
-          where: 'registrado_at >= ? AND registrado_at <= ?',
+          where:
+              'registrado_at >= ? AND registrado_at <= ?',
           whereArgs: [
-            inicioMes.toIso8601String(),
-            finMes.toIso8601String(),
+            inicioMes
+                .toIso8601String(),
+            finMes
+                .toIso8601String(),
           ],
         );
 
-        egresosMes = egresosRows.fold(
+        egresosMes =
+            egresosRows.fold(
           0.0,
-          (s, r) => s + _toDouble(r['monto']),
+          (s, r) =>
+              s +
+              _toDouble(
+                r['monto'],
+              ),
         );
 
-        final ingresosRows = await db.query(
+        final ingresosRows =
+            await db.query(
           'daily_incomes',
-          where: 'registrado_at >= ? AND registrado_at <= ?',
+          where:
+              'registrado_at >= ? AND registrado_at <= ?',
           whereArgs: [
-            inicioMes.toIso8601String(),
-            finMes.toIso8601String(),
+            inicioMes
+                .toIso8601String(),
+            finMes
+                .toIso8601String(),
           ],
         );
 
-        ingresosManualesMes = ingresosRows.fold(
+        ingresosManualesMes =
+            ingresosRows.fold(
           0.0,
-          (s, r) => s + _toDouble(r['monto']),
+          (s, r) =>
+              s +
+              _toDouble(
+                r['monto'],
+              ),
         );
       } catch (_) {}
 
       try {
-        final offline = await AppStorage().isOfflineSession();
+        final offline =
+            await AppStorage()
+                .isOfflineSession();
 
         if (!offline) {
-          final resp = await _apiClient.getMonthStats();
+          final resp =
+              await _apiClient
+                  .getMonthStats();
 
-          if (resp['success'] == true && resp['data'] is Map) {
-            final data = resp['data'] as Map;
+          if (resp['success'] ==
+                  true &&
+              resp['data'] is Map) {
+            final data =
+                resp['data'] as Map;
 
-            final apiTotal = _toDouble(
-              data['total_monto'] ?? data['total_ventas'],
+            final apiTotal =
+                _toDouble(
+              data[
+                      'total_monto'] ??
+                  data[
+                      'total_ventas'],
             );
 
-            if (apiTotal > totalMes) {
-              totalMes = apiTotal;
+            if (apiTotal >
+                totalMes) {
+              totalMes =
+                  apiTotal;
             }
           }
         }
@@ -831,57 +2024,114 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
       final diasList =
           porDia.entries
               .map(
-                (e) => <String, dynamic>{
-                  'dia': e.key,
-                  'total': e.value,
+                (e) =>
+                    <String,
+                        dynamic>{
+                  'dia':
+                      e.key,
+                  'total':
+                      e.value,
                 },
               )
               .toList()
             ..sort(
               (a, b) =>
-                  (a['dia'] as String).compareTo(b['dia'] as String),
+                  (a['dia']
+                          as String)
+                      .compareTo(
+                b['dia']
+                    as String,
+              ),
             );
 
-      if (!mounted) return;
+      if (!mounted) {
+        return;
+      }
 
       setState(() {
-        _mesTotal = totalMes + ingresosManualesMes;
-        _mesTransacciones = salesMes.length;
+        _mesTotal =
+            totalMes +
+            ingresosManualesMes;
+
+        _mesTransacciones =
+            salesMes.length;
+
         _mesTicketPromedio =
-            salesMes.isEmpty ? 0 : totalMes / salesMes.length;
-        _mesEgresos = egresosMes;
-        _mesIngresos = ingresosManualesMes;
-        _mesPorMetodo = porMetodo;
-        _mesPorDia = diasList;
-        _loadingMes = false;
+            salesMes.isEmpty
+                ? 0
+                : totalMes /
+                    salesMes.length;
+
+        _mesEgresos =
+            egresosMes;
+
+        _mesIngresos =
+            ingresosManualesMes;
+
+        _mesPorMetodo =
+            porMetodo;
+
+        _mesPorDia =
+            diasList;
+
+        _loadingMes =
+            false;
       });
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted) {
+        return;
+      }
 
-      setState(() => _loadingMes = false);
+      setState(
+        () => _loadingMes = false,
+      );
 
-      debugPrint('Error cargando stats del mes: $e');
+      debugPrint(
+        'Error cargando stats del mes: $e',
+      );
     }
   }
 
-  Future<void> _syncUploadThenPull() async {
-    final companyId = await AppStorage().getEmpresaId() ?? 0;
-    final userId = await AppStorage().getUserId() ?? 0;
+  // ============================================================
+  // SINCRONIZACIÓN
+  // ============================================================
 
-    if (companyId <= 0 || userId <= 0) {
+  Future<void> _syncUploadThenPull() async {
+    final companyId =
+        await AppStorage()
+                .getEmpresaId() ??
+            0;
+
+    final userId =
+        await AppStorage()
+                .getUserId() ??
+            0;
+
+    if (companyId <= 0 ||
+        userId <= 0) {
       throw Exception(
         'No existe una sesión válida para sincronizar.',
       );
     }
 
-    // 1. Primero subir todo lo pendiente.
-    final result = await _syncService.syncPendingSales(
-      companyId: companyId,
-      userId: userId,
-      businessDate: DateTime.now(),
+    // ========================================================
+    // IMPORTANTE:
+    // SOLO LAS VENTAS SE SUBEN EN ESTE PROCESO.
+    //
+    // daily_incomes y daily_expenses NO se agregan aquí.
+    // ========================================================
+
+    final result =
+        await _syncService
+            .syncPendingSales(
+      companyId:
+          companyId,
+      userId:
+          userId,
+      businessDate:
+          DateTime.now(),
     );
 
-    // 2. No descargar cambios si alguna venta falló.
     if (result.failed > 0) {
       throw Exception(
         'No se descargaron cambios porque '
@@ -889,18 +2139,20 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
       );
     }
 
-    // 3. Solamente después bajar cambios.
-    await _syncService.syncPull();
+    // Solo después de subir todas las ventas.
+    await _syncService
+        .syncPull();
   }
 
-  // ============================================================
-  // SINCRONIZACIÓN
-  // ============================================================
-
   Future<void> _syncNow() async {
-    if (!mounted || _syncing) return;
+    if (!mounted ||
+        _syncing) {
+      return;
+    }
 
-    setState(() => _syncing = true);
+    setState(
+      () => _syncing = true,
+    );
 
     try {
       await _syncUploadThenPull();
@@ -910,7 +2162,9 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
       }
 
       if (mounted) {
-        _showMessage('Sincronización completada.');
+        _showMessage(
+          'Sincronización completada.',
+        );
       }
     } catch (error) {
       if (mounted) {
@@ -921,7 +2175,9 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
       }
     } finally {
       if (mounted) {
-        setState(() => _syncing = false);
+        setState(
+          () => _syncing = false,
+        );
       }
 
       await _refreshSilently();
@@ -932,10 +2188,17 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   // VENTA
   // ============================================================
 
-  Future<void> _openSale(Map<String, dynamic> sale) async {
-    if (!mounted) return;
+  Future<void> _openSale(
+    Map<String, dynamic> sale,
+  ) async {
+    if (!mounted) {
+      return;
+    }
 
-    final saleId = _toInt(sale['id']);
+    final saleId =
+        _toInt(
+      sale['id'],
+    );
 
     if (saleId <= 0) {
       _showMessage(
@@ -946,45 +2209,103 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
     }
 
     try {
-      final source = sale['_source']?.toString() ?? 'history';
+      final source =
+          sale['_source']
+                  ?.toString() ??
+              'history';
 
-      List<Map<String, dynamic>> items = [];
-      List<Map<String, dynamic>> payments = [];
+      List<Map<String, dynamic>>
+          items = [];
 
-      if (source == 'history') {
-        items = await _historyDb.getSaleItemsBySaleId(saleId);
-        payments = await _historyDb.getSalePaymentsBySaleId(saleId);
-      } else {
-        final companyId =
-            await AppStorage().getEmpresaId() ?? 0;
-        final userId =
-            await AppStorage().getUserId() ?? 0;
+      List<Map<String, dynamic>>
+          payments = [];
 
-        if (companyId <= 0 || userId <= 0) {
-          throw Exception('No existe una sesión válida.');
-        }
-
-        final db = await _dayDb.open(
-          companyId: companyId,
-          userId: userId,
-          businessDate: DateTime.now(),
+      if (source ==
+          'history') {
+        items =
+            await _historyDb
+                .getSaleItemsBySaleId(
+          saleId,
         );
 
-        items = await _dayDb.getSaleItems(db, saleId);
-        payments = await _dayDb.getSalePayments(db, saleId);
+        payments =
+            await _historyDb
+                .getSalePaymentsBySaleId(
+          saleId,
+        );
+      } else {
+        final companyId =
+            await AppStorage()
+                    .getEmpresaId() ??
+                0;
+
+        final userId =
+            await AppStorage()
+                    .getUserId() ??
+                0;
+
+        if (companyId <= 0 ||
+            userId <= 0) {
+          throw Exception(
+            'No existe una sesión válida.',
+          );
+        }
+
+        final db =
+            await _dayDb.open(
+          companyId:
+              companyId,
+          userId:
+              userId,
+          businessDate:
+              DateTime.now(),
+        );
+
+        items =
+            await _dayDb
+                .getSaleItems(
+          db,
+          saleId,
+        );
+
+        payments =
+            await _dayDb
+                .getSalePayments(
+          db,
+          saleId,
+        );
       }
 
-      if (!mounted) return;
+      if (!mounted) {
+        return;
+      }
 
-      await Navigator.of(context).push(
+      await Navigator.of(
+        context,
+      ).push(
         MaterialPageRoute(
-          builder: (_) => SaleDetailScreen(
-            sale: SaleModel.fromMap(
-              Map<String, dynamic>.from(sale),
+          builder: (_) =>
+              SaleDetailScreen(
+            sale:
+                SaleModel.fromMap(
+              Map<String,
+                  dynamic>.from(
+                sale,
+              ),
               saleItems:
-                  items.map(SaleItemModel.fromMap).toList(),
+                  items
+                      .map(
+                        SaleItemModel
+                            .fromMap,
+                      )
+                      .toList(),
               salePayments:
-                  payments.map(SalePaymentModel.fromMap).toList(),
+                  payments
+                      .map(
+                        SalePaymentModel
+                            .fromMap,
+                      )
+                      .toList(),
             ),
           ),
         ),
@@ -1003,14 +2324,28 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
     }
   }
 
-  Future<void> _cancelSale(Map<String, dynamic> sale) async {
-    if (!mounted) return;
+  // ============================================================
+  // CANCELAR VENTA
+  // ============================================================
 
-    if (_businessStatus(sale) == _SaleBusinessStatus.cancelled) {
+  Future<void> _cancelSale(
+    Map<String, dynamic> sale,
+  ) async {
+    if (!mounted) {
       return;
     }
 
-    final saleId = _toInt(sale['id']);
+    if (_businessStatus(
+          sale,
+        ) ==
+        _SaleBusinessStatus.cancelled) {
+      return;
+    }
+
+    final saleId =
+        _toInt(
+      sale['id'],
+    );
 
     if (saleId <= 0) {
       _showMessage(
@@ -1020,21 +2355,34 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
       return;
     }
 
-    final confirmed = await _showCancelDialog();
+    final confirmed =
+        await _showCancelDialog();
 
-    if (confirmed != true || !mounted) return;
+    if (confirmed != true ||
+        !mounted) {
+      return;
+    }
 
     try {
-      final source = sale['_source']?.toString() ?? 'history';
+      final source =
+          sale['_source']
+                  ?.toString() ??
+              'history';
 
-      if (source == 'history') {
-        final serverId = _toInt(sale['server_id']);
+      if (source ==
+          'history') {
+        final serverId =
+            _toInt(
+          sale['server_id'],
+        );
 
         if (serverId > 0) {
           try {
-            await _apiClient.cancelSale(
+            await _apiClient
+                .cancelSale(
               serverId,
-              reason: 'Cancelación desde POS',
+              reason:
+                  'Cancelación desde POS',
             );
           } catch (error) {
             throw Exception(
@@ -1044,7 +2392,10 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
         }
 
         final cancelled =
-            await _historyDb.cancelSale(saleId);
+            await _historyDb
+                .cancelSale(
+          saleId,
+        );
 
         if (!cancelled) {
           _showMessage(
@@ -1054,11 +2405,14 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
           return;
         }
 
-        if (serverId > 0) {
-          await _historyDb.updateSaleStatus(
+        if (serverId >
+            0) {
+          await _historyDb
+              .updateSaleStatus(
             saleId,
             'cancelled',
-            syncStatus: 'synced',
+            syncStatus:
+                'synced',
           );
         }
 
@@ -1076,29 +2430,44 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
       }
 
       final companyId =
-          await AppStorage().getEmpresaId() ?? 0;
-      final userId =
-          await AppStorage().getUserId() ?? 0;
+          await AppStorage()
+                  .getEmpresaId() ??
+              0;
 
-      if (companyId <= 0 || userId <= 0) {
+      final userId =
+          await AppStorage()
+                  .getUserId() ??
+              0;
+
+      if (companyId <= 0 ||
+          userId <= 0) {
         throw Exception(
           'No existe una sesión válida para cancelar la venta.',
         );
       }
 
-      final db = await _dayDb.open(
-        companyId: companyId,
-        userId: userId,
-        businessDate: DateTime.now(),
+      final db =
+          await _dayDb.open(
+        companyId:
+            companyId,
+        userId:
+            userId,
+        businessDate:
+            DateTime.now(),
       );
 
-      final serverId = _toInt(sale['server_id']);
+      final serverId =
+          _toInt(
+        sale['server_id'],
+      );
 
       if (serverId > 0) {
         try {
-          await _apiClient.cancelSale(
+          await _apiClient
+              .cancelSale(
             serverId,
-            reason: 'Cancelación desde POS',
+            reason:
+                'Cancelación desde POS',
           );
         } catch (error) {
           throw Exception(
@@ -1107,7 +2476,8 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
         }
       }
 
-      final cancelled = await _cancelDaySale(
+      final cancelled =
+          await _cancelDaySale(
         db,
         saleId,
       );
@@ -1146,119 +2516,185 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
     Database db,
     int saleId,
   ) async {
-    return db.transaction((txn) async {
-      final sales = await txn.query(
-        'sales',
-        where: 'id = ?',
-        whereArgs: [saleId],
-        limit: 1,
-      );
-
-      if (sales.isEmpty) return false;
-
-      final sale = Map<String, dynamic>.from(
-        sales.first,
-      );
-
-      final currentStatus =
-          sale['status']?.toString().trim().toLowerCase() ?? '';
-
-      const cancelledValues = {
-        'cancelled',
-        'canceled',
-        'cancelado',
-        'cancelada',
-        'anulado',
-        'anulada',
-      };
-
-      if (cancelledValues.contains(currentStatus)) {
-        return false;
-      }
-
-      final paid =
-          currentStatus == 'paid' ||
-          currentStatus == 'pagado' ||
-          currentStatus == 'pagada';
-
-      if (paid) {
-        final items = await txn.query(
-          'sale_items',
-          where: 'sale_id = ?',
-          whereArgs: [saleId],
+    return db.transaction(
+      (txn) async {
+        final sales =
+            await txn.query(
+          'sales',
+          where:
+              'id = ?',
+          whereArgs:
+              [saleId],
+          limit:
+              1,
         );
 
-        for (final item in items) {
-          final quantity = _toDouble(item['quantity']);
-          final productId = _toInt(item['product_id']);
-
-          if (quantity <= 0 || productId <= 0) {
-            continue;
-          }
-
-          await txn.rawUpdate(
-            'UPDATE products SET stock = stock + ? WHERE id = ?',
-            [quantity, productId],
-          );
+        if (sales.isEmpty) {
+          return false;
         }
-      }
 
-      await txn.update(
-        'sales',
-        {
-          'status': 'cancelled',
-          'sync_status': 'synced',
-          'updated_at': DateTime.now().toIso8601String(),
-        },
-        where: 'id = ?',
-        whereArgs: [saleId],
-      );
+        final sale =
+            Map<String,
+                dynamic>.from(
+          sales.first,
+        );
 
-      await txn.delete(
-        'sync_outbox',
-        where: 'uuid_local = ? AND status IN (?, ?)',
-        whereArgs: [
-          sale['uuid_local']?.toString() ?? '',
-          'queued',
-          'failed',
-        ],
-      );
+        final currentStatus =
+            sale['status']
+                    ?.toString()
+                    .trim()
+                    .toLowerCase() ??
+                '';
 
-      return true;
-    });
+        const cancelledValues = {
+          'cancelled',
+          'canceled',
+          'cancelado',
+          'cancelada',
+          'anulado',
+          'anulada',
+        };
+
+        if (cancelledValues
+            .contains(
+          currentStatus,
+        )) {
+          return false;
+        }
+
+        final paid =
+            currentStatus ==
+                    'paid' ||
+                currentStatus ==
+                    'pagado' ||
+                currentStatus ==
+                    'pagada';
+
+        if (paid) {
+          final items =
+              await txn.query(
+            'sale_items',
+            where:
+                'sale_id = ?',
+            whereArgs:
+                [saleId],
+          );
+
+          for (final item
+              in items) {
+            final quantity =
+                _toDouble(
+              item['quantity'],
+            );
+
+            final productId =
+                _toInt(
+              item['product_id'],
+            );
+
+            if (quantity <= 0 ||
+                productId <= 0) {
+              continue;
+            }
+
+            await txn.rawUpdate(
+              'UPDATE products SET stock = stock + ? WHERE id = ?',
+              [
+                quantity,
+                productId,
+              ],
+            );
+          }
+        }
+
+        await txn.update(
+          'sales',
+          {
+            'status':
+                'cancelled',
+            'sync_status':
+                'synced',
+            'updated_at':
+                DateTime.now()
+                    .toIso8601String(),
+          },
+          where:
+              'id = ?',
+          whereArgs:
+              [saleId],
+        );
+
+        await txn.delete(
+          'sync_outbox',
+          where:
+              'uuid_local = ? AND status IN (?, ?)',
+          whereArgs: [
+            sale['uuid_local']
+                    ?.toString() ??
+                '',
+            'queued',
+            'failed',
+          ],
+        );
+
+        return true;
+      },
+    );
   }
 
-  Future<bool?> _showCancelDialog() => showDialog<bool>(
-    context: context,
-    barrierDismissible: false,
-    builder: (dialogContext) => AlertDialog(
-      title: const Text('Cancelar venta'),
-      content: const Text(
-        'La venta será marcada como cancelada y el stock restaurado localmente.\n\n'
-        'Si ya fue registrada en el servidor, se solicitará su anulación.',
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(
-            dialogContext,
-            rootNavigator: true,
-          ).pop(false),
-          child: const Text('No'),
-        ),
-        FilledButton(
-          style: FilledButton.styleFrom(
-            backgroundColor: Colors.red,
-            foregroundColor: Colors.white,
+  Future<bool?>
+      _showCancelDialog() =>
+          showDialog<bool>(
+        context: context,
+        barrierDismissible:
+            false,
+        builder:
+            (dialogContext) =>
+                AlertDialog(
+          title:
+              const Text(
+            'Cancelar venta',
           ),
-          onPressed: () => Navigator.of(
-            dialogContext,
-            rootNavigator: true,
-          ).pop(true),
-          child: const Text('Cancelar venta'),
+          content:
+              const Text(
+            'La venta será marcada como cancelada y el stock restaurado localmente.\n\n'
+            'Si ya fue registrada en el servidor, se solicitará su anulación.',
+          ),
+          actions: [
+            TextButton(
+              onPressed:
+                  () => Navigator.of(
+                dialogContext,
+                rootNavigator:
+                    true,
+              ).pop(false),
+              child:
+                  const Text(
+                'No',
+              ),
+            ),
+            FilledButton(
+              style:
+                  FilledButton.styleFrom(
+                backgroundColor:
+                    Colors.red,
+                foregroundColor:
+                    Colors.white,
+              ),
+              onPressed:
+                  () => Navigator.of(
+                dialogContext,
+                rootNavigator:
+                    true,
+              ).pop(true),
+              child:
+                  const Text(
+                'Cancelar venta',
+              ),
+            ),
+          ],
         ),
-      ],
-    ),
-  );
+      );
 
   // ============================================================
   // CÁLCULOS
@@ -1268,7 +2704,10 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
     Map<String, dynamic> sale,
   ) {
     final raw =
-        (sale['status'] ?? '').toString().trim().toLowerCase();
+        (sale['status'] ?? '')
+            .toString()
+            .trim()
+            .toLowerCase();
 
     switch (raw) {
       case 'cancelled':
@@ -1277,95 +2716,148 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
       case 'cancelada':
       case 'anulado':
       case 'anulada':
-        return _SaleBusinessStatus.cancelled;
+        return _SaleBusinessStatus
+            .cancelled;
 
       case 'paid':
       case 'pagado':
       case 'pagada':
-        return _SaleBusinessStatus.paid;
+        return _SaleBusinessStatus
+            .paid;
 
       default:
-        return _SaleBusinessStatus.pending;
+        return _SaleBusinessStatus
+            .pending;
     }
   }
 
-  String _statusLabel(Map<String, dynamic> sale) {
-    switch (_businessStatus(sale)) {
-      case _SaleBusinessStatus.paid:
+  String _statusLabel(
+    Map<String, dynamic> sale,
+  ) {
+    switch (_businessStatus(
+      sale,
+    )) {
+      case _SaleBusinessStatus
+            .paid:
         return 'Pagada';
 
-      case _SaleBusinessStatus.pending:
+      case _SaleBusinessStatus
+            .pending:
         return 'Pendiente';
 
-      case _SaleBusinessStatus.cancelled:
+      case _SaleBusinessStatus
+            .cancelled:
         return 'Cancelada';
     }
   }
 
-  Color _statusColor(Map<String, dynamic> sale) {
-    switch (_businessStatus(sale)) {
-      case _SaleBusinessStatus.paid:
-        return const Color(0xFF4CAF50);
+  Color _statusColor(
+    Map<String, dynamic> sale,
+  ) {
+    switch (_businessStatus(
+      sale,
+    )) {
+      case _SaleBusinessStatus
+            .paid:
+        return const Color(
+          0xFF4CAF50,
+        );
 
-      case _SaleBusinessStatus.pending:
+      case _SaleBusinessStatus
+            .pending:
         return Colors.orange;
 
-      case _SaleBusinessStatus.cancelled:
+      case _SaleBusinessStatus
+            .cancelled:
         return Colors.red;
     }
   }
 
-  bool _canCancel(Map<String, dynamic> sale) =>
-      _businessStatus(sale) != _SaleBusinessStatus.cancelled;
+  bool _canCancel(
+    Map<String, dynamic> sale,
+  ) =>
+      _businessStatus(
+        sale,
+      ) !=
+      _SaleBusinessStatus
+          .cancelled;
 
-  Iterable<Map<String, dynamic>> get _activeSales =>
-      _sales.where(
+  Iterable<Map<String, dynamic>>
+      get _activeSales =>
+          _sales.where(
         (s) =>
-            _businessStatus(s) !=
-            _SaleBusinessStatus.cancelled,
+            _businessStatus(
+              s,
+            ) !=
+            _SaleBusinessStatus
+                .cancelled,
       );
 
   double get _totalIngresos =>
       _activeSales.fold(
         0.0,
-        (sum, s) => sum + _toDouble(s['total']),
+        (sum, s) =>
+            sum +
+            _toDouble(
+              s['total'],
+            ),
       ) +
       _ingresos.fold(
         0.0,
-        (sum, i) => sum + i.monto,
+        (sum, i) =>
+            sum + i.monto,
       );
 
   double get _totalEgresos =>
       _egresos.fold(
         0.0,
-        (sum, e) => sum + e.monto,
+        (sum, e) =>
+            sum + e.monto,
       );
 
   double get _utilidadNeta =>
-      _totalIngresos - _totalEgresos;
+      _totalIngresos -
+      _totalEgresos;
 
-  int get _transacciones => _activeSales.length;
+  int get _transacciones =>
+      _activeSales.length;
 
-  String _metodoVenta(Map<String, dynamic> sale) {
-    final direct = sale['payment_method']
-        ?.toString()
-        .trim();
+  String _metodoVenta(
+    Map<String, dynamic> sale,
+  ) {
+    final direct =
+        sale['payment_method']
+            ?.toString()
+            .trim();
 
-    if (direct != null && direct.isNotEmpty) {
+    if (direct != null &&
+        direct.isNotEmpty) {
       return direct;
     }
 
     return 'Efectivo';
   }
 
-  Map<String, double> get _ingresoPorMetodo {
-    final map = <String, double>{};
+  Map<String, double>
+      get _ingresoPorMetodo {
+    final map =
+        <String, double>{};
 
-    for (final sale in _activeSales) {
-      final method = _metodoVenta(sale);
-      final total = _toDouble(sale['total']);
+    for (final sale
+        in _activeSales) {
+      final method =
+          _metodoVenta(
+        sale,
+      );
 
-      map[method] = (map[method] ?? 0) + total;
+      final total =
+          _toDouble(
+        sale['total'],
+      );
+
+      map[method] =
+          (map[method] ?? 0) +
+          total;
     }
 
     return map;
@@ -1374,12 +2866,20 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   double get _efectivoEnCaja {
     double total = 0;
 
-    for (final sale in _activeSales) {
-      final method = _metodoVenta(sale).toLowerCase();
+    for (final sale
+        in _activeSales) {
+      final method =
+          _metodoVenta(
+        sale,
+      ).toLowerCase();
 
-      if (method.contains('efectivo') ||
+      if (method.contains(
+            'efectivo',
+          ) ||
           method == 'cash') {
-        total += _toDouble(sale['total']);
+        total += _toDouble(
+          sale['total'],
+        );
       }
     }
 
@@ -1389,12 +2889,21 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   double get _otrosMetodos {
     double total = 0;
 
-    for (final sale in _activeSales) {
-      final method = _metodoVenta(sale).toLowerCase();
+    for (final sale
+        in _activeSales) {
+      final method =
+          _metodoVenta(
+        sale,
+      ).toLowerCase();
 
-      if (!method.contains('efectivo') &&
-          method != 'cash') {
-        total += _toDouble(sale['total']);
+      if (!method.contains(
+            'efectivo',
+          ) &&
+          method !=
+              'cash') {
+        total += _toDouble(
+          sale['total'],
+        );
       }
     }
 
@@ -1405,68 +2914,127 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   // BÚSQUEDA
   // ============================================================
 
-  List<dynamic> get _filteredItems {
-    final q = _searchQuery.toLowerCase();
+  List<dynamic>
+      get _filteredItems {
+    final q =
+        _searchQuery
+            .toLowerCase();
 
-    final ventas = _sales.where((s) {
-      if (q.isEmpty) return true;
+    final ventas =
+        _sales.where((s) {
+      if (q.isEmpty) {
+        return true;
+      }
 
       final folio =
-          (s['folio'] ?? s['id'] ?? '')
+          (s['folio'] ??
+                  s['id'] ??
+                  '')
               .toString()
               .toLowerCase();
 
-      final method = _metodoVenta(s).toLowerCase();
+      final method =
+          _metodoVenta(
+        s,
+      ).toLowerCase();
 
-      return folio.contains(q) || method.contains(q);
+      return folio.contains(q) ||
+          method.contains(q);
     }).toList();
 
-    final egresos = _egresos.where((e) {
-      if (q.isEmpty) return true;
+    final egresos =
+        _egresos.where((e) {
+      if (q.isEmpty) {
+        return true;
+      }
 
-      return e.concepto.toLowerCase().contains(q) ||
-          (e.formaPago?.toLowerCase().contains(q) ?? false);
+      return e.concepto
+              .toLowerCase()
+              .contains(
+                q,
+              ) ||
+          (e.formaPago
+                  ?.toLowerCase()
+                  .contains(
+                q,
+              ) ??
+              false);
     }).toList();
 
-    final ingresosM = _ingresos.where((i) {
-      if (q.isEmpty) return true;
+    final ingresosM =
+        _ingresos.where((i) {
+      if (q.isEmpty) {
+        return true;
+      }
 
-      return i.concepto.toLowerCase().contains(q) ||
-          (i.formaPago?.toLowerCase().contains(q) ?? false);
+      return i.concepto
+              .toLowerCase()
+              .contains(
+                q,
+              ) ||
+          (i.formaPago
+                  ?.toLowerCase()
+                  .contains(
+                q,
+              ) ??
+              false);
     }).toList();
 
-    final combined = <dynamic>[
+    final combined =
+        <dynamic>[
       ...ventas,
       ...egresos,
       ...ingresosM,
     ];
 
-    combined.sort((a, b) {
-      late DateTime dateA;
-      late DateTime dateB;
+    combined.sort(
+      (a, b) {
+        late DateTime dateA;
+        late DateTime dateB;
 
-      if (a is Map) {
-        dateA =
-            _dateValue(a['created_at']) ??
-            DateTime.fromMillisecondsSinceEpoch(0);
-      } else if (a is _Egreso) {
-        dateA = a.registradoAt;
-      } else {
-        dateA = (a as _Ingreso).registradoAt;
-      }
+        if (a is Map) {
+          dateA =
+              _dateValue(
+                    a['created_at'],
+                  ) ??
+                  DateTime
+                      .fromMillisecondsSinceEpoch(
+                    0,
+                  );
+        } else if (a
+            is _Egreso) {
+          dateA =
+              a.registradoAt;
+        } else {
+          dateA =
+              (a as _Ingreso)
+                  .registradoAt;
+        }
 
-      if (b is Map) {
-        dateB =
-            _dateValue(b['created_at']) ??
-            DateTime.fromMillisecondsSinceEpoch(0);
-      } else if (b is _Egreso) {
-        dateB = b.registradoAt;
-      } else {
-        dateB = (b as _Ingreso).registradoAt;
-      }
+        if (b is Map) {
+          dateB =
+              _dateValue(
+                    b['created_at'],
+                  ) ??
+                  DateTime
+                      .fromMillisecondsSinceEpoch(
+                    0,
+                  );
+        } else if (b
+            is _Egreso) {
+          dateB =
+              b.registradoAt;
+        } else {
+          dateB =
+              (b as _Ingreso)
+                  .registradoAt;
+        }
 
-      return dateB.compareTo(dateA);
-    });
+        return dateB.compareTo(
+          dateA,
+        );
+      },
+    );
 
     return combined;
   }
@@ -1475,50 +3043,76 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   // UTILIDADES
   // ============================================================
 
-  DateTime? _dateValue(dynamic value) {
-    final text = value?.toString().trim() ?? '';
+  DateTime? _dateValue(
+    dynamic value,
+  ) {
+    final text =
+        value?.toString()
+                .trim() ??
+            '';
 
     if (text.isEmpty) {
       return null;
     }
 
-    return DateTime.tryParse(text)?.toLocal();
+    return DateTime.tryParse(
+      text,
+    )?.toLocal();
   }
 
-  int _toInt(dynamic value) {
-    if (value is int) return value;
+  int _toInt(
+    dynamic value,
+  ) {
+    if (value is int) {
+      return value;
+    }
 
     if (value is num) {
       return value.toInt();
     }
 
-    return int.tryParse(value?.toString() ?? '') ?? 0;
+    return int.tryParse(
+          value?.toString() ??
+              '',
+        ) ??
+        0;
   }
 
-  double _toDouble(dynamic value) {
+  double _toDouble(
+    dynamic value,
+  ) {
     if (value is num) {
       return value.toDouble();
     }
 
     return double.tryParse(
-          value?.toString() ?? '',
+          value?.toString() ??
+              '',
         ) ??
         0.0;
   }
 
-  String _formatDate(DateTime d) {
+  String _formatDate(
+    DateTime d,
+  ) {
     return '${d.day.toString().padLeft(2, '0')}/'
         '${d.month.toString().padLeft(2, '0')}/'
         '${d.year}';
   }
 
-  String _formatDateTime(String? isoString) {
-    if (isoString == null || isoString.isEmpty) {
+  String _formatDateTime(
+    String? isoString,
+  ) {
+    if (isoString == null ||
+        isoString.isEmpty) {
       return '--/--/---- --:--';
     }
 
     try {
-      final date = DateTime.parse(isoString).toLocal();
+      final date =
+          DateTime.parse(
+        isoString,
+      ).toLocal();
 
       return '${date.day.toString().padLeft(2, '0')}/'
           '${date.month.toString().padLeft(2, '0')}/'
@@ -1534,18 +3128,29 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
     String message, {
     bool isError = false,
   }) {
-    if (!mounted) return;
+    if (!mounted) {
+      return;
+    }
 
-    final messenger = ScaffoldMessenger.maybeOf(context);
+    final messenger =
+        ScaffoldMessenger.maybeOf(
+      context,
+    );
 
     messenger
       ?..hideCurrentSnackBar()
       ..showSnackBar(
         SnackBar(
-          content: Text(message),
+          content:
+              Text(message),
           backgroundColor:
-              isError ? Colors.red.shade700 : null,
-          duration: const Duration(seconds: 3),
+              isError
+                  ? Colors.red.shade700
+                  : null,
+          duration:
+              const Duration(
+            seconds: 3,
+          ),
         ),
       );
   }
@@ -1554,98 +3159,176 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   // MENÚ MOVIMIENTO
   // ============================================================
 
-  Future<void> _mostrarMenuMovimiento() async {
-    final cs = Theme.of(context).colorScheme;
+  Future<void>
+      _mostrarMenuMovimiento() async {
+    final cs =
+        Theme.of(context)
+            .colorScheme;
 
-    await showModalBottomSheet<void>(
+    await showModalBottomSheet<
+        void>(
       context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(
-          top: Radius.circular(20),
+      shape:
+          const RoundedRectangleBorder(
+        borderRadius:
+            BorderRadius.vertical(
+          top: Radius.circular(
+            20,
+          ),
         ),
       ),
-      builder: (ctx) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(
-            vertical: 12,
-            horizontal: 16,
+      builder:
+          (ctx) =>
+              SafeArea(
+        child:
+            Padding(
+          padding:
+              const EdgeInsets
+                  .symmetric(
+            vertical:
+                12,
+            horizontal:
+                16,
           ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
+          child:
+              Column(
+            mainAxisSize:
+                MainAxisSize.min,
             children: [
               Container(
-                width: 40,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: cs.outlineVariant,
-                  borderRadius: BorderRadius.circular(2),
+                width:
+                    40,
+                height:
+                    4,
+                decoration:
+                    BoxDecoration(
+                  color:
+                      cs.outlineVariant,
+                  borderRadius:
+                      BorderRadius.circular(
+                    2,
+                  ),
                 ),
               ),
-              const SizedBox(height: 16),
+
+              const SizedBox(
+                height:
+                    16,
+              ),
+
               const Text(
                 'Registrar movimiento',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w700,
+                style:
+                    TextStyle(
+                  fontSize:
+                      16,
+                  fontWeight:
+                      FontWeight.w700,
                 ),
               ),
-              const SizedBox(height: 16),
+
+              const SizedBox(
+                height:
+                    16,
+              ),
+
               ListTile(
-                leading: Container(
-                  width: 42,
-                  height: 42,
-                  decoration: BoxDecoration(
-                    color: Colors.green.shade50,
-                    shape: BoxShape.circle,
+                leading:
+                    Container(
+                  width:
+                      42,
+                  height:
+                      42,
+                  decoration:
+                      BoxDecoration(
+                    color:
+                        Colors.green.shade50,
+                    shape:
+                        BoxShape.circle,
                   ),
-                  child: Icon(
-                    Icons.arrow_circle_up_outlined,
-                    color: Colors.green.shade700,
+                  child:
+                      Icon(
+                    Icons
+                        .arrow_circle_up_outlined,
+                    color:
+                        Colors.green.shade700,
                   ),
                 ),
-                title: const Text(
+                title:
+                    const Text(
                   'Registrar ingreso',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w600,
+                  style:
+                      TextStyle(
+                    fontWeight:
+                        FontWeight.w600,
                   ),
                 ),
-                subtitle: const Text(
+                subtitle:
+                    const Text(
                   'Depósito, cobro, entrada de efectivo',
                 ),
                 onTap: () {
-                  Navigator.of(ctx).pop();
+                  Navigator.of(
+                    ctx,
+                  ).pop();
+
                   _agregarIngreso();
                 },
               ),
-              const Divider(height: 1),
+
+              const Divider(
+                height:
+                    1,
+              ),
+
               ListTile(
-                leading: Container(
-                  width: 42,
-                  height: 42,
-                  decoration: BoxDecoration(
-                    color: Colors.red.shade50,
-                    shape: BoxShape.circle,
+                leading:
+                    Container(
+                  width:
+                      42,
+                  height:
+                      42,
+                  decoration:
+                      BoxDecoration(
+                    color:
+                        Colors.red.shade50,
+                    shape:
+                        BoxShape.circle,
                   ),
-                  child: Icon(
-                    Icons.arrow_circle_down_outlined,
-                    color: Colors.red.shade700,
+                  child:
+                      Icon(
+                    Icons
+                        .arrow_circle_down_outlined,
+                    color:
+                        Colors.red.shade700,
                   ),
                 ),
-                title: const Text(
+                title:
+                    const Text(
                   'Registrar egreso',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w600,
+                  style:
+                      TextStyle(
+                    fontWeight:
+                        FontWeight.w600,
                   ),
                 ),
-                subtitle: const Text(
+                subtitle:
+                    const Text(
                   'Gasto, retiro, salida de efectivo',
                 ),
                 onTap: () {
-                  Navigator.of(ctx).pop();
+                  Navigator.of(
+                    ctx,
+                  ).pop();
+
                   _agregarEgreso();
                 },
               ),
-              const SizedBox(height: 8),
+
+              const SizedBox(
+                height:
+                    8,
+              ),
             ],
           ),
         ),
@@ -1658,200 +3341,346 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   // ============================================================
 
   @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
+  Widget build(
+    BuildContext context,
+  ) {
+    final cs =
+        Theme.of(context)
+            .colorScheme;
 
     return Scaffold(
-      backgroundColor: cs.surface,
-      appBar: AppBar(
-        backgroundColor: cs.surfaceContainerHighest,
-        elevation: 0,
-        title: Text(
+      backgroundColor:
+          cs.surface,
+
+      appBar:
+          AppBar(
+        backgroundColor:
+            cs.surfaceContainerHighest,
+        elevation:
+            0,
+        title:
+            Text(
           _companyName.isNotEmpty
-              ? _companyName.toUpperCase()
+              ? _companyName
+                  .toUpperCase()
               : 'ESTADÍSTICAS',
-          style: TextStyle(
-            fontWeight: FontWeight.w800,
-            fontSize: 15,
-            color: cs.onSurface,
-            letterSpacing: 0.5,
+          style:
+              TextStyle(
+            fontWeight:
+                FontWeight.w800,
+            fontSize:
+                15,
+            color:
+                cs.onSurface,
+            letterSpacing:
+                0.5,
           ),
         ),
         actions: [
           IconButton(
-            tooltip: 'Sincronizar',
-            onPressed: _syncing ? null : _syncNow,
-            icon: _syncing
-                ? SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: cs.primary,
-                    ),
-                  )
-                : const Icon(Icons.sync),
+            tooltip:
+                'Sincronizar',
+            onPressed:
+                _syncing
+                    ? null
+                    : _syncNow,
+            icon:
+                _syncing
+                    ? SizedBox(
+                        width:
+                            20,
+                        height:
+                            20,
+                        child:
+                            CircularProgressIndicator(
+                          strokeWidth:
+                              2,
+                          color:
+                              cs.primary,
+                        ),
+                      )
+                    : const Icon(
+                        Icons.sync,
+                      ),
           ),
         ],
-        bottom: TabBar(
-          controller: _tabController,
-          labelColor: cs.primary,
-          unselectedLabelColor: cs.onSurfaceVariant,
-          indicatorColor: cs.primary,
-          tabs: const [
+        bottom:
+            TabBar(
+          controller:
+              _tabController,
+          labelColor:
+              cs.primary,
+          unselectedLabelColor:
+              cs.onSurfaceVariant,
+          indicatorColor:
+              cs.primary,
+          tabs:
+              const [
             Tab(
-              icon: Icon(
-                Icons.today_outlined,
-                size: 18,
+              icon:
+                  Icon(
+                Icons
+                    .today_outlined,
+                size:
+                    18,
               ),
-              text: 'Día',
+              text:
+                  'Día',
             ),
             Tab(
-              icon: Icon(
-                Icons.calendar_month_outlined,
-                size: 18,
+              icon:
+                  Icon(
+                Icons
+                    .calendar_month_outlined,
+                size:
+                    18,
               ),
-              text: 'Mes',
+              text:
+                  'Mes',
             ),
           ],
         ),
       ),
-      body: TabBarView(
-        controller: _tabController,
+
+      body:
+          TabBarView(
+        controller:
+            _tabController,
         children: [
-          _buildDayTab(cs),
-          _buildMonthTab(cs),
+          _buildDayTab(
+            cs,
+          ),
+          _buildMonthTab(
+            cs,
+          ),
         ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _mostrarMenuMovimiento,
-        backgroundColor: cs.primary,
-        foregroundColor: cs.onPrimary,
-        icon: const Icon(Icons.add),
-        label: const Text('Movimiento'),
+
+      floatingActionButton:
+          FloatingActionButton.extended(
+        onPressed:
+            _mostrarMenuMovimiento,
+        backgroundColor:
+            cs.primary,
+        foregroundColor:
+            cs.onPrimary,
+        icon:
+            const Icon(
+          Icons.add,
+        ),
+        label:
+            const Text(
+          'Movimiento',
+        ),
       ),
+
       floatingActionButtonLocation:
-          FloatingActionButtonLocation.centerFloat,
+          FloatingActionButtonLocation
+              .centerFloat,
     );
   }
 
-  Widget _buildDayTab(ColorScheme cs) {
+  // ============================================================
+  // TAB DÍA
+  // ============================================================
+
+  Widget _buildDayTab(
+    ColorScheme cs,
+  ) {
     if (_loading) {
       return const Center(
-        child: CircularProgressIndicator(),
+        child:
+            CircularProgressIndicator(),
       );
     }
 
     return RefreshIndicator(
-      onRefresh: _loadStats,
-      child: CustomScrollView(
-        physics: const AlwaysScrollableScrollPhysics(),
+      onRefresh:
+          _loadStats,
+
+      child:
+          CustomScrollView(
+        physics:
+            const AlwaysScrollableScrollPhysics(),
+
         slivers: [
           SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(
+            child:
+                Padding(
+              padding:
+                  const EdgeInsets
+                      .fromLTRB(
                 16,
                 14,
                 16,
                 0,
               ),
-              child: _buildDateRangeRow(),
+              child:
+                  _buildDateRangeRow(),
             ),
           ),
+
           SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 16,
-                vertical: 6,
+            child:
+                Padding(
+              padding:
+                  const EdgeInsets
+                      .symmetric(
+                horizontal:
+                    16,
+                vertical:
+                    6,
               ),
-              child: Text(
-                _formatDate(_fechaInicio),
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
-                  color: cs.onSurfaceVariant,
+              child:
+                  Text(
+                _formatDate(
+                  _fechaInicio,
+                ),
+                textAlign:
+                    TextAlign.center,
+                style:
+                    TextStyle(
+                  fontSize:
+                      13,
+                  fontWeight:
+                      FontWeight.w500,
+                  color:
+                      cs.onSurfaceVariant,
                 ),
               ),
             ),
           ),
+
           SliverToBoxAdapter(
-            child: _buildTotalCentral(cs),
+            child:
+                _buildTotalCentral(
+              cs,
+            ),
           ),
+
           SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(
+            child:
+                Padding(
+              padding:
+                  const EdgeInsets
+                      .fromLTRB(
                 16,
                 0,
                 16,
                 12,
               ),
-              child: _buildIngresosEgresos(cs),
+              child:
+                  _buildIngresosEgresos(
+                cs,
+              ),
             ),
           ),
+
           SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(
+            child:
+                Padding(
+              padding:
+                  const EdgeInsets
+                      .fromLTRB(
                 16,
                 0,
                 16,
                 12,
               ),
-              child: _buildDesgloseMetodos(cs),
+              child:
+                  _buildDesgloseMetodos(
+                cs,
+              ),
             ),
           ),
+
           SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(
+            child:
+                Padding(
+              padding:
+                  const EdgeInsets
+                      .fromLTRB(
                 16,
                 0,
                 16,
                 16,
               ),
-              child: _buildCajaRow(cs),
+              child:
+                  _buildCajaRow(
+                cs,
+              ),
             ),
           ),
+
           SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(
+            child:
+                Padding(
+              padding:
+                  const EdgeInsets
+                      .fromLTRB(
                 16,
                 0,
                 16,
                 12,
               ),
-              child: _buildSearchBar(cs),
+              child:
+                  _buildSearchBar(
+                cs,
+              ),
             ),
           ),
-          if (_filteredItems.isEmpty)
+
+          if (_filteredItems
+              .isEmpty)
             SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(
+              child:
+                  Padding(
+                padding:
+                    const EdgeInsets
+                        .fromLTRB(
                   16,
                   0,
                   16,
                   32,
                 ),
-                child: _buildEmptyState(),
+                child:
+                    _buildEmptyState(),
               ),
             )
           else
             SliverPadding(
-              padding: const EdgeInsets.fromLTRB(
+              padding:
+                  const EdgeInsets
+                      .fromLTRB(
                 16,
                 0,
                 16,
                 120,
               ),
-              sliver: SliverList(
-                delegate: SliverChildBuilderDelegate(
-                  (context, i) => Padding(
+              sliver:
+                  SliverList(
+                delegate:
+                    SliverChildBuilderDelegate(
+                  (
+                    context,
+                    i,
+                  ) =>
+                      Padding(
                     padding:
-                        const EdgeInsets.only(bottom: 8),
-                    child: _buildListItem(
-                      _filteredItems[i],
+                        const EdgeInsets
+                            .only(
+                      bottom:
+                          8,
+                    ),
+                    child:
+                        _buildListItem(
+                      _filteredItems[
+                          i],
                     ),
                   ),
-                  childCount: _filteredItems.length,
+                  childCount:
+                      _filteredItems
+                          .length,
                 ),
               ),
             ),
@@ -1860,18 +3689,31 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
     );
   }
 
-  Widget _buildMonthTab(ColorScheme cs) {
+  // ============================================================
+  // TAB MES
+  // ============================================================
+
+  Widget _buildMonthTab(
+    ColorScheme cs,
+  ) {
     if (_loadingMes) {
       return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+        child:
+            Column(
+          mainAxisSize:
+              MainAxisSize.min,
           children: [
             const CircularProgressIndicator(),
-            const SizedBox(height: 12),
+            const SizedBox(
+              height:
+                  12,
+            ),
             Text(
               'Cargando estadísticas del mes...',
-              style: TextStyle(
-                color: cs.onSurfaceVariant,
+              style:
+                  TextStyle(
+                color:
+                    cs.onSurfaceVariant,
               ),
             ),
           ],
@@ -1879,144 +3721,246 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
       );
     }
 
-    final hoy = DateTime.now();
-    final mesNombre = _mesNombre(hoy.month);
-    final utilidadMes = _mesTotal - _mesEgresos;
+    final hoy =
+        DateTime.now();
+
+    final mesNombre =
+        _mesNombre(
+      hoy.month,
+    );
+
+    final utilidadMes =
+        _mesTotal -
+            _mesEgresos;
 
     return RefreshIndicator(
-      onRefresh: () async {
-        setState(() => _loadingMes = true);
+      onRefresh:
+          () async {
+        setState(
+          () => _loadingMes =
+              true,
+        );
+
         await _loadMonthStats();
       },
-      child: CustomScrollView(
-        physics: const AlwaysScrollableScrollPhysics(),
+      child:
+          CustomScrollView(
+        physics:
+            const AlwaysScrollableScrollPhysics(),
         slivers: [
           SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(
+            child:
+                Padding(
+              padding:
+                  const EdgeInsets
+                      .fromLTRB(
                 16,
                 16,
                 16,
                 4,
               ),
-              child: Row(
+              child:
+                  Row(
                 children: [
                   Icon(
-                    Icons.calendar_month_outlined,
-                    color: cs.primary,
-                    size: 18,
+                    Icons
+                        .calendar_month_outlined,
+                    color:
+                        cs.primary,
+                    size:
+                        18,
                   ),
-                  const SizedBox(width: 8),
+                  const SizedBox(
+                    width:
+                        8,
+                  ),
                   Text(
                     '$mesNombre ${hoy.year}',
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w700,
-                      color: cs.onSurfaceVariant,
+                    style:
+                        TextStyle(
+                      fontSize:
+                          14,
+                      fontWeight:
+                          FontWeight.w700,
+                      color:
+                          cs.onSurfaceVariant,
                     ),
                   ),
                 ],
               ),
             ),
           ),
+
           SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(
-                vertical: 10,
+            child:
+                Padding(
+              padding:
+                  const EdgeInsets
+                      .symmetric(
+                vertical:
+                    10,
               ),
-              child: Column(
+              child:
+                  Column(
                 children: [
                   Text(
                     'TOTAL DEL MES',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
-                      color: cs.onSurfaceVariant,
-                      letterSpacing: 1.5,
+                    style:
+                        TextStyle(
+                      fontSize:
+                          12,
+                      fontWeight:
+                          FontWeight.w700,
+                      color:
+                          cs.onSurfaceVariant,
+                      letterSpacing:
+                          1.5,
                     ),
                   ),
-                  const SizedBox(height: 4),
+                  const SizedBox(
+                    height:
+                        4,
+                  ),
                   Text(
                     '\$${utilidadMes.toStringAsFixed(2)}',
-                    style: TextStyle(
-                      fontSize: 32,
-                      fontWeight: FontWeight.w900,
-                      color: utilidadMes >= 0
-                          ? cs.onSurface
-                          : Colors.red.shade700,
+                    style:
+                        TextStyle(
+                      fontSize:
+                          32,
+                      fontWeight:
+                          FontWeight.w900,
+                      color:
+                          utilidadMes >=
+                                  0
+                              ? cs
+                                  .onSurface
+                              : Colors
+                                  .red
+                                  .shade700,
                     ),
                   ),
                 ],
               ),
             ),
           ),
+
           SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(
+            child:
+                Padding(
+              padding:
+                  const EdgeInsets
+                      .fromLTRB(
                 16,
                 0,
                 16,
                 12,
               ),
-              child: IntrinsicHeight(
-                child: Row(
+              child:
+                  IntrinsicHeight(
+                child:
+                    Row(
                   children: [
                     Expanded(
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          vertical: 14,
-                          horizontal: 12,
+                      child:
+                          Container(
+                        padding:
+                            const EdgeInsets
+                                .symmetric(
+                          vertical:
+                              14,
+                          horizontal:
+                              12,
                         ),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF4CAF50)
-                              .withValues(alpha: 0.12),
+                        decoration:
+                            BoxDecoration(
+                          color:
+                              const Color(
+                                  0xFF4CAF50)
+                              .withValues(
+                            alpha:
+                                0.12,
+                          ),
                           borderRadius:
-                              BorderRadius.circular(14),
-                          border: Border.all(
-                            color: const Color(0xFF4CAF50)
-                                .withValues(alpha: 0.35),
+                              BorderRadius
+                                  .circular(
+                            14,
+                          ),
+                          border:
+                              Border.all(
+                            color:
+                                const Color(
+                                    0xFF4CAF50)
+                                .withValues(
+                              alpha:
+                                  0.35,
+                            ),
                           ),
                         ),
-                        child: Column(
+                        child:
+                            Column(
                           children: [
                             Text(
                               'Ingresos',
-                              style: TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.w700,
-                                color: Colors.green.shade700,
+                              style:
+                                  TextStyle(
+                                fontSize:
+                                    13,
+                                fontWeight:
+                                    FontWeight.w700,
+                                color:
+                                    Colors.green.shade700,
                               ),
                             ),
-                            const SizedBox(height: 4),
+                            const SizedBox(
+                              height:
+                                  4,
+                            ),
                             FittedBox(
-                              fit: BoxFit.scaleDown,
-                              child: Text(
+                              fit:
+                                  BoxFit.scaleDown,
+                              child:
+                                  Text(
                                 '\$${_mesTotal.toStringAsFixed(2)}',
-                                style: TextStyle(
-                                  fontSize: 20,
-                                  fontWeight: FontWeight.w800,
+                                style:
+                                    TextStyle(
+                                  fontSize:
+                                      20,
+                                  fontWeight:
+                                      FontWeight.w800,
                                   color:
                                       Colors.green.shade700,
                                 ),
                               ),
                             ),
-                            if (_mesTransacciones > 0) ...[
-                              const SizedBox(height: 2),
+                            if (_mesTransacciones >
+                                0) ...[
+                              const SizedBox(
+                                height:
+                                    2,
+                              ),
                               Text(
                                 '$_mesTransacciones venta(s)',
-                                style: TextStyle(
-                                  fontSize: 10,
+                                style:
+                                    TextStyle(
+                                  fontSize:
+                                      10,
                                   color:
                                       Colors.green.shade600,
                                 ),
                               ),
                             ],
-                            if (_mesIngresos > 0) ...[
-                              const SizedBox(height: 1),
+                            if (_mesIngresos >
+                                0) ...[
+                              const SizedBox(
+                                height:
+                                    1,
+                              ),
                               Text(
                                 '+ ingr. manuales \$${_mesIngresos.toStringAsFixed(2)}',
-                                style: TextStyle(
-                                  fontSize: 9,
+                                style:
+                                    TextStyle(
+                                  fontSize:
+                                      9,
                                   color:
                                       Colors.green.shade500,
                                 ),
@@ -2026,40 +3970,71 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
                         ),
                       ),
                     ),
-                    const SizedBox(width: 10),
+
+                    const SizedBox(
+                      width:
+                          10,
+                    ),
+
                     Expanded(
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          vertical: 14,
-                          horizontal: 12,
+                      child:
+                          Container(
+                        padding:
+                            const EdgeInsets
+                                .symmetric(
+                          vertical:
+                              14,
+                          horizontal:
+                              12,
                         ),
-                        decoration: BoxDecoration(
-                          color: Colors.red.shade50,
+                        decoration:
+                            BoxDecoration(
+                          color:
+                              Colors.red.shade50,
                           borderRadius:
-                              BorderRadius.circular(14),
-                          border: Border.all(
-                            color: Colors.red.shade200,
+                              BorderRadius
+                                  .circular(
+                            14,
+                          ),
+                          border:
+                              Border.all(
+                            color:
+                                Colors.red.shade200,
                           ),
                         ),
-                        child: Column(
+                        child:
+                            Column(
                           children: [
                             Text(
                               'Egresos',
-                              style: TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.w700,
-                                color: Colors.red.shade700,
+                              style:
+                                  TextStyle(
+                                fontSize:
+                                    13,
+                                fontWeight:
+                                    FontWeight.w700,
+                                color:
+                                    Colors.red.shade700,
                               ),
                             ),
-                            const SizedBox(height: 4),
+                            const SizedBox(
+                              height:
+                                  4,
+                            ),
                             FittedBox(
-                              fit: BoxFit.scaleDown,
-                              child: Text(
+                              fit:
+                                  BoxFit.scaleDown,
+                              child:
+                                  Text(
                                 '\$${_mesEgresos.toStringAsFixed(2)}',
-                                style: TextStyle(
-                                  fontSize: 20,
-                                  fontWeight: FontWeight.w800,
-                                  color: Colors.red.shade700,
+                                style:
+                                    TextStyle(
+                                  fontSize:
+                                      20,
+                                  fontWeight:
+                                      FontWeight.w800,
+                                  color:
+                                      Colors.red.shade700,
                                 ),
                               ),
                             ),
@@ -2072,86 +4047,144 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
               ),
             ),
           ),
+
           SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(
+            child:
+                Padding(
+              padding:
+                  const EdgeInsets
+                      .fromLTRB(
                 16,
                 0,
                 16,
                 12,
               ),
-              child: Row(
+              child:
+                  Row(
                 children: [
                   Expanded(
-                    child: _InfoTile(
-                      icon: Icons.receipt_long_outlined,
-                      label: 'Ticket promedio',
+                    child:
+                        _InfoTile(
+                      icon:
+                          Icons
+                              .receipt_long_outlined,
+                      label:
+                          'Ticket promedio',
                       value:
                           '\$${_mesTicketPromedio.toStringAsFixed(2)}',
-                      color: cs.primary,
+                      color:
+                          cs.primary,
                     ),
                   ),
-                  const SizedBox(width: 10),
+                  const SizedBox(
+                    width:
+                        10,
+                  ),
                   Expanded(
-                    child: _InfoTile(
-                      icon: Icons.trending_up,
-                      label: 'Transacciones',
-                      value: '$_mesTransacciones',
-                      color: cs.secondary,
+                    child:
+                        _InfoTile(
+                      icon:
+                          Icons
+                              .trending_up,
+                      label:
+                          'Transacciones',
+                      value:
+                          '$_mesTransacciones',
+                      color:
+                          cs.secondary,
                     ),
                   ),
                 ],
               ),
             ),
           ),
-          if (_mesPorMetodo.isNotEmpty)
+
+          if (_mesPorMetodo
+              .isNotEmpty)
             SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(
+              child:
+                  Padding(
+                padding:
+                    const EdgeInsets
+                        .fromLTRB(
                   16,
                   0,
                   16,
                   12,
                 ),
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: cs.surfaceContainerHighest,
+                child:
+                    Container(
+                  decoration:
+                      BoxDecoration(
+                    color:
+                        cs.surfaceContainerHighest,
                     borderRadius:
-                        BorderRadius.circular(14),
+                        BorderRadius
+                            .circular(
+                      14,
+                    ),
                   ),
-                  padding: const EdgeInsets.all(12),
-                  child: Column(
+                  padding:
+                      const EdgeInsets.all(
+                    12,
+                  ),
+                  child:
+                      Column(
                     crossAxisAlignment:
-                        CrossAxisAlignment.start,
+                        CrossAxisAlignment
+                            .start,
                     children: [
                       Text(
                         'Desglose por método',
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700,
-                          color: cs.onSurfaceVariant,
+                        style:
+                            TextStyle(
+                          fontSize:
+                              12,
+                          fontWeight:
+                              FontWeight.w700,
+                          color:
+                              cs.onSurfaceVariant,
                         ),
                       ),
-                      const SizedBox(height: 8),
-                      ..._mesPorMetodo.entries.map(
-                        (e) => Padding(
+                      const SizedBox(
+                        height:
+                            8,
+                      ),
+                      ..._mesPorMetodo
+                          .entries
+                          .map(
+                        (e) =>
+                            Padding(
                           padding:
-                              const EdgeInsets.only(
-                            bottom: 5,
+                              const EdgeInsets
+                                  .only(
+                            bottom:
+                                5,
                           ),
-                          child: Row(
+                          child:
+                              Row(
                             children: [
                               Icon(
-                                _iconMetodo(e.key),
-                                size: 16,
-                                color: cs.primary,
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
+                                _iconMetodo(
                                   e.key,
-                                  style: const TextStyle(
-                                    fontSize: 13,
+                                ),
+                                size:
+                                    16,
+                                color:
+                                    cs.primary,
+                              ),
+                              const SizedBox(
+                                width:
+                                    8,
+                              ),
+                              Expanded(
+                                child:
+                                    Text(
+                                  e.key,
+                                  style:
+                                      const TextStyle(
+                                    fontSize:
+                                        13,
                                     fontWeight:
                                         FontWeight.w500,
                                   ),
@@ -2159,11 +4192,14 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
                               ),
                               Text(
                                 '\$${e.value.toStringAsFixed(2)}',
-                                style: TextStyle(
-                                  fontSize: 14,
+                                style:
+                                    TextStyle(
+                                  fontSize:
+                                      14,
                                   fontWeight:
                                       FontWeight.w700,
-                                  color: cs.onSurface,
+                                  color:
+                                      cs.onSurface,
                                 ),
                               ),
                             ],
@@ -2175,70 +4211,114 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
                 ),
               ),
             ),
-          if (_mesPorDia.isNotEmpty) ...[
+
+          if (_mesPorDia
+              .isNotEmpty) ...[
             SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(
+              child:
+                  Padding(
+                padding:
+                    const EdgeInsets
+                        .fromLTRB(
                   16,
                   0,
                   16,
                   8,
                 ),
-                child: Text(
+                child:
+                    Text(
                   'Ventas por día',
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w700,
-                    color: cs.onSurface,
+                  style:
+                      TextStyle(
+                    fontSize:
+                        14,
+                    fontWeight:
+                        FontWeight.w700,
+                    color:
+                        cs.onSurface,
                   ),
                 ),
               ),
             ),
+
             SliverPadding(
-              padding: const EdgeInsets.fromLTRB(
+              padding:
+                  const EdgeInsets
+                      .fromLTRB(
                 16,
                 0,
                 16,
                 120,
               ),
-              sliver: SliverList(
-                delegate: SliverChildBuilderDelegate(
+              sliver:
+                  SliverList(
+                delegate:
+                    SliverChildBuilderDelegate(
                   (context, i) {
-                    final d = _mesPorDia[i];
-                    final dia =
-                        d['dia']?.toString() ?? '';
-                    final total = _toDouble(d['total']);
+                    final d =
+                        _mesPorDia[
+                            i];
 
-                    String diaLabel = dia;
+                    final dia =
+                        d['dia']
+                                ?.toString() ??
+                            '';
+
+                    final total =
+                        _toDouble(
+                      d['total'],
+                    );
+
+                    String diaLabel =
+                        dia;
 
                     try {
-                      final dt = DateTime.parse(dia);
+                      final dt =
+                          DateTime.parse(
+                        dia,
+                      );
 
                       diaLabel =
                           '${dt.day.toString().padLeft(2, '0')}/'
                           '${dt.month.toString().padLeft(2, '0')}';
                     } catch (_) {}
 
-                    final maxTotal = _mesPorDia
-                        .map(
-                          (x) => _toDouble(x['total']),
-                        )
-                        .fold(
-                          0.0,
-                          (a, b) => a > b ? a : b,
-                        );
+                    final maxTotal =
+                        _mesPorDia
+                            .map(
+                              (x) =>
+                                  _toDouble(
+                                x['total'],
+                              ),
+                            )
+                            .fold(
+                              0.0,
+                              (a, b) =>
+                                  a > b
+                                      ? a
+                                      : b,
+                            );
 
                     return Padding(
                       padding:
-                          const EdgeInsets.only(bottom: 6),
-                      child: Row(
+                          const EdgeInsets
+                              .only(
+                        bottom:
+                            6,
+                      ),
+                      child:
+                          Row(
                         children: [
                           SizedBox(
-                            width: 48,
-                            child: Text(
+                            width:
+                                48,
+                            child:
+                                Text(
                               diaLabel,
-                              style: TextStyle(
-                                fontSize: 12,
+                              style:
+                                  TextStyle(
+                                fontSize:
+                                    12,
                                 fontWeight:
                                     FontWeight.w600,
                                 color:
@@ -2246,34 +4326,55 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
                               ),
                             ),
                           ),
-                          const SizedBox(width: 8),
+                          const SizedBox(
+                            width:
+                                8,
+                          ),
                           Expanded(
-                            child: ClipRRect(
+                            child:
+                                ClipRRect(
                               borderRadius:
-                                  BorderRadius.circular(4),
+                                  BorderRadius
+                                      .circular(
+                                4,
+                              ),
                               child:
                                   LinearProgressIndicator(
-                                value: maxTotal > 0
-                                    ? total / maxTotal
-                                    : 0,
+                                value:
+                                    maxTotal >
+                                            0
+                                        ? total /
+                                            maxTotal
+                                        : 0,
                                 backgroundColor:
                                     cs.surfaceContainerHighest,
-                                color: cs.primary,
-                                minHeight: 10,
+                                color:
+                                    cs.primary,
+                                minHeight:
+                                    10,
                               ),
                             ),
                           ),
-                          const SizedBox(width: 8),
+                          const SizedBox(
+                            width:
+                                8,
+                          ),
                           SizedBox(
-                            width: 80,
-                            child: Text(
+                            width:
+                                80,
+                            child:
+                                Text(
                               '\$${total.toStringAsFixed(0)}',
-                              textAlign: TextAlign.right,
-                              style: TextStyle(
-                                fontSize: 12,
+                              textAlign:
+                                  TextAlign.right,
+                              style:
+                                  TextStyle(
+                                fontSize:
+                                    12,
                                 fontWeight:
                                     FontWeight.w700,
-                                color: cs.onSurface,
+                                color:
+                                    cs.onSurface,
                               ),
                             ),
                           ),
@@ -2281,20 +4382,26 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
                       ),
                     );
                   },
-                  childCount: _mesPorDia.length,
+                  childCount:
+                      _mesPorDia
+                          .length,
                 ),
               ),
             ),
           ] else
             SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(
+              child:
+                  Padding(
+                padding:
+                    const EdgeInsets
+                        .fromLTRB(
                   16,
                   0,
                   16,
                   120,
                 ),
-                child: _buildEmptyState(),
+                child:
+                    _buildEmptyState(),
               ),
             ),
         ],
@@ -2302,8 +4409,11 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
     );
   }
 
-  String _mesNombre(int mes) {
-    const nombres = [
+  String _mesNombre(
+    int mes,
+  ) {
+    const nombres =
+        [
       '',
       'Enero',
       'Febrero',
@@ -2319,74 +4429,131 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
       'Diciembre',
     ];
 
-    return mes >= 1 && mes <= 12 ? nombres[mes] : '';
+    return mes >= 1 &&
+            mes <= 12
+        ? nombres[mes]
+        : '';
   }
 
   // ============================================================
-  // WIDGETS TAB DÍA
+  // WIDGETS DÍA
   // ============================================================
 
   Widget _buildDateRangeRow() {
     return Row(
       children: [
         Expanded(
-          child: _DateButton(
-            label: 'Fecha Inicio',
-            date: _fechaInicio,
-            onTap: () =>
-                _seleccionarFecha(esInicio: true),
+          child:
+              _DateButton(
+            label:
+                'Fecha Inicio',
+            date:
+                _fechaInicio,
+            onTap:
+                () =>
+                    _seleccionarFecha(
+              esInicio:
+                  true,
+            ),
           ),
         ),
-        const SizedBox(width: 10),
+        const SizedBox(
+          width:
+              10,
+        ),
         Expanded(
-          child: _DateButton(
-            label: 'Fecha Fin',
-            date: _fechaFin,
-            onTap: () =>
-                _seleccionarFecha(esInicio: false),
+          child:
+              _DateButton(
+            label:
+                'Fecha Fin',
+            date:
+                _fechaFin,
+            onTap:
+                () =>
+                    _seleccionarFecha(
+              esInicio:
+                  false,
+            ),
           ),
         ),
-        const SizedBox(width: 10),
+        const SizedBox(
+          width:
+              10,
+        ),
         Container(
-          width: 40,
-          height: 40,
-          decoration: BoxDecoration(
-            color: Colors.red.shade600,
-            borderRadius: BorderRadius.circular(10),
+          width:
+              40,
+          height:
+              40,
+          decoration:
+              BoxDecoration(
+            color:
+                Colors.red.shade600,
+            borderRadius:
+                BorderRadius.circular(
+              10,
+            ),
           ),
-          child: const Icon(
-            Icons.picture_as_pdf_outlined,
-            color: Colors.white,
-            size: 20,
+          child:
+              const Icon(
+            Icons
+                .picture_as_pdf_outlined,
+            color:
+                Colors.white,
+            size:
+                20,
           ),
         ),
       ],
     );
   }
 
-  Widget _buildTotalCentral(ColorScheme cs) {
+  Widget _buildTotalCentral(
+    ColorScheme cs,
+  ) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 12),
-      child: Column(
+      padding:
+          const EdgeInsets
+              .symmetric(
+        vertical:
+            12,
+      ),
+      child:
+          Column(
         children: [
           Text(
             'TOTAL',
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w700,
-              color: cs.onSurfaceVariant,
-              letterSpacing: 1.5,
+            style:
+                TextStyle(
+              fontSize:
+                  13,
+              fontWeight:
+                  FontWeight.w700,
+              color:
+                  cs.onSurfaceVariant,
+              letterSpacing:
+                  1.5,
             ),
           ),
-          const SizedBox(height: 4),
+          const SizedBox(
+            height:
+                4,
+          ),
           Text(
             '\$${_utilidadNeta.toStringAsFixed(2)}',
-            style: TextStyle(
-              fontSize: 36,
-              fontWeight: FontWeight.w900,
-              color: _utilidadNeta >= 0
-                  ? cs.onSurface
-                  : Colors.red.shade700,
+            style:
+                TextStyle(
+              fontSize:
+                  36,
+              fontWeight:
+                  FontWeight.w900,
+              color:
+                  _utilidadNeta >=
+                          0
+                      ? cs.onSurface
+                      : Colors
+                          .red
+                          .shade700,
             ),
           ),
         ],
@@ -2394,64 +4561,115 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
     );
   }
 
-  Widget _buildIngresosEgresos(ColorScheme cs) {
+  Widget _buildIngresosEgresos(
+    ColorScheme cs,
+  ) {
     return IntrinsicHeight(
-      child: Row(
+      child:
+          Row(
         children: [
           Expanded(
-            child: Container(
-              padding: const EdgeInsets.symmetric(
-                vertical: 14,
-                horizontal: 12,
+            child:
+                Container(
+              padding:
+                  const EdgeInsets
+                      .symmetric(
+                vertical:
+                    14,
+                horizontal:
+                    12,
               ),
-              decoration: BoxDecoration(
-                color: const Color(0xFF4CAF50)
-                    .withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(
-                  color: const Color(0xFF4CAF50)
-                      .withValues(alpha: 0.35),
+              decoration:
+                  BoxDecoration(
+                color:
+                    const Color(
+                        0xFF4CAF50)
+                    .withValues(
+                  alpha:
+                      0.12,
+                ),
+                borderRadius:
+                    BorderRadius.circular(
+                  14,
+                ),
+                border:
+                    Border.all(
+                  color:
+                      const Color(
+                          0xFF4CAF50)
+                      .withValues(
+                    alpha:
+                        0.35,
+                  ),
                 ),
               ),
-              child: Column(
+              child:
+                  Column(
                 children: [
                   Text(
                     'Ingresos',
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w700,
-                      color: Colors.green.shade700,
+                    style:
+                        TextStyle(
+                      fontSize:
+                          13,
+                      fontWeight:
+                          FontWeight.w700,
+                      color:
+                          Colors.green.shade700,
                     ),
                   ),
-                  const SizedBox(height: 4),
+                  const SizedBox(
+                    height:
+                        4,
+                  ),
                   FittedBox(
-                    fit: BoxFit.scaleDown,
-                    child: Text(
+                    fit:
+                        BoxFit.scaleDown,
+                    child:
+                        Text(
                       '\$${_totalIngresos.toStringAsFixed(2)}',
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.w800,
-                        color: Colors.green.shade700,
+                      style:
+                          TextStyle(
+                        fontSize:
+                            20,
+                        fontWeight:
+                            FontWeight.w800,
+                        color:
+                            Colors.green.shade700,
                       ),
                     ),
                   ),
-                  if (_transacciones > 0) ...[
-                    const SizedBox(height: 2),
+                  if (_transacciones >
+                      0) ...[
+                    const SizedBox(
+                      height:
+                          2,
+                    ),
                     Text(
                       '$_transacciones venta(s)',
-                      style: TextStyle(
-                        fontSize: 10,
-                        color: Colors.green.shade600,
+                      style:
+                          TextStyle(
+                        fontSize:
+                            10,
+                        color:
+                            Colors.green.shade600,
                       ),
                     ),
                   ],
-                  if (_ingresos.isNotEmpty) ...[
-                    const SizedBox(height: 1),
+                  if (_ingresos
+                      .isNotEmpty) ...[
+                    const SizedBox(
+                      height:
+                          1,
+                    ),
                     Text(
                       '+ ${_ingresos.length} ingreso(s) manual(es)',
-                      style: TextStyle(
-                        fontSize: 10,
-                        color: Colors.green.shade500,
+                      style:
+                          TextStyle(
+                        fontSize:
+                            10,
+                        color:
+                            Colors.green.shade500,
                       ),
                     ),
                   ],
@@ -2459,49 +4677,87 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
               ),
             ),
           ),
-          const SizedBox(width: 10),
+
+          const SizedBox(
+            width:
+                10,
+          ),
+
           Expanded(
-            child: Container(
-              padding: const EdgeInsets.symmetric(
-                vertical: 14,
-                horizontal: 12,
+            child:
+                Container(
+              padding:
+                  const EdgeInsets
+                      .symmetric(
+                vertical:
+                    14,
+                horizontal:
+                    12,
               ),
-              decoration: BoxDecoration(
-                color: Colors.red.shade50,
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(
-                  color: Colors.red.shade200,
+              decoration:
+                  BoxDecoration(
+                color:
+                    Colors.red.shade50,
+                borderRadius:
+                    BorderRadius.circular(
+                  14,
+                ),
+                border:
+                    Border.all(
+                  color:
+                      Colors.red.shade200,
                 ),
               ),
-              child: Column(
+              child:
+                  Column(
                 children: [
                   Text(
                     'Egresos',
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w700,
-                      color: Colors.red.shade700,
+                    style:
+                        TextStyle(
+                      fontSize:
+                          13,
+                      fontWeight:
+                          FontWeight.w700,
+                      color:
+                          Colors.red.shade700,
                     ),
                   ),
-                  const SizedBox(height: 4),
+                  const SizedBox(
+                    height:
+                        4,
+                  ),
                   FittedBox(
-                    fit: BoxFit.scaleDown,
-                    child: Text(
+                    fit:
+                        BoxFit.scaleDown,
+                    child:
+                        Text(
                       '\$${_totalEgresos.toStringAsFixed(2)}',
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.w800,
-                        color: Colors.red.shade700,
+                      style:
+                          TextStyle(
+                        fontSize:
+                            20,
+                        fontWeight:
+                            FontWeight.w800,
+                        color:
+                            Colors.red.shade700,
                       ),
                     ),
                   ),
-                  if (_egresos.isNotEmpty) ...[
-                    const SizedBox(height: 2),
+                  if (_egresos
+                      .isNotEmpty) ...[
+                    const SizedBox(
+                      height:
+                          2,
+                    ),
                     Text(
                       '${_egresos.length} egreso(s)',
-                      style: TextStyle(
-                        fontSize: 10,
-                        color: Colors.red.shade400,
+                      style:
+                          TextStyle(
+                        fontSize:
+                            10,
+                        color:
+                            Colors.red.shade400,
                       ),
                     ),
                   ],
@@ -2514,58 +4770,101 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
     );
   }
 
-  Widget _buildDesgloseMetodos(ColorScheme cs) {
-    final metodos = _ingresoPorMetodo;
+  Widget _buildDesgloseMetodos(
+    ColorScheme cs,
+  ) {
+    final metodos =
+        _ingresoPorMetodo;
 
     if (metodos.isEmpty) {
-      return const SizedBox.shrink();
+      return const SizedBox
+          .shrink();
     }
 
     return Container(
-      decoration: BoxDecoration(
-        color: cs.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(14),
+      decoration:
+          BoxDecoration(
+        color:
+            cs.surfaceContainerHighest,
+        borderRadius:
+            BorderRadius.circular(
+          14,
+        ),
       ),
-      padding: const EdgeInsets.all(12),
-      child: Column(
+      padding:
+          const EdgeInsets.all(
+        12,
+      ),
+      child:
+          Column(
         crossAxisAlignment:
-            CrossAxisAlignment.start,
+            CrossAxisAlignment
+                .start,
         children: [
           Text(
             'Desglose por método de pago',
-            style: TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
-              color: cs.onSurfaceVariant,
+            style:
+                TextStyle(
+              fontSize:
+                  12,
+              fontWeight:
+                  FontWeight.w700,
+              color:
+                  cs.onSurfaceVariant,
             ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(
+            height:
+                8,
+          ),
           ...metodos.entries.map(
-            (e) => Padding(
-              padding: const EdgeInsets.only(bottom: 5),
-              child: Row(
+            (e) =>
+                Padding(
+              padding:
+                  const EdgeInsets
+                      .only(
+                bottom:
+                    5,
+              ),
+              child:
+                  Row(
                 children: [
                   Icon(
-                    _iconMetodo(e.key),
-                    size: 16,
-                    color: cs.primary,
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
+                    _iconMetodo(
                       e.key,
-                      style: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w500,
+                    ),
+                    size:
+                        16,
+                    color:
+                        cs.primary,
+                  ),
+                  const SizedBox(
+                    width:
+                        8,
+                  ),
+                  Expanded(
+                    child:
+                        Text(
+                      e.key,
+                      style:
+                          const TextStyle(
+                        fontSize:
+                            13,
+                        fontWeight:
+                            FontWeight.w500,
                       ),
                     ),
                   ),
                   Text(
                     '\$${e.value.toStringAsFixed(2)}',
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w700,
-                      color: cs.onSurface,
+                    style:
+                        TextStyle(
+                      fontSize:
+                          14,
+                      fontWeight:
+                          FontWeight.w700,
+                      color:
+                          cs.onSurface,
                     ),
                   ),
                 ],
@@ -2577,182 +4876,336 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
     );
   }
 
-  Widget _buildCajaRow(ColorScheme cs) {
+  Widget _buildCajaRow(
+    ColorScheme cs,
+  ) {
     return Row(
       children: [
         Expanded(
-          child: _InfoTile(
-            icon: Icons.savings_outlined,
-            label: 'Efectivo en caja',
+          child:
+              _InfoTile(
+            icon:
+                Icons
+                    .savings_outlined,
+            label:
+                'Efectivo en caja',
             value:
                 '\$${_efectivoEnCaja.toStringAsFixed(2)}',
-            color: cs.primary,
+            color:
+                cs.primary,
           ),
         ),
-        const SizedBox(width: 10),
+        const SizedBox(
+          width:
+              10,
+        ),
         Expanded(
-          child: _InfoTile(
-            icon: Icons.credit_card_outlined,
-            label: 'Otros métodos',
+          child:
+              _InfoTile(
+            icon:
+                Icons
+                    .credit_card_outlined,
+            label:
+                'Otros métodos',
             value:
                 '\$${_otrosMetodos.toStringAsFixed(2)}',
-            color: cs.secondary,
+            color:
+                cs.secondary,
           ),
         ),
       ],
     );
   }
 
-  Widget _buildSearchBar(ColorScheme cs) {
+  Widget _buildSearchBar(
+    ColorScheme cs,
+  ) {
     return Container(
-      decoration: BoxDecoration(
-        color: cs.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: cs.outlineVariant,
+      decoration:
+          BoxDecoration(
+        color:
+            cs.surfaceContainerHighest,
+        borderRadius:
+            BorderRadius.circular(
+          12,
+        ),
+        border:
+            Border.all(
+          color:
+              cs.outlineVariant,
         ),
       ),
-      child: TextField(
-        controller: _searchCtrl,
-        decoration: InputDecoration(
+      child:
+          TextField(
+        controller:
+            _searchCtrl,
+        decoration:
+            InputDecoration(
           hintText:
               'Buscar venta, ingreso o egreso...',
-          hintStyle: TextStyle(
-            color: cs.onSurfaceVariant,
-            fontSize: 13,
+          hintStyle:
+              TextStyle(
+            color:
+                cs.onSurfaceVariant,
+            fontSize:
+                13,
           ),
-          prefixIcon: Icon(
+          prefixIcon:
+              Icon(
             Icons.search,
-            color: cs.onSurfaceVariant,
-            size: 20,
+            color:
+                cs.onSurfaceVariant,
+            size:
+                20,
           ),
           suffixIcon:
-              _searchQuery.isNotEmpty
+              _searchQuery
+                      .isNotEmpty
                   ? IconButton(
-                      icon: const Icon(
+                      icon:
+                          const Icon(
                         Icons.clear,
-                        size: 18,
+                        size:
+                            18,
                       ),
-                      onPressed: () {
-                        setState(() {
-                          _searchCtrl.clear();
-                          _searchQuery = '';
-                        });
+                      onPressed:
+                          () {
+                        setState(
+                          () {
+                            _searchCtrl
+                                .clear();
+                            _searchQuery =
+                                '';
+                          },
+                        );
                       },
                     )
                   : null,
-          border: InputBorder.none,
+          border:
+              InputBorder.none,
           contentPadding:
-              const EdgeInsets.symmetric(
-            vertical: 12,
+              const EdgeInsets
+                  .symmetric(
+            vertical:
+                12,
           ),
         ),
-        onChanged: (v) =>
-            setState(() => _searchQuery = v),
+        onChanged:
+            (v) => setState(
+          () => _searchQuery =
+              v,
+        ),
       ),
     );
   }
 
-  Widget _buildListItem(dynamic item) {
-    if (item is _Egreso) {
-      return _buildEgresoTile(item);
+  // ============================================================
+  // LIST ITEM
+  // ============================================================
+
+  Widget _buildListItem(
+    dynamic item,
+  ) {
+    if (item
+        is _Egreso) {
+      return _buildEgresoTile(
+        item,
+      );
     }
 
-    if (item is _Ingreso) {
-      return _buildIngresoTile(item);
+    if (item
+        is _Ingreso) {
+      return _buildIngresoTile(
+        item,
+      );
     }
 
     return _buildSaleTile(
-      item as Map<String, dynamic>,
+      item
+          as Map<String,
+              dynamic>,
     );
   }
+
+  // ============================================================
+  // VENTA
+  // ============================================================
 
   Widget _buildSaleTile(
     Map<String, dynamic> sale,
   ) {
     final folio =
-        sale['folio']?.toString().trim() ?? '';
-    final saleId = sale['id']?.toString() ?? '-';
+        sale['folio']
+                ?.toString()
+                .trim() ??
+            '';
+
+    final saleId =
+        sale['id']
+                ?.toString() ??
+            '-';
+
     final title =
-        folio.isNotEmpty ? folio : 'Venta $saleId';
-    final total = _toDouble(sale['total']);
-    final method = _metodoVenta(sale);
-    final statusColor = _statusColor(sale);
-    final statusLabel = _statusLabel(sale);
+        folio.isNotEmpty
+            ? folio
+            : 'Venta $saleId';
+
+    final total =
+        _toDouble(
+      sale['total'],
+    );
+
+    final method =
+        _metodoVenta(
+      sale,
+    );
+
+    final statusColor =
+        _statusColor(
+      sale,
+    );
+
+    final statusLabel =
+        _statusLabel(
+      sale,
+    );
+
     final fechaHora =
         _formatDateTime(
-      sale['created_at']?.toString(),
+      sale['created_at']
+          ?.toString(),
     );
 
     return Card(
-      margin: EdgeInsets.zero,
-      elevation: 0,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(
-          color: statusColor.withValues(alpha: 0.3),
+      margin:
+          EdgeInsets.zero,
+      elevation:
+          0,
+      shape:
+          RoundedRectangleBorder(
+        borderRadius:
+            BorderRadius.circular(
+          12,
+        ),
+        side:
+            BorderSide(
+          color:
+              statusColor
+                  .withValues(
+            alpha:
+                0.3,
+          ),
         ),
       ),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(12),
-        onTap: () => _openSale(sale),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(
-            horizontal: 14,
-            vertical: 10,
+      child:
+          InkWell(
+        borderRadius:
+            BorderRadius.circular(
+          12,
+        ),
+        onTap:
+            () => _openSale(
+          sale,
+        ),
+        child:
+            Padding(
+          padding:
+              const EdgeInsets
+                  .symmetric(
+            horizontal:
+                14,
+            vertical:
+                10,
           ),
-          child: Row(
+          child:
+              Row(
             children: [
               Container(
-                width: 4,
-                height: 44,
-                decoration: BoxDecoration(
-                  color: statusColor,
+                width:
+                    4,
+                height:
+                    44,
+                decoration:
+                    BoxDecoration(
+                  color:
+                      statusColor,
                   borderRadius:
-                      BorderRadius.circular(4),
+                      BorderRadius
+                          .circular(
+                    4,
+                  ),
                 ),
               ),
-              const SizedBox(width: 12),
+
+              const SizedBox(
+                width:
+                    12,
+              ),
+
               Expanded(
-                child: Column(
+                child:
+                    Column(
                   crossAxisAlignment:
-                      CrossAxisAlignment.start,
+                      CrossAxisAlignment
+                          .start,
                   children: [
                     Text(
                       title,
-                      maxLines: 1,
+                      maxLines:
+                          1,
                       overflow:
-                          TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 14,
+                          TextOverflow
+                              .ellipsis,
+                      style:
+                          const TextStyle(
+                        fontSize:
+                            14,
                         fontWeight:
-                            FontWeight.w600,
+                            FontWeight
+                                .w600,
                       ),
                     ),
-                    const SizedBox(height: 2),
+                    const SizedBox(
+                      height:
+                          2,
+                    ),
                     Row(
                       children: [
                         Icon(
-                          _iconMetodo(method),
-                          size: 12,
-                          color: Colors.grey,
+                          _iconMetodo(
+                            method,
+                          ),
+                          size:
+                              12,
+                          color:
+                              Colors.grey,
                         ),
-                        const SizedBox(width: 4),
+                        const SizedBox(
+                          width:
+                              4,
+                        ),
                         Text(
                           method,
                           style:
                               const TextStyle(
-                            fontSize: 11,
-                            color: Colors.grey,
+                            fontSize:
+                                11,
+                            color:
+                                Colors.grey,
                           ),
                         ),
-                        const SizedBox(width: 8),
+                        const SizedBox(
+                          width:
+                              8,
+                        ),
                         Text(
                           fechaHora,
                           style:
                               const TextStyle(
-                            fontSize: 11,
-                            color: Colors.grey,
+                            fontSize:
+                                11,
+                            color:
+                                Colors.grey,
                           ),
                         ),
                       ],
@@ -2760,57 +5213,100 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
                   ],
                 ),
               ),
-              const SizedBox(width: 10),
+
+              const SizedBox(
+                width:
+                    10,
+              ),
+
               Column(
                 crossAxisAlignment:
-                    CrossAxisAlignment.end,
+                    CrossAxisAlignment
+                        .end,
                 children: [
                   Text(
                     '\$${total.toStringAsFixed(2)}',
-                    style: TextStyle(
-                      fontSize: 15,
+                    style:
+                        TextStyle(
+                      fontSize:
+                          15,
                       fontWeight:
-                          FontWeight.w800,
-                      color: statusColor,
+                          FontWeight
+                              .w800,
+                      color:
+                          statusColor,
                     ),
                   ),
-                  const SizedBox(height: 2),
+                  const SizedBox(
+                    height:
+                        2,
+                  ),
                   Container(
                     padding:
-                        const EdgeInsets.symmetric(
-                      horizontal: 7,
-                      vertical: 2,
+                        const EdgeInsets
+                            .symmetric(
+                      horizontal:
+                          7,
+                      vertical:
+                          2,
                     ),
-                    decoration: BoxDecoration(
-                      color: statusColor
-                          .withValues(alpha: 0.15),
+                    decoration:
+                        BoxDecoration(
+                      color:
+                          statusColor
+                              .withValues(
+                        alpha:
+                            0.15,
+                      ),
                       borderRadius:
-                          BorderRadius.circular(999),
+                          BorderRadius
+                              .circular(
+                        999,
+                      ),
                     ),
-                    child: Text(
+                    child:
+                        Text(
                       statusLabel,
-                      style: TextStyle(
-                        fontSize: 10,
+                      style:
+                          TextStyle(
+                        fontSize:
+                            10,
                         fontWeight:
-                            FontWeight.w600,
-                        color: statusColor,
+                            FontWeight
+                                .w600,
+                        color:
+                            statusColor,
                       ),
                     ),
                   ),
                 ],
               ),
-              if (_canCancel(sale)) ...[
-                const SizedBox(width: 6),
+
+              if (_canCancel(
+                sale,
+              )) ...[
+                const SizedBox(
+                  width:
+                      6,
+                ),
                 IconButton(
                   visualDensity:
-                      VisualDensity.compact,
-                  tooltip: 'Cancelar venta',
-                  onPressed: () =>
-                      _cancelSale(sale),
-                  icon: Icon(
-                    Icons.cancel_outlined,
-                    size: 18,
-                    color: Colors.red.shade400,
+                      VisualDensity
+                          .compact,
+                  tooltip:
+                      'Cancelar venta',
+                  onPressed:
+                      () => _cancelSale(
+                    sale,
+                  ),
+                  icon:
+                      Icon(
+                    Icons
+                        .cancel_outlined,
+                    size:
+                        18,
+                    color:
+                        Colors.red.shade400,
                   ),
                 ),
               ],
@@ -2821,332 +5317,661 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
     );
   }
 
-  Widget _buildEgresoTile(_Egreso e) {
-    return Card(
-      margin: EdgeInsets.zero,
-      elevation: 0,
-      color: Colors.red.shade50,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(
-          color: Colors.red.shade200,
-        ),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(
-          horizontal: 14,
-          vertical: 10,
-        ),
-        child: Row(
-          children: [
-            Container(
-              width: 4,
-              height: 44,
-              decoration: BoxDecoration(
-                color: Colors.red.shade600,
-                borderRadius:
-                    BorderRadius.circular(4),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment:
-                    CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    e.concepto,
-                    maxLines: 1,
-                    overflow:
-                        TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight:
-                          FontWeight.w600,
-                      color:
-                          Colors.red.shade800,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Row(
-                    children: [
-                      Icon(
-                        Icons.arrow_downward,
-                        size: 12,
-                        color:
-                            Colors.red.shade400,
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        e.formaPago ?? 'Egreso',
-                        style: TextStyle(
-                          fontSize: 11,
-                          color:
-                              Colors.red.shade500,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        _formatDateTime(
-                          e.registradoAt
-                              .toIso8601String(),
-                        ),
-                        style:
-                            const TextStyle(
-                          fontSize: 11,
-                          color: Colors.grey,
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(width: 10),
-            Text(
-              '- \$${e.monto.toStringAsFixed(2)}',
-              style: TextStyle(
-                fontSize: 15,
-                fontWeight: FontWeight.w800,
-                color: Colors.red.shade700,
-              ),
-            ),
-            const SizedBox(width: 4),
-            InkWell(
-              borderRadius:
-                  BorderRadius.circular(20),
-              onTap: () =>
-                  _confirmarEliminarEgreso(e),
-              child: Padding(
-                padding:
-                    const EdgeInsets.all(6),
-                child: Icon(
-                  Icons.delete_outline,
-                  size: 18,
-                  color:
-                      Colors.red.shade400,
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+  // ============================================================
+  // EGRESO
+  // ============================================================
 
-  Future<void> _confirmarEliminarEgreso(
+  Widget _buildEgresoTile(
     _Egreso e,
-  ) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Eliminar egreso'),
-        content:
-            Text('¿Eliminar "${e.concepto}"?'),
-        actions: [
-          TextButton(
-            onPressed: () =>
-                Navigator.of(ctx).pop(false),
-            child: const Text('Cancelar'),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: Colors.red,
-            ),
-            onPressed: () =>
-                Navigator.of(ctx).pop(true),
-            child: const Text('Eliminar'),
-          ),
-        ],
-      ),
-    );
-
-    if (confirmed == true) {
-      await _eliminarEgreso(e.id);
-    }
-  }
-
-  Widget _buildIngresoTile(_Ingreso i) {
+  ) {
     return Card(
-      margin: EdgeInsets.zero,
-      elevation: 0,
-      color: Colors.green.shade50,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(
-          color: Colors.green.shade200,
+      margin:
+          EdgeInsets.zero,
+      elevation:
+          0,
+      color:
+          Colors.red.shade50,
+      shape:
+          RoundedRectangleBorder(
+        borderRadius:
+            BorderRadius.circular(
+          12,
+        ),
+        side:
+            BorderSide(
+          color:
+              Colors.red.shade200,
         ),
       ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(
-          horizontal: 14,
-          vertical: 10,
+      child:
+          InkWell(
+        borderRadius:
+            BorderRadius.circular(
+          12,
         ),
-        child: Row(
-          children: [
-            Container(
-              width: 4,
-              height: 44,
-              decoration: BoxDecoration(
-                color: Colors.green.shade600,
-                borderRadius:
-                    BorderRadius.circular(4),
+        onTap:
+            () => _detalleEgreso(
+          e,
+        ),
+        child:
+            Padding(
+          padding:
+              const EdgeInsets
+                  .symmetric(
+            horizontal:
+                10,
+            vertical:
+                8,
+          ),
+          child:
+              Row(
+            children: [
+              Container(
+                width:
+                    4,
+                height:
+                    54,
+                decoration:
+                    BoxDecoration(
+                  color:
+                      Colors.red.shade600,
+                  borderRadius:
+                      BorderRadius
+                          .circular(
+                    4,
+                  ),
+                ),
               ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
+
+              const SizedBox(
+                width:
+                    10,
+              ),
+
+              Container(
+                width:
+                    42,
+                height:
+                    42,
+                decoration:
+                    BoxDecoration(
+                  color:
+                      Colors.red
+                          .withAlpha(
+                    20,
+                  ),
+                  borderRadius:
+                      BorderRadius
+                          .circular(
+                    12,
+                  ),
+                ),
+                child:
+                    Icon(
+                  Icons
+                      .arrow_upward_rounded,
+                  color:
+                      Colors.red.shade700,
+                ),
+              ),
+
+              const SizedBox(
+                width:
+                    10,
+              ),
+
+              Expanded(
+                child:
+                    Column(
+                  crossAxisAlignment:
+                      CrossAxisAlignment
+                          .start,
+                  children: [
+                    Text(
+                      e.concepto,
+                      maxLines:
+                          1,
+                      overflow:
+                          TextOverflow
+                              .ellipsis,
+                      style:
+                          TextStyle(
+                        fontSize:
+                            14,
+                        fontWeight:
+                            FontWeight.w700,
+                        color:
+                            Colors.red.shade800,
+                      ),
+                    ),
+
+                    const SizedBox(
+                      height:
+                          3,
+                    ),
+
+                    Row(
+                      children: [
+                        Icon(
+                          _iconMetodo(
+                            e.formaPago ??
+                                'Egreso',
+                          ),
+                          size:
+                              13,
+                          color:
+                              Colors.red.shade400,
+                        ),
+                        const SizedBox(
+                          width:
+                              4,
+                        ),
+                        Flexible(
+                          child:
+                              Text(
+                            e.formaPago ??
+                                'Egreso',
+                            maxLines:
+                                1,
+                            overflow:
+                                TextOverflow
+                                    .ellipsis,
+                            style:
+                                TextStyle(
+                              fontSize:
+                                  11,
+                              color:
+                                  Colors.red.shade500,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(
+                          width:
+                              8,
+                        ),
+                        Text(
+                          _formatDateTime(
+                            e.registradoAt
+                                .toIso8601String(),
+                          ),
+                          style:
+                              const TextStyle(
+                            fontSize:
+                                11,
+                            color:
+                                Colors.grey,
+                          ),
+                        ),
+                      ],
+                    ),
+
+                    const SizedBox(
+                      height:
+                          3,
+                    ),
+
+                    const Text(
+                      'Toca para ver detalle',
+                      style:
+                          TextStyle(
+                        fontSize:
+                            10,
+                        color:
+                            Colors.black45,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              const SizedBox(
+                width:
+                    6,
+              ),
+
+              Column(
                 crossAxisAlignment:
-                    CrossAxisAlignment.start,
+                    CrossAxisAlignment
+                        .end,
                 children: [
                   Text(
-                    i.concepto,
-                    maxLines: 1,
-                    overflow:
-                        TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 14,
+                    '- \$${e.monto.toStringAsFixed(2)}',
+                    style:
+                        TextStyle(
+                      fontSize:
+                          15,
                       fontWeight:
-                          FontWeight.w600,
+                          FontWeight.w800,
                       color:
-                          Colors.green.shade800,
+                          Colors.red.shade700,
                     ),
                   ),
-                  const SizedBox(height: 2),
+
+                  const SizedBox(
+                    height:
+                        3,
+                  ),
+
                   Row(
+                    mainAxisSize:
+                        MainAxisSize
+                            .min,
                     children: [
-                      Icon(
-                        Icons.arrow_upward,
-                        size: 12,
-                        color:
-                            Colors.green.shade400,
+                      IconButton(
+                        visualDensity:
+                            VisualDensity
+                                .compact,
+                        tooltip:
+                            'Imprimir egreso',
+                        onPressed:
+                            _printingMovement ||
+                                    _syncing
+                                ? null
+                                : () =>
+                                    _imprimirEgreso(
+                                      e,
+                                    ),
+                        icon:
+                            const Icon(
+                          Icons
+                              .print_outlined,
+                          size:
+                              19,
+                        ),
                       ),
-                      const SizedBox(width: 4),
-                      Text(
-                        i.formaPago ??
-                            'Ingreso manual',
-                        style: TextStyle(
-                          fontSize: 11,
+
+                      IconButton(
+                        visualDensity:
+                            VisualDensity
+                                .compact,
+                        tooltip:
+                            'Eliminar egreso',
+                        onPressed:
+                            () =>
+                                _confirmarEliminarEgreso(
+                          e,
+                        ),
+                        icon:
+                            Icon(
+                          Icons
+                              .delete_outline,
+                          size:
+                              19,
                           color:
-                              Colors.green.shade600,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        _formatDateTime(
-                          i.registradoAt
-                              .toIso8601String(),
-                        ),
-                        style:
-                            const TextStyle(
-                          fontSize: 11,
-                          color: Colors.grey,
+                              Colors.red.shade400,
                         ),
                       ),
                     ],
                   ),
                 ],
               ),
-            ),
-            const SizedBox(width: 10),
-            Text(
-              '+ \$${i.monto.toStringAsFixed(2)}',
-              style: TextStyle(
-                fontSize: 15,
-                fontWeight: FontWeight.w800,
-                color:
-                    Colors.green.shade700,
-              ),
-            ),
-            const SizedBox(width: 4),
-            InkWell(
-              borderRadius:
-                  BorderRadius.circular(20),
-              onTap: () =>
-                  _confirmarEliminarIngreso(i),
-              child: Padding(
-                padding:
-                    const EdgeInsets.all(6),
-                child: Icon(
-                  Icons.delete_outline,
-                  size: 18,
-                  color:
-                      Colors.green.shade400,
-                ),
-              ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
   }
 
-  Future<void> _confirmarEliminarIngreso(
+  // ============================================================
+  // INGRESO
+  // ============================================================
+
+  Widget _buildIngresoTile(
     _Ingreso i,
-  ) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Eliminar ingreso'),
-        content:
-            Text('¿Eliminar "${i.concepto}"?'),
-        actions: [
-          TextButton(
-            onPressed: () =>
-                Navigator.of(ctx).pop(false),
-            child: const Text('Cancelar'),
+  ) {
+    return Card(
+      margin:
+          EdgeInsets.zero,
+      elevation:
+          0,
+      color:
+          Colors.green.shade50,
+      shape:
+          RoundedRectangleBorder(
+        borderRadius:
+            BorderRadius.circular(
+          12,
+        ),
+        side:
+            BorderSide(
+          color:
+              Colors.green.shade200,
+        ),
+      ),
+      child:
+          InkWell(
+        borderRadius:
+            BorderRadius.circular(
+          12,
+        ),
+        onTap:
+            () => _detalleIngreso(
+          i,
+        ),
+        child:
+            Padding(
+          padding:
+              const EdgeInsets
+                  .symmetric(
+            horizontal:
+                10,
+            vertical:
+                8,
           ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: Colors.red,
-            ),
-            onPressed: () =>
-                Navigator.of(ctx).pop(true),
-            child: const Text('Eliminar'),
+          child:
+              Row(
+            children: [
+              Container(
+                width:
+                    4,
+                height:
+                    54,
+                decoration:
+                    BoxDecoration(
+                  color:
+                      Colors.green.shade600,
+                  borderRadius:
+                      BorderRadius
+                          .circular(
+                    4,
+                  ),
+                ),
+              ),
+
+              const SizedBox(
+                width:
+                    10,
+              ),
+
+              Container(
+                width:
+                    42,
+                height:
+                    42,
+                decoration:
+                    BoxDecoration(
+                  color:
+                      Colors.green
+                          .withAlpha(
+                    20,
+                  ),
+                  borderRadius:
+                      BorderRadius
+                          .circular(
+                    12,
+                  ),
+                ),
+                child:
+                    Icon(
+                  Icons
+                      .arrow_downward_rounded,
+                  color:
+                      Colors.green.shade700,
+                ),
+              ),
+
+              const SizedBox(
+                width:
+                    10,
+              ),
+
+              Expanded(
+                child:
+                    Column(
+                  crossAxisAlignment:
+                      CrossAxisAlignment
+                          .start,
+                  children: [
+                    Text(
+                      i.concepto,
+                      maxLines:
+                          1,
+                      overflow:
+                          TextOverflow
+                              .ellipsis,
+                      style:
+                          TextStyle(
+                        fontSize:
+                            14,
+                        fontWeight:
+                            FontWeight.w700,
+                        color:
+                            Colors.green.shade800,
+                      ),
+                    ),
+
+                    const SizedBox(
+                      height:
+                          3,
+                    ),
+
+                    Row(
+                      children: [
+                        Icon(
+                          _iconMetodo(
+                            i.formaPago ??
+                                'Ingreso',
+                          ),
+                          size:
+                              13,
+                          color:
+                              Colors.green.shade400,
+                        ),
+                        const SizedBox(
+                          width:
+                              4,
+                        ),
+                        Flexible(
+                          child:
+                              Text(
+                            i.formaPago ??
+                                'Ingreso manual',
+                            maxLines:
+                                1,
+                            overflow:
+                                TextOverflow
+                                    .ellipsis,
+                            style:
+                                TextStyle(
+                              fontSize:
+                                  11,
+                              color:
+                                  Colors.green.shade600,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(
+                          width:
+                              8,
+                        ),
+                        Text(
+                          _formatDateTime(
+                            i.registradoAt
+                                .toIso8601String(),
+                          ),
+                          style:
+                              const TextStyle(
+                            fontSize:
+                                11,
+                            color:
+                                Colors.grey,
+                          ),
+                        ),
+                      ],
+                    ),
+
+                    const SizedBox(
+                      height:
+                          3,
+                    ),
+
+                    const Text(
+                      'Toca para ver detalle',
+                      style:
+                          TextStyle(
+                        fontSize:
+                            10,
+                        color:
+                            Colors.black45,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              const SizedBox(
+                width:
+                    6,
+              ),
+
+              Column(
+                crossAxisAlignment:
+                    CrossAxisAlignment
+                        .end,
+                children: [
+                  Text(
+                    '+ \$${i.monto.toStringAsFixed(2)}',
+                    style:
+                        TextStyle(
+                      fontSize:
+                          15,
+                      fontWeight:
+                          FontWeight.w800,
+                      color:
+                          Colors.green.shade700,
+                    ),
+                  ),
+
+                  const SizedBox(
+                    height:
+                        3,
+                  ),
+
+                  Row(
+                    mainAxisSize:
+                        MainAxisSize
+                            .min,
+                    children: [
+                      IconButton(
+                        visualDensity:
+                            VisualDensity
+                                .compact,
+                        tooltip:
+                            'Imprimir ingreso',
+                        onPressed:
+                            _printingMovement ||
+                                    _syncing
+                                ? null
+                                : () =>
+                                    _imprimirIngreso(
+                                      i,
+                                    ),
+                        icon:
+                            const Icon(
+                          Icons
+                              .print_outlined,
+                          size:
+                              19,
+                        ),
+                      ),
+
+                      IconButton(
+                        visualDensity:
+                            VisualDensity
+                                .compact,
+                        tooltip:
+                            'Eliminar ingreso',
+                        onPressed:
+                            () =>
+                                _confirmarEliminarIngreso(
+                          i,
+                        ),
+                        icon:
+                            Icon(
+                          Icons
+                              .delete_outline,
+                          size:
+                              19,
+                          color:
+                              Colors.green.shade400,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
-
-    if (confirmed == true) {
-      await _eliminarIngreso(i.id);
-    }
   }
+
+  // ============================================================
+  // EMPTY
+  // ============================================================
 
   Widget _buildEmptyState() {
     return Container(
-      padding: const EdgeInsets.symmetric(
-        horizontal: 24,
-        vertical: 50,
+      padding:
+          const EdgeInsets
+              .symmetric(
+        horizontal:
+            24,
+        vertical:
+            50,
       ),
-      decoration: BoxDecoration(
+      decoration:
+          BoxDecoration(
         color:
-            Colors.grey.withValues(alpha: 0.08),
+            Colors.grey.withValues(
+          alpha:
+              0.08,
+        ),
         borderRadius:
-            BorderRadius.circular(16),
+            BorderRadius.circular(
+          16,
+        ),
       ),
-      child: const Column(
+      child:
+          const Column(
         children: [
           Icon(
-            Icons.receipt_long_outlined,
-            size: 58,
-            color: Colors.black26,
+            Icons
+                .receipt_long_outlined,
+            size:
+                58,
+            color:
+                Colors.black26,
           ),
-          SizedBox(height: 14),
+          SizedBox(
+            height:
+                14,
+          ),
           Text(
             'Sin registros en este rango de fechas',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w600,
+            textAlign:
+                TextAlign.center,
+            style:
+                TextStyle(
+              fontSize:
+                  16,
+              fontWeight:
+                  FontWeight.w600,
             ),
           ),
-          SizedBox(height: 6),
+          SizedBox(
+            height:
+                6,
+          ),
           Text(
-            'Las ventas y egresos del rango seleccionado aparecerán aquí.',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              color: Colors.black54,
+            'Las ventas, ingresos y egresos del rango seleccionado aparecerán aquí.',
+            textAlign:
+                TextAlign.center,
+            style:
+                TextStyle(
+              color:
+                  Colors.black54,
             ),
           ),
         ],
@@ -3154,31 +5979,59 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
     );
   }
 
-  IconData _iconMetodo(String method) {
-    final m = method.toLowerCase();
+  // ============================================================
+  // ICONO MÉTODO
+  // ============================================================
 
-    if (m.contains('efectivo') ||
+  IconData _iconMetodo(
+    String method,
+  ) {
+    final m =
+        method.toLowerCase();
+
+    if (m.contains(
+          'efectivo',
+        ) ||
         m == 'cash') {
-      return Icons.payments_outlined;
+      return Icons
+          .payments_outlined;
     }
 
-    if (m.contains('tarjeta') ||
-        m.contains('card') ||
-        m.contains('crédito') ||
-        m.contains('débito')) {
-      return Icons.credit_card_outlined;
+    if (m.contains(
+            'tarjeta',
+          ) ||
+        m.contains(
+            'card',
+          ) ||
+        m.contains(
+            'crédito',
+          ) ||
+        m.contains(
+            'débito',
+          )) {
+      return Icons
+          .credit_card_outlined;
     }
 
-    if (m.contains('transfer')) {
-      return Icons.swap_horiz;
+    if (m.contains(
+      'transfer',
+    )) {
+      return Icons
+          .swap_horiz;
     }
 
-    if (m.contains('cheque') ||
-        m.contains('check')) {
-      return Icons.receipt_outlined;
+    if (m.contains(
+            'cheque',
+          ) ||
+        m.contains(
+            'check',
+          )) {
+      return Icons
+          .receipt_outlined;
     }
 
-    return Icons.attach_money;
+    return Icons
+        .attach_money;
   }
 }
 
@@ -3195,7 +6048,8 @@ enum _TipoMovimiento {
 // DIÁLOGO DE MOVIMIENTO
 // ============================================================
 
-class _MovimientoDialog extends StatefulWidget {
+class _MovimientoDialog
+    extends StatefulWidget {
   const _MovimientoDialog({
     required this.tipo,
     required this.onGuardar,
@@ -3210,23 +6064,28 @@ class _MovimientoDialog extends StatefulWidget {
   ) onGuardar;
 
   @override
-  State<_MovimientoDialog> createState() =>
-      _MovimientoDialogState();
+  State<_MovimientoDialog>
+      createState() =>
+          _MovimientoDialogState();
 }
 
 class _MovimientoDialogState
-    extends State<_MovimientoDialog> {
-  final TextEditingController _conceptoCtrl =
+    extends State<
+        _MovimientoDialog> {
+  final TextEditingController
+      _conceptoCtrl =
       TextEditingController();
 
-  final TextEditingController _montoCtrl =
+  final TextEditingController
+      _montoCtrl =
       TextEditingController();
 
   String? _formaPago;
   bool _guardando = false;
   String? _error;
 
-  static const _formasPago = [
+  static const _formasPago =
+      [
     'Efectivo',
     'Tarjeta',
     'Transferencia',
@@ -3234,7 +6093,8 @@ class _MovimientoDialogState
   ];
 
   bool get _esEgreso =>
-      widget.tipo == _TipoMovimiento.egreso;
+      widget.tipo ==
+      _TipoMovimiento.egreso;
 
   @override
   void dispose() {
@@ -3244,24 +6104,33 @@ class _MovimientoDialogState
   }
 
   Future<void> _guardar() async {
-    if (_guardando) return;
+    if (_guardando) {
+      return;
+    }
 
     final concepto =
-        _conceptoCtrl.text.trim();
+        _conceptoCtrl.text
+            .trim();
 
     final montoStr =
-        _montoCtrl.text.trim();
+        _montoCtrl.text
+            .trim();
 
     if (concepto.isEmpty) {
       setState(
-        () => _error = 'Ingresa un concepto.',
+        () => _error =
+            'Ingresa un concepto.',
       );
       return;
     }
 
-    final monto = double.tryParse(montoStr);
+    final monto =
+        double.tryParse(
+      montoStr,
+    );
 
-    if (monto == null || monto <= 0) {
+    if (monto == null ||
+        monto <= 0) {
       setState(
         () => _error =
             'Ingresa un monto válido mayor a 0.',
@@ -3270,7 +6139,8 @@ class _MovimientoDialogState
     }
 
     setState(() {
-      _guardando = true;
+      _guardando =
+          true;
       _error = null;
     });
 
@@ -3283,87 +6153,141 @@ class _MovimientoDialogState
     } finally {
       if (mounted) {
         setState(
-          () => _guardando = false,
+          () => _guardando =
+              false,
         );
       }
     }
   }
 
   @override
-  Widget build(BuildContext context) {
-    final color = _esEgreso
-        ? Colors.red.shade700
-        : Colors.green.shade700;
+  Widget build(
+    BuildContext context,
+  ) {
+    final color =
+        _esEgreso
+            ? Colors.red.shade700
+            : Colors.green.shade700;
 
-    final icon = _esEgreso
-        ? Icons.arrow_circle_down_outlined
-        : Icons.arrow_circle_up_outlined;
+    final icon =
+        _esEgreso
+            ? Icons
+                .arrow_circle_down_outlined
+            : Icons
+                .arrow_circle_up_outlined;
 
-    final titulo = _esEgreso
-        ? 'Registrar egreso'
-        : 'Registrar ingreso';
+    final titulo =
+        _esEgreso
+            ? 'Registrar egreso'
+            : 'Registrar ingreso';
 
-    final hint = _esEgreso
-        ? 'Ej. Gasolina, Insumos, Limpieza'
-        : 'Ej. Depósito, Cobro, Transferencia recibida';
+    final hint =
+        _esEgreso
+            ? 'Ej. Gasolina, Insumos, Limpieza'
+            : 'Ej. Depósito, Cobro, Transferencia recibida';
 
     return AlertDialog(
-      title: Row(
+      title:
+          Row(
         children: [
-          Icon(icon, color: color),
-          const SizedBox(width: 8),
-          Text(titulo),
+          Icon(
+            icon,
+            color:
+                color,
+          ),
+          const SizedBox(
+            width:
+                8,
+          ),
+          Text(
+            titulo,
+          ),
         ],
       ),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
+      content:
+          Column(
+        mainAxisSize:
+            MainAxisSize.min,
         crossAxisAlignment:
-            CrossAxisAlignment.start,
+            CrossAxisAlignment
+                .start,
         children: [
           TextField(
-            controller: _conceptoCtrl,
+            controller:
+                _conceptoCtrl,
             textCapitalization:
-                TextCapitalization.sentences,
+                TextCapitalization
+                    .sentences,
             textInputAction:
                 TextInputAction.next,
-            decoration: InputDecoration(
-              labelText: 'Concepto *',
-              hintText: hint,
+            decoration:
+                InputDecoration(
+              labelText:
+                  'Concepto *',
+              hintText:
+                  hint,
               border:
                   const OutlineInputBorder(),
             ),
-            onChanged: (_) {
+            onChanged:
+                (_) {
               if (_error != null) {
-                setState(() => _error = null);
+                setState(
+                  () => _error =
+                      null,
+                );
               }
             },
           ),
-          const SizedBox(height: 12),
+
+          const SizedBox(
+            height:
+                12,
+          ),
+
           TextField(
-            controller: _montoCtrl,
+            controller:
+                _montoCtrl,
             keyboardType:
-                const TextInputType.numberWithOptions(
-              decimal: true,
+                const TextInputType
+                    .numberWithOptions(
+              decimal:
+                  true,
             ),
             textInputAction:
                 TextInputAction.done,
             decoration:
                 const InputDecoration(
-              labelText: 'Monto *',
-              prefixText: '\$',
+              labelText:
+                  'Monto *',
+              prefixText:
+                  '\$',
               border:
                   OutlineInputBorder(),
             ),
-            onChanged: (_) {
+            onChanged:
+                (_) {
               if (_error != null) {
-                setState(() => _error = null);
+                setState(
+                  () => _error =
+                      null,
+                );
               }
             },
-            onSubmitted: (_) => _guardar(),
+            onSubmitted:
+                (_) =>
+                    _guardar(),
           ),
-          const SizedBox(height: 12),
-          DropdownButtonFormField<String?>(
-            initialValue: _formaPago,
+
+          const SizedBox(
+            height:
+                12,
+          ),
+
+          DropdownButtonFormField<
+              String?>(
+            initialValue:
+                _formaPago,
             decoration:
                 const InputDecoration(
               labelText:
@@ -3372,47 +6296,75 @@ class _MovimientoDialogState
                   OutlineInputBorder(),
             ),
             items: [
-              const DropdownMenuItem<String?>(
-                value: null,
+              const DropdownMenuItem<
+                  String?>(
+                value:
+                    null,
                 child:
-                    Text('Sin especificar'),
+                    Text(
+                  'Sin especificar',
+                ),
               ),
               ..._formasPago.map(
-                (m) => DropdownMenuItem<String?>(
-                  value: m,
-                  child: Text(m),
+                (m) =>
+                    DropdownMenuItem<
+                        String?>(
+                  value:
+                      m,
+                  child:
+                      Text(
+                    m,
+                  ),
                 ),
               ),
             ],
-            onChanged: (v) =>
-                setState(
-              () => _formaPago = v,
+            onChanged:
+                (v) =>
+                    setState(
+              () =>
+                  _formaPago =
+                      v,
             ),
           ),
-          if (_error != null) ...[
-            const SizedBox(height: 10),
+
+          if (_error !=
+              null) ...[
+            const SizedBox(
+              height:
+                  10,
+            ),
             Container(
               padding:
-                  const EdgeInsets.symmetric(
-                horizontal: 10,
-                vertical: 8,
+                  const EdgeInsets
+                      .symmetric(
+                horizontal:
+                    10,
+                vertical:
+                    8,
               ),
               decoration:
                   BoxDecoration(
-                color: Colors.red.shade50,
+                color:
+                    Colors.red.shade50,
                 borderRadius:
-                    BorderRadius.circular(6),
-                border: Border.all(
+                    BorderRadius.circular(
+                  6,
+                ),
+                border:
+                    Border.all(
                   color:
                       Colors.red.shade200,
                 ),
               ),
-              child: Text(
+              child:
+                  Text(
                 _error!,
-                style: TextStyle(
+                style:
+                    TextStyle(
                   color:
                       Colors.red.shade700,
-                  fontSize: 13,
+                  fontSize:
+                      13,
                 ),
               ),
             ),
@@ -3421,35 +6373,51 @@ class _MovimientoDialogState
       ),
       actions: [
         TextButton(
-          onPressed: _guardando
-              ? null
-              : () =>
-                  Navigator.of(context)
-                      .pop(),
+          onPressed:
+              _guardando
+                  ? null
+                  : () =>
+                      Navigator.of(
+                        context,
+                      ).pop(),
           child:
-              const Text('Cancelar'),
+              const Text(
+            'Cancelar',
+          ),
         ),
         FilledButton.icon(
-          style: FilledButton.styleFrom(
-            backgroundColor: color,
+          style:
+              FilledButton.styleFrom(
+            backgroundColor:
+                color,
           ),
           onPressed:
-              _guardando ? null : _guardar,
-          icon: _guardando
-              ? const SizedBox(
-                  width: 16,
-                  height: 16,
-                  child:
-                      CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: Colors.white,
-                  ),
-                )
-              : const Icon(
-                  Icons.save_outlined,
-                ),
+              _guardando
+                  ? null
+                  : _guardar,
+          icon:
+              _guardando
+                  ? const SizedBox(
+                      width:
+                          16,
+                      height:
+                          16,
+                      child:
+                          CircularProgressIndicator(
+                        strokeWidth:
+                            2,
+                        color:
+                            Colors.white,
+                      ),
+                    )
+                  : const Icon(
+                      Icons
+                          .save_outlined,
+                    ),
           label:
-              const Text('Guardar'),
+              const Text(
+            'Guardar',
+          ),
         ),
       ],
     );
@@ -3457,10 +6425,11 @@ class _MovimientoDialogState
 }
 
 // ============================================================
-// WIDGETS AUXILIARES
+// BOTÓN FECHA
 // ============================================================
 
-class _DateButton extends StatelessWidget {
+class _DateButton
+    extends StatelessWidget {
   const _DateButton({
     required this.label,
     required this.date,
@@ -3472,63 +6441,102 @@ class _DateButton extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(
+    BuildContext context,
+  ) {
     final cs =
-        Theme.of(context).colorScheme;
+        Theme.of(context)
+            .colorScheme;
 
     final day =
-        date.day.toString().padLeft(2, '0');
+        date.day
+            .toString()
+            .padLeft(
+          2,
+          '0',
+        );
 
     final month =
-        date.month.toString().padLeft(2, '0');
+        date.month
+            .toString()
+            .padLeft(
+          2,
+          '0',
+        );
 
-    final year = date.year.toString();
+    final year =
+        date.year
+            .toString();
 
     return GestureDetector(
-      onTap: onTap,
-      child: Container(
+      onTap:
+          onTap,
+      child:
+          Container(
         padding:
-            const EdgeInsets.symmetric(
-          horizontal: 10,
-          vertical: 8,
+            const EdgeInsets
+                .symmetric(
+          horizontal:
+              10,
+          vertical:
+              8,
         ),
-        decoration: BoxDecoration(
-          border: Border.all(
-            color: cs.outline,
+        decoration:
+            BoxDecoration(
+          border:
+              Border.all(
+            color:
+                cs.outline,
           ),
           borderRadius:
-              BorderRadius.circular(10),
+              BorderRadius.circular(
+            10,
+          ),
         ),
-        child: Row(
+        child:
+            Row(
           children: [
             Icon(
-              Icons.calendar_today_outlined,
-              size: 16,
-              color: cs.primary,
+              Icons
+                  .calendar_today_outlined,
+              size:
+                  16,
+              color:
+                  cs.primary,
             ),
-            const SizedBox(width: 6),
+            const SizedBox(
+              width:
+                  6,
+            ),
             Expanded(
-              child: Column(
+              child:
+                  Column(
                 crossAxisAlignment:
-                    CrossAxisAlignment.start,
+                    CrossAxisAlignment
+                        .start,
                 children: [
                   Text(
                     label,
-                    style: TextStyle(
-                      fontSize: 9,
+                    style:
+                        TextStyle(
+                      fontSize:
+                          9,
                       color:
                           cs.onSurfaceVariant,
                       fontWeight:
-                          FontWeight.w600,
+                          FontWeight
+                              .w600,
                     ),
                   ),
                   Text(
                     '$day/$month/$year',
                     style:
                         const TextStyle(
-                      fontSize: 13,
+                      fontSize:
+                          13,
                       fontWeight:
-                          FontWeight.w700,
+                          FontWeight
+                              .w700,
                     ),
                   ),
                 ],
@@ -3541,7 +6549,12 @@ class _DateButton extends StatelessWidget {
   }
 }
 
-class _InfoTile extends StatelessWidget {
+// ============================================================
+// INFO TILE
+// ============================================================
+
+class _InfoTile
+    extends StatelessWidget {
   const _InfoTile({
     required this.icon,
     required this.label,
@@ -3555,57 +6568,94 @@ class _InfoTile extends StatelessWidget {
   final Color color;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(
+    BuildContext context,
+  ) {
     return Container(
       padding:
-          const EdgeInsets.symmetric(
-        horizontal: 12,
-        vertical: 10,
+          const EdgeInsets
+              .symmetric(
+        horizontal:
+            12,
+        vertical:
+            10,
       ),
       decoration:
           BoxDecoration(
-        color: color.withValues(alpha: 0.08),
+        color:
+            color.withValues(
+          alpha:
+              0.08,
+        ),
         borderRadius:
-            BorderRadius.circular(12),
-        border: Border.all(
+            BorderRadius.circular(
+          12,
+        ),
+        border:
+            Border.all(
           color:
-              color.withValues(alpha: 0.25),
+              color.withValues(
+            alpha:
+                0.25,
+          ),
         ),
       ),
-      child: Row(
+      child:
+          Row(
         children: [
           Icon(
             icon,
-            size: 20,
-            color: color,
+            size:
+                20,
+            color:
+                color,
           ),
-          const SizedBox(width: 8),
+          const SizedBox(
+            width:
+                8,
+          ),
           Expanded(
-            child: Column(
+            child:
+                Column(
               crossAxisAlignment:
-                  CrossAxisAlignment.start,
+                  CrossAxisAlignment
+                      .start,
               children: [
                 Text(
                   label,
-                  style: TextStyle(
-                    fontSize: 10,
-                    color: color,
+                  style:
+                      TextStyle(
+                    fontSize:
+                        10,
+                    color:
+                        color,
                     fontWeight:
-                        FontWeight.w600,
+                        FontWeight
+                            .w600,
                   ),
                 ),
-                const SizedBox(height: 2),
+                const SizedBox(
+                  height:
+                      2,
+                ),
                 FittedBox(
-                  fit: BoxFit.scaleDown,
+                  fit:
+                      BoxFit.scaleDown,
                   alignment:
-                      Alignment.centerLeft,
-                  child: Text(
+                      Alignment
+                          .centerLeft,
+                  child:
+                      Text(
                     value,
-                    style: TextStyle(
-                      fontSize: 16,
+                    style:
+                        TextStyle(
+                      fontSize:
+                          16,
                       fontWeight:
-                          FontWeight.w800,
-                      color: color,
+                          FontWeight
+                              .w800,
+                      color:
+                          color,
                     ),
                   ),
                 ),
@@ -3617,6 +6667,10 @@ class _InfoTile extends StatelessWidget {
     );
   }
 }
+
+// ============================================================
+// ESTADO VENTA
+// ============================================================
 
 enum _SaleBusinessStatus {
   paid,

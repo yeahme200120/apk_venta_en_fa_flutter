@@ -299,7 +299,7 @@ class ApiClient {
       throw Exception(
         parseApiError(
           e.response?.data,
-          fallback: 'No se pudo restablecer la contraseña',
+          fallback: 'No se pudo recuperar la contraseña',
         ),
       );
     }
@@ -330,6 +330,10 @@ class ApiClient {
       );
     }
   }
+
+  // ============================================================
+  // ESTADO OPERATIVO
+  // ============================================================
 
   Future<Map<String, dynamic>> getOperationStatus() async {
     try {
@@ -363,6 +367,10 @@ class ApiClient {
     }
   }
 
+  // ============================================================
+  // CAJA ACTUAL
+  // ============================================================
+
   Future<Map<String, dynamic>?> getCurrentCashRegister() async {
     try {
       final response = await _dio.get(
@@ -392,6 +400,103 @@ class ApiClient {
     }
   }
 
+  // ============================================================
+  // OPERACIONES DE CAJA
+  // ============================================================
+
+  Future<List<Map<String, dynamic>>>
+      getCashOperations({
+    int? cashRegisterId,
+    DateTime? date,
+  }) async {
+    final queryParameters =
+        <String, dynamic>{};
+
+    if (cashRegisterId != null) {
+      queryParameters['caja_id'] =
+          cashRegisterId;
+    }
+
+    if (date != null) {
+      queryParameters['fecha'] =
+          date.toIso8601String();
+    }
+
+    Future<Response<dynamic>> request(
+      String path,
+    ) {
+      return _dio.get(
+        path,
+        queryParameters:
+            queryParameters.isEmpty
+                ? null
+                : queryParameters,
+      );
+    }
+
+    Response<dynamic> response;
+
+    try {
+      response = await request(
+        '/api/v1/cajas/operaciones',
+      );
+    } on DioException catch (e) {
+      // Algunas versiones del backend exponen la ruta singular.
+      if (e.response?.statusCode == 404) {
+        response = await request(
+          '/api/v1/caja/operaciones',
+        );
+      } else {
+        throw Exception(
+          parseApiError(
+            e.response?.data,
+            fallback:
+                'No se pudieron consultar las operaciones de caja',
+          ),
+        );
+      }
+    }
+
+    if (response.statusCode != 200) {
+      throw Exception(
+        'No se pudieron consultar las operaciones de caja',
+      );
+    }
+
+    dynamic payload = response.data;
+
+    if (payload is Map) {
+      payload =
+          payload['data'] ??
+          payload['operaciones'] ??
+          payload['movimientos'] ??
+          payload;
+    }
+
+    if (payload is Map) {
+      payload =
+          payload['data'] ??
+          payload['operaciones'] ??
+          payload['movimientos'] ??
+          payload;
+    }
+
+    if (payload is! List) {
+      return const [];
+    }
+
+    return payload
+        .whereType<Map>()
+        .map(
+          (item) => Map<String, dynamic>.from(item),
+        )
+        .toList();
+  }
+
+  // ============================================================
+  // ABRIR CAJA
+  // ============================================================
+
   Future<Map<String, dynamic>> openCashRegister({
     required double openingAmount,
     String? notes,
@@ -406,6 +511,10 @@ class ApiClient {
       },
     );
   }
+
+  // ============================================================
+  // CERRAR CAJA
+  // ============================================================
 
   Future<Map<String, dynamic>> closeCashRegister({
     required int cashRegisterId,
@@ -423,6 +532,10 @@ class ApiClient {
     );
   }
 
+  // ============================================================
+  // MESAS
+  // ============================================================
+
   Future<List<Map<String, dynamic>>> getTables() async {
     try {
       final response = await _dio.get(
@@ -437,7 +550,9 @@ class ApiClient {
         return data
             .whereType<Map>()
             .map(
-              (item) => Map<String, dynamic>.from(item),
+              (item) => Map<String, dynamic>.from(
+                item,
+              ),
             )
             .toList();
       }
@@ -447,7 +562,8 @@ class ApiClient {
       throw Exception(
         parseApiError(
           e.response?.data,
-          fallback: 'No se pudieron consultar las mesas',
+          fallback:
+              'No se pudieron consultar las mesas',
         ),
       );
     }
@@ -460,7 +576,8 @@ class ApiClient {
     String? notes,
     bool? active,
   }) {
-    final payload = <String, dynamic>{
+    final payload =
+        <String, dynamic>{
       'nombre': name.trim(),
       if (capacity != null)
         'capacidad': capacity,
@@ -483,6 +600,10 @@ class ApiClient {
       payload,
     );
   }
+
+  // ============================================================
+  // OPERACIONES HTTP COMUNES
+  // ============================================================
 
   Future<Map<String, dynamic>> _postOperation(
     String path,
@@ -507,7 +628,8 @@ class ApiClient {
       throw Exception(
         parseApiError(
           e.response?.data,
-          fallback: 'No se pudo completar la operación',
+          fallback:
+              'No se pudo completar la operación',
         ),
       );
     }
@@ -536,7 +658,8 @@ class ApiClient {
       throw Exception(
         parseApiError(
           e.response?.data,
-          fallback: 'No se pudo completar la operación',
+          fallback:
+              'No se pudo completar la operación',
         ),
       );
     }
@@ -616,6 +739,9 @@ class ApiClient {
     }
   }
 
+  // ============================================================
+  // CATÁLOGO
+  // ============================================================
 
   Future<Map<String, dynamic>> getCatalog({
     String? desde,
@@ -623,11 +749,12 @@ class ApiClient {
     try {
       final response = await _dio.get(
         '/api/v1/catalogos',
-        queryParameters: desde == null
-            ? null
-            : {
-                'desde': desde,
-              },
+        queryParameters:
+            desde == null
+                ? null
+                : {
+                    'desde': desde,
+                  },
       );
 
       if (response.statusCode == 200 &&
@@ -648,7 +775,8 @@ class ApiClient {
       throw Exception(
         parseApiError(
           e.response?.data,
-          fallback: 'No se pudo descargar el catálogo',
+          fallback:
+              'No se pudo descargar el catálogo',
         ),
       );
     }
@@ -658,9 +786,14 @@ class ApiClient {
     DateTime? desde,
   }) async {
     return getCatalog(
-      desde: desde?.toIso8601String(),
+      desde:
+          desde?.toIso8601String(),
     );
   }
+
+  // ============================================================
+  // SINCRONIZACIÓN OFFLINE
+  // ============================================================
 
   Future<Map<String, dynamic>> syncOffline(
     Map<String, dynamic> payload,
@@ -698,12 +831,14 @@ class ApiClient {
     try {
       final response = await _dio.get(
         '/api/v1/sync/pull',
-        queryParameters: cursor == null ||
-                cursor.trim().isEmpty
-            ? null
-            : {
-                'cursor': cursor.trim(),
-              },
+        queryParameters:
+            cursor == null ||
+                    cursor.trim().isEmpty
+                ? null
+                : {
+                    'cursor':
+                        cursor.trim(),
+                  },
       );
 
       if (response.statusCode == 200 &&
@@ -720,7 +855,8 @@ class ApiClient {
       throw Exception(
         parseApiError(
           e.response?.data,
-          fallback: 'No se pudieron obtener los cambios',
+          fallback:
+              'No se pudieron obtener los cambios',
         ),
       );
     }
@@ -749,7 +885,8 @@ class ApiClient {
       throw Exception(
         parseApiError(
           e.response?.data,
-          fallback: 'No se pudo completar la sincronización',
+          fallback:
+              'No se pudo completar la sincronización',
         ),
       );
     }
@@ -779,7 +916,8 @@ class ApiClient {
       throw Exception(
         parseApiError(
           e.response?.data,
-          fallback: 'No se pudo sincronizar la venta',
+          fallback:
+              'No se pudo sincronizar la venta',
         ),
       );
     }
@@ -809,7 +947,8 @@ class ApiClient {
       throw Exception(
         parseApiError(
           e.response?.data,
-          fallback: 'No se pudo procesar la devolución',
+          fallback:
+              'No se pudo procesar la devolución',
         ),
       );
     }
@@ -843,13 +982,19 @@ class ApiClient {
       throw Exception(
         parseApiError(
           e.response?.data,
-          fallback: 'No se pudo cancelar la venta',
+          fallback:
+              'No se pudo cancelar la venta',
         ),
       );
     }
   }
 
-  Future<Map<String, dynamic>> getCompanyConfig() async {
+  // ============================================================
+  // CONFIGURACIÓN DE EMPRESA
+  // ============================================================
+
+  Future<Map<String, dynamic>>
+      getCompanyConfig() async {
     try {
       final response = await _dio.get(
         '/api/v1/admin/empresa/config',
@@ -876,7 +1021,8 @@ class ApiClient {
     }
   }
 
-  Future<Map<String, dynamic>> updateCompanyConfig(
+  Future<Map<String, dynamic>>
+      updateCompanyConfig(
     Map<String, dynamic> payload,
   ) async {
     try {
@@ -906,7 +1052,12 @@ class ApiClient {
     }
   }
 
-  Future<Map<String, dynamic>> getTicketConfig() async {
+  // ============================================================
+  // CONFIGURACIÓN DE TICKET
+  // ============================================================
+
+  Future<Map<String, dynamic>>
+      getTicketConfig() async {
     try {
       final response = await _dio.get(
         '/api/v1/ticket/config',
@@ -933,7 +1084,8 @@ class ApiClient {
     }
   }
 
-  Future<Map<String, dynamic>> updateTicketConfig(
+  Future<Map<String, dynamic>>
+      updateTicketConfig(
     Map<String, dynamic> payload,
   ) async {
     try {
@@ -963,7 +1115,12 @@ class ApiClient {
     }
   }
 
-  Future<Map<String, dynamic>> shareDailyReport(
+  // ============================================================
+  // COMPARTIR REPORTE DIARIO
+  // ============================================================
+
+  Future<Map<String, dynamic>>
+      shareDailyReport(
     Map<String, dynamic> payload,
   ) async {
     try {
@@ -986,7 +1143,8 @@ class ApiClient {
       throw Exception(
         parseApiError(
           e.response?.data,
-          fallback: 'No se pudo compartir el reporte',
+          fallback:
+              'No se pudo compartir el reporte',
         ),
       );
     }
