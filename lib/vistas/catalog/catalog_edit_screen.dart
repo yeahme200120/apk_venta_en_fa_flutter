@@ -1,15 +1,10 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+
 import '../../core/database/local_db.dart';
 
 class CatalogEditScreen extends StatefulWidget {
-  final String table;
-  final bool isProduct;
-  final bool isClient;
-  final String catalogTitle;
-  final Map<String, dynamic>? item;
-
   const CatalogEditScreen({
     super.key,
     required this.table,
@@ -19,98 +14,106 @@ class CatalogEditScreen extends StatefulWidget {
     this.item,
   });
 
+  final String table;
+  final bool isProduct;
+  final bool isClient;
+  final String catalogTitle;
+  final Map<String, dynamic>? item;
+
   @override
   State<CatalogEditScreen> createState() => _CatalogEditScreenState();
 }
 
 class _CatalogEditScreenState extends State<CatalogEditScreen> {
-  final LocalDb _db = LocalDb();
-  final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
-  final FocusNode _focusNode = FocusNode();
+  final _formKey = GlobalKey<FormState>();
+
+  final _db = LocalDb();
 
   late final TextEditingController _nameController;
+  late final TextEditingController _codeController;
+  late final TextEditingController _priceController;
+  late final TextEditingController _stockController;
 
-  // CÓDIGO: solo lectura para productos (se genera automáticamente)
-  // Para otros catálogos sigue siendo editable.
-  final TextEditingController _codeController = TextEditingController();
+  late final TextEditingController _emailController;
+  late final TextEditingController _phoneController;
+  late final TextEditingController _rfcController;
 
-  final TextEditingController _priceController = TextEditingController();
-  final TextEditingController _stockController = TextEditingController();
-  final TextEditingController _emailController = TextEditingController();
-  final TextEditingController _phoneController = TextEditingController();
-  final TextEditingController _rfcController = TextEditingController();
-  final TextEditingController _rateController = TextEditingController();
+  late final TextEditingController _rateController;
 
-  bool _isSaving = false;
-  bool _isDisposed = false;
+  bool _saving = false;
 
-  // ============================================================
-  // INVENTARIABLE
-  // ============================================================
-  // true = el producto maneja stock; false = no inventariable
-  bool _esInventariable = true;
+  bool _esInventariable = false;
 
-  // ============================================================
-  // CATEGORÍAS
-  // ============================================================
-
-  List<Map<String, dynamic>> _categories = [];
+  List<Map<String, dynamic>> _categories = const [];
   int? _selectedCategoryId;
   bool _loadingCategories = false;
 
-  // ============================================================
-  // CICLO DE VIDA
-  // ============================================================
+  bool get _isEditing => widget.item != null;
+
+  bool get _isCategory =>
+      widget.table == 'categories' && !widget.isProduct && !widget.isClient;
 
   @override
   void initState() {
     super.initState();
 
+    final item = widget.item ?? {};
+
     _nameController = TextEditingController(
-      text: widget.item?['name']?.toString() ??
-          widget.item?['nombre']?.toString() ??
-          '',
+      text: _stringValue(item, ['name', 'nombre']),
     );
 
-    // Para productos el código se lee como referencia pero no se edita manualmente
-    _codeController.text = widget.item?['code']?.toString() ??
-        widget.item?['codigo']?.toString() ??
-        '';
+    _codeController = TextEditingController(
+      text: _stringValue(item, ['code', 'codigo', 'sku']),
+    );
 
-    _priceController.text = widget.item?['price']?.toString() ??
-        widget.item?['precio']?.toString() ??
-        '';
+    _priceController = TextEditingController(
+      text: _numberText(item['price'] ?? item['precio']),
+    );
 
-    final stockRaw = _toDouble(widget.item?['stock']);
-    _stockController.text = widget.item != null ? stockRaw.toStringAsFixed(0) : '0';
+    _stockController = TextEditingController(
+      text: _numberText(item['stock'] ?? item['existencia']),
+    );
 
-    // Determinar si es inventariable.
-    // Si el item ya existe y tiene stock == null o is_inventariable == false → no inventariable.
-    if (widget.item != null && widget.isProduct) {
-      final inv = widget.item!['is_inventariable'] ??
-          widget.item!['inventariable'];
-      if (inv != null) {
-        _esInventariable = _toBool(inv);
-      } else {
-        // Por defecto: si ya tiene stock registrado asumimos inventariable
-        _esInventariable = stockRaw > 0;
-      }
+    final existingInventory = item['is_inventariable'] ?? item['inventariable'];
+
+    if (existingInventory != null) {
+      _esInventariable = _boolValue(existingInventory);
+    } else if (widget.isProduct && _isEditing) {
+      final stock = _toDouble(item['stock'] ?? item['existencia']);
+
+      _esInventariable = stock > 0;
     }
 
-    _emailController.text = widget.item?['email']?.toString() ?? '';
-    _phoneController.text = widget.item?['phone']?.toString() ?? '';
-    _rfcController.text = widget.item?['rfc']?.toString() ?? '';
-    _rateController.text = widget.item?['rate']?.toString() ?? '';
+    _emailController = TextEditingController(
+      text: _stringValue(item, ['email', 'correo']),
+    );
+
+    _phoneController = TextEditingController(
+      text: _stringValue(item, ['phone', 'telefono', 'teléfono']),
+    );
+
+    _rfcController = TextEditingController(text: _stringValue(item, ['rfc']));
+
+    _rateController = TextEditingController(
+      text: _numberText(item['rate'] ?? item['tasa'] ?? item['porcentaje']),
+    );
 
     if (widget.isProduct) {
       _selectedCategoryId = _getExistingCategoryId();
+
       _loadCategories();
+    }
+
+    if (_isCategory && !_isEditing) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _generateCategoryCode();
+      });
     }
   }
 
   @override
   void dispose() {
-    _isDisposed = true;
     _nameController.dispose();
     _codeController.dispose();
     _priceController.dispose();
@@ -119,672 +122,832 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
     _phoneController.dispose();
     _rfcController.dispose();
     _rateController.dispose();
-    _focusNode.dispose();
     super.dispose();
   }
 
-  void _safeSetState(VoidCallback fn) {
-    if (_isDisposed || !mounted) return;
-    setState(fn);
+  // ===========================================================================
+  // HELPERS
+  // ===========================================================================
+
+  String _stringValue(Map<String, dynamic> data, List<String> keys) {
+    for (final key in keys) {
+      final value = data[key];
+
+      if (value == null) {
+        continue;
+      }
+
+      final text = value.toString().trim();
+
+      if (text.isNotEmpty) {
+        return text;
+      }
+    }
+
+    return '';
   }
 
-  // ============================================================
-  // CATEGORÍAS — CARGA
-  // ============================================================
+  double _toDouble(dynamic value) {
+    if (value is num) {
+      return value.toDouble();
+    }
+
+    return double.tryParse(value?.toString().replaceAll(',', '.') ?? '') ?? 0;
+  }
+
+  String _numberText(dynamic value) {
+    if (value == null) {
+      return '';
+    }
+
+    final number = _toDouble(value);
+
+    if (number == 0) {
+      return '';
+    }
+
+    if (number == number.roundToDouble()) {
+      return number.toInt().toString();
+    }
+
+    return number.toString();
+  }
+
+  bool _boolValue(dynamic value) {
+    if (value is bool) {
+      return value;
+    }
+
+    if (value is num) {
+      return value != 0;
+    }
+
+    final text = value?.toString().trim().toLowerCase() ?? '';
+
+    return text == '1' ||
+        text == 'true' ||
+        text == 'si' ||
+        text == 'sí' ||
+        text == 'yes';
+  }
 
   int? _getExistingCategoryId() {
-    final directValues = [
-      widget.item?['categoria_id'],
-      widget.item?['category_id'],
-      widget.item?['categoryId'],
-    ];
-    for (final value in directValues) {
-      final id = _toIntOrNull(value);
-      if (id != null) return id;
+    final item = widget.item ?? {};
+
+    final directKeys = ['categoria_id', 'category_id', 'categoryId'];
+
+    for (final key in directKeys) {
+      final value = item[key];
+
+      if (value != null) {
+        final parsed = int.tryParse(value.toString());
+
+        if (parsed != null && parsed > 0) {
+          return parsed;
+        }
+      }
     }
-    final raw = widget.item?['data_json'];
-    if (raw is String && raw.trim().isNotEmpty) {
+
+    final dataJson = item['data_json'];
+
+    if (dataJson is String && dataJson.trim().isNotEmpty) {
       try {
-        final decoded = jsonDecode(raw);
+        final decoded = jsonDecode(dataJson);
+
         if (decoded is Map) {
-          for (final key in ['categoria_id', 'category_id', 'categoryId']) {
-            final id = _toIntOrNull(decoded[key]);
-            if (id != null) return id;
+          for (final key in directKeys) {
+            final value = decoded[key];
+
+            if (value != null) {
+              final parsed = int.tryParse(value.toString());
+
+              if (parsed != null && parsed > 0) {
+                return parsed;
+              }
+            }
           }
         }
-      } catch (_) {}
+      } catch (_) {
+        // Ignorar JSON inválido.
+      }
     }
+
     return null;
   }
 
+  // ===========================================================================
+  // CATEGORIES
+  // ===========================================================================
+
   Future<void> _loadCategories() async {
-    if (_isDisposed || !mounted) return;
-    _safeSetState(() => _loadingCategories = true);
-
-    try {
-      final categories = await _db.getCategories();
-      if (_isDisposed || !mounted) return;
-
-      _safeSetState(() {
-        _categories =
-            categories.map((e) => Map<String, dynamic>.from(e)).toList();
-        _loadingCategories = false;
-
-        if (_selectedCategoryId != null) {
-          final exists = _categories.any(
-            (c) => _toIntOrNull(c['id']) == _selectedCategoryId,
-          );
-          if (!exists) _selectedCategoryId = null;
-        }
-      });
-    } catch (_) {
-      if (_isDisposed || !mounted) return;
-      _safeSetState(() => _loadingCategories = false);
-    }
-  }
-
-  // ============================================================
-  // GENERACIÓN AUTOMÁTICA DE CÓDIGO
-  // ============================================================
-
-  /// Al cambiar la categoría seleccionada, genera el código del producto.
-  /// Formato: [clave_categoría][consecutivo 3 dígitos]
-  /// Ejemplo: BEB → BEB001, BEB002 …
-  Future<void> _onCategoryChanged(int? newId) async {
-    if (newId == _selectedCategoryId) return;
-
-    _safeSetState(() {
-      _selectedCategoryId = newId;
-      _codeController.text = ''; // limpia mientras genera
-    });
-
-    if (newId == null) return;
-
-    try {
-      // Clave de la categoría (campo code o nombre truncado)
-      final cat = _categories.firstWhere(
-        (c) => _toIntOrNull(c['id']) == newId,
-        orElse: () => <String, dynamic>{},
-      );
-
-      final catCode = (cat['code']?.toString().trim().isNotEmpty == true
-              ? cat['code'].toString().trim()
-              : (cat['name']?.toString().trim() ?? ''))
-          .toUpperCase()
-          .replaceAll(RegExp(r'[^A-Z0-9]'), '')
-          .substring(0, cat['code']?.toString().trim().isNotEmpty == true
-              ? (cat['code'] as String).trim().length.clamp(0, 6)
-              : (cat['name']?.toString().trim().length ?? 0).clamp(0, 4));
-
-      // Contar productos existentes en esa categoría para el consecutivo
-      final allProducts = await _db.getAllProducts();
-      int count = 0;
-      for (final p in allProducts) {
-        final dataJson = p['data_json'];
-        if (dataJson is String && dataJson.trim().isNotEmpty) {
-          try {
-            final decoded = jsonDecode(dataJson);
-            if (decoded is Map) {
-              final catId = _toIntOrNull(decoded['categoria_id'] ?? decoded['category_id']);
-              if (catId == newId) count++;
-            }
-          } catch (_) {}
-        }
-      }
-
-      // Si estamos editando un producto existente, su slot ya está ocupado → no sumar
-      final isNew = widget.item == null;
-      final nextNum = isNew ? count + 1 : count;
-      final code =
-          '${catCode.isEmpty ? 'PRD' : catCode}${nextNum.toString().padLeft(3, '0')}';
-
-      if (!_isDisposed && mounted) {
-        _safeSetState(() => _codeController.text = code);
-      }
-    } catch (_) {
-      // Si falla la generación, no bloquear al usuario
-    }
-  }
-
-  // ============================================================
-  // GUARDAR
-  // ============================================================
-
-  Future<void> _save() async {
-    if (!_formKey.currentState!.validate()) return;
-    if (_isSaving) return;
-
-    if (widget.isProduct && _selectedCategoryId == null) {
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(const SnackBar(
-          content: Text('Debes seleccionar una categoría.'),
-          behavior: SnackBarBehavior.floating,
-        ));
+    if (!widget.isProduct) {
       return;
     }
 
-    _safeSetState(() => _isSaving = true);
+    setState(() {
+      _loadingCategories = true;
+    });
 
     try {
-      final isNew = widget.item == null;
-      final id = isNew ? null : _toIntOrNull(widget.item!['id']);
+      final rows = await _db.getCategories();
 
+      if (!mounted) {
+        return;
+      }
+
+      final categories = rows
+          .map((row) => Map<String, dynamic>.from(row))
+          .toList();
+
+      var selected = _selectedCategoryId;
+
+      if (selected != null &&
+          !categories.any((category) => _toInt(category['id']) == selected)) {
+        selected = null;
+      }
+
+      setState(() {
+        _categories = categories;
+        _selectedCategoryId = selected;
+        _loadingCategories = false;
+      });
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _loadingCategories = false;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudieron cargar las categorías: $e')),
+      );
+    }
+  }
+
+  // ===========================================================================
+  // PRODUCT CODE
+  // ===========================================================================
+
+  String _buildCategoryPrefix(Map<String, dynamic>? category) {
+    final raw = _stringValue(category ?? const {}, [
+      'name',
+      'nombre',
+      'code',
+      'codigo',
+    ]);
+
+    if (raw.isEmpty) {
+      return 'PRD';
+    }
+
+    final normalized = _removeAccents(raw.toUpperCase())
+        .replaceAll(RegExp(r'[^A-Z0-9\s]'), ' ');
+
+    final words = normalized
+        .split(RegExp(r'\s+'))
+        .where((word) => word.isNotEmpty)
+        .toList();
+
+    if (words.isEmpty) {
+      return 'PRD';
+    }
+
+    var prefix = words.first.substring(
+      0,
+      words.first.length >= 3 ? 3 : words.first.length,
+    );
+
+    if (prefix.length < 3 && words.length > 1) {
+      for (final word in words.skip(1)) {
+        if (prefix.length >= 3) {
+          break;
+        }
+
+        prefix += word.substring(0, (3 - prefix.length).clamp(0, word.length));
+      }
+    }
+
+    while (prefix.length < 3) {
+      prefix += 'X';
+    }
+
+    return prefix.substring(0, 3);
+  }
+
+  String _removeAccents(String value) {
+    return value
+        .replaceAll('Á', 'A')
+        .replaceAll('É', 'E')
+        .replaceAll('Í', 'I')
+        .replaceAll('Ó', 'O')
+        .replaceAll('Ú', 'U')
+        .replaceAll('Ü', 'U')
+        .replaceAll('Ñ', 'N');
+  }
+
+  Future<int> _getNextProductSequence(String prefix) async {
+    final products = await _db.getAllProducts();
+
+    var max = 0;
+
+    for (final product in products) {
+      final code = product['code']?.toString().trim() ?? '';
+
+      final match = RegExp('^${RegExp.escape(prefix)}-(\\d{3})\$')
+          .firstMatch(code);
+
+      if (match != null) {
+        final number = int.tryParse(match.group(1) ?? '') ?? 0;
+
+        if (number > max) {
+          max = number;
+        }
+
+        continue;
+      }
+
+      final legacyMatch = RegExp('^${RegExp.escape(prefix)}(\\d{3})\$')
+          .firstMatch(code);
+
+      if (legacyMatch != null) {
+        final number = int.tryParse(legacyMatch.group(1) ?? '') ?? 0;
+
+        if (number > max) {
+          max = number;
+        }
+      }
+    }
+
+    return max + 1;
+  }
+
+  Future<String> _generateProductCode(int categoryId) async {
+    Map<String, dynamic>? category;
+
+    for (final item in _categories) {
+      if (_toInt(item['id']) == categoryId) {
+        category = item;
+        break;
+      }
+    }
+
+    final prefix = _buildCategoryPrefix(category);
+
+    final sequence = await _getNextProductSequence(prefix);
+
+    return '$prefix-${sequence.toString().padLeft(3, '0')}';
+  }
+
+  Future<void> _onCategoryChanged(int? value) async {
+    setState(() {
+      _selectedCategoryId = value;
+    });
+
+    // Solo generamos código automáticamente
+    // al crear un producto nuevo.
+    if (!_isEditing && value != null) {
+      try {
+        final code = await _generateProductCode(value);
+
+        if (!mounted) {
+          return;
+        }
+
+        setState(() {
+          _codeController.text = code;
+        });
+      } catch (_) {
+        // El guardado seguirá validando
+        // los datos aunque falle la generación.
+      }
+    }
+  }
+
+  // ===========================================================================
+  // CATEGORY CODE
+  // ===========================================================================
+
+  Future<void> _generateCategoryCode() async {
+    if (!_isCategory || _isEditing) {
+      return;
+    }
+
+    final name = _nameController.text.trim();
+
+    if (name.isEmpty) {
+      if (_codeController.text.isNotEmpty) {
+        setState(() {
+          _codeController.clear();
+        });
+      }
+
+      return;
+    }
+
+    try {
+      final code = await _db.getNextCategoryCode(name);
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _codeController.text = code;
+      });
+    } catch (_) {
+      // El guardado volverá a intentar generar
+      // la clave si fuera necesario.
+    }
+  }
+
+  // ===========================================================================
+  // SAVE
+  // ===========================================================================
+
+  Future<void> _save() async {
+    if (!_formKey.currentState!.validate()) {
+      return;
+    }
+
+    final name = _nameController.text.trim();
+
+    if (name.isEmpty) {
+      return;
+    }
+
+    if (widget.isProduct && _selectedCategoryId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Selecciona una categoría para el producto.'),
+        ),
+      );
+
+      return;
+    }
+
+    setState(() {
+      _saving = true;
+    });
+
+    try {
       if (widget.isProduct) {
-        final price = double.tryParse(_priceController.text.trim()) ?? 0;
-        final stock = _esInventariable
-            ? (double.tryParse(_stockController.text.trim()) ?? 0)
+        final price = _toDouble(_priceController.text);
+
+        final double stock = _esInventariable
+            ? _toDouble(_stockController.text)
             : 0.0;
 
-        final Map<String, dynamic> productData = _getExistingProductData();
-        productData['categoria_id'] = _selectedCategoryId;
-        productData['is_inventariable'] = _esInventariable;
+        final data = _existingProductData();
 
-        if (isNew) {
-          await _db.createProduct(
-            code: _codeController.text.trim(),
-            name: _nameController.text.trim(),
+        data['categoria_id'] = _selectedCategoryId;
+
+        data['is_inventariable'] = _esInventariable;
+
+        var code = _codeController.text.trim();
+
+        if (code.isEmpty && _selectedCategoryId != null) {
+          code = await _generateProductCode(_selectedCategoryId!);
+
+          _codeController.text = code;
+        }
+
+        if (_isEditing) {
+          final localId = _toInt(widget.item!['id']);
+
+          await _db.updateProduct(
+            id: localId,
+            serverId: _nullableInt(
+              widget.item!['server_id'] ?? widget.item!['serverId'],
+            ),
+            categoryId: _selectedCategoryId,
+            code: code,
+            name: name,
             price: price,
             stock: stock,
-            data: productData,
+            isActive: true,
+            data: data,
           );
         } else {
-          if (id == null) throw Exception('ID inválido');
-          await _db.updateProduct(
-            id: id,
-            code: _codeController.text.trim(),
-            name: _nameController.text.trim(),
+          await _db.createProduct(
+            categoryId: _selectedCategoryId,
+            code: code,
+            name: name,
             price: price,
             stock: stock,
-            data: productData,
+            isActive: true,
+            data: data,
           );
         }
 
-        // Notificar al POS para que recargue el catálogo en tiempo real (tarea 3)
         LocalDb.notifySalesChanged();
       } else if (widget.isClient) {
-        if (isNew) {
-          await _db.createClient(
-            name: _nameController.text.trim(),
-            email: _emailController.text.trim(),
-            phone: _phoneController.text.trim(),
-            rfc: _rfcController.text.trim(),
+        final data = <String, dynamic>{
+          'email': _emailController.text.trim(),
+          'phone': _phoneController.text.trim(),
+          'rfc': _rfcController.text.trim(),
+        };
+
+        if (_isEditing) {
+          await _db.updateCatalogItem(
+            table: widget.table,
+            id: _toInt(widget.item!['id']),
+            name: name,
+            code: _codeController.text.trim(),
+            data: data,
           );
         } else {
-          if (id == null) throw Exception('ID inválido');
-          await _db.updateClient(
-            id: id,
-            name: _nameController.text.trim(),
-            email: _emailController.text.trim(),
-            phone: _phoneController.text.trim(),
-            rfc: _rfcController.text.trim(),
+          await _db.createCatalogItem(
+            table: widget.table,
+            name: name,
+            code: _codeController.text.trim(),
+            data: data,
           );
         }
       } else {
-        final rate = _rateController.text.trim().isNotEmpty
-            ? double.tryParse(_rateController.text.trim()) ?? 0.0
-            : null;
+        final rate = _toDouble(_rateController.text);
 
-        if (isNew) {
-          await _db.createCatalogItem(
+        var code = _codeController.text.trim();
+
+        // Las categorías nuevas reciben una clave
+        // automática. Las categorías existentes
+        // conservan su clave actual.
+        if (_isCategory && !_isEditing) {
+          if (code.isEmpty) {
+            code = await _db.getNextCategoryCode(name);
+
+            _codeController.text = code;
+          }
+        }
+
+        if (_isEditing) {
+          await _db.updateCatalogItem(
             table: widget.table,
-            name: _nameController.text.trim(),
-            code: _codeController.text.trim(),
+            id: _toInt(widget.item!['id']),
+            name: name,
+            code: code,
             rate: rate,
           );
         } else {
-          if (id == null) throw Exception('ID inválido');
-          await _db.updateCatalogItem(
+          await _db.createCatalogItem(
             table: widget.table,
-            id: id,
-            name: _nameController.text.trim(),
-            code: _codeController.text.trim(),
+            name: name,
+            code: code,
             rate: rate,
           );
         }
       }
 
-      if (_isDisposed || !mounted) return;
+      if (!mounted) {
+        return;
+      }
+
       Navigator.of(context).pop(true);
     } catch (e) {
-      if (_isDisposed || !mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Error al guardar: $e'),
-        behavior: SnackBarBehavior.floating,
-      ));
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('No se pudo guardar: $e')));
     } finally {
-      _safeSetState(() => _isSaving = false);
+      if (mounted) {
+        setState(() {
+          _saving = false;
+        });
+      }
     }
   }
 
-  // ============================================================
-  // UTILIDADES
-  // ============================================================
-
-  Map<String, dynamic> _getExistingProductData() {
-    final result = <String, dynamic>{};
+  Map<String, dynamic> _existingProductData() {
     final raw = widget.item?['data_json'];
+
+    if (raw is Map) {
+      return Map<String, dynamic>.from(raw);
+    }
+
     if (raw is String && raw.trim().isNotEmpty) {
       try {
         final decoded = jsonDecode(raw);
-        if (decoded is Map) result.addAll(Map<String, dynamic>.from(decoded));
-      } catch (_) {}
+
+        if (decoded is Map) {
+          return Map<String, dynamic>.from(decoded);
+        }
+      } catch (_) {
+        // Ignorar JSON inválido.
+      }
     }
-    return result;
+
+    return {};
   }
 
-  int? _toIntOrNull(dynamic v) {
-    if (v == null) return null;
-    if (v is int) return v;
-    if (v is num) return v.toInt();
-    final t = v.toString().trim();
-    return t.isEmpty ? null : int.tryParse(t);
+  int _toInt(dynamic value) {
+    if (value is int) {
+      return value;
+    }
+
+    if (value is num) {
+      return value.toInt();
+    }
+
+    return int.tryParse(value?.toString() ?? '') ?? 0;
   }
 
-  double _toDouble(dynamic v) {
-    if (v is num) return v.toDouble();
-    return double.tryParse(v?.toString().trim() ?? '') ?? 0;
+  int? _nullableInt(dynamic value) {
+    final parsed = _toInt(value);
+
+    return parsed > 0 ? parsed : null;
   }
 
-  bool _toBool(dynamic v) {
-    if (v is bool) return v;
-    if (v is num) return v != 0;
-    final s = v?.toString().trim().toLowerCase();
-    return s == '1' || s == 'true' || s == 'si' || s == 'yes';
-  }
-
-  String? _required(String? v) =>
-      (v == null || v.trim().isEmpty) ? 'Requerido' : null;
-
-  String? _number(String? v) {
-    if (v == null || v.trim().isEmpty) return 'Requerido';
-    return double.tryParse(v.trim()) == null ? 'Número inválido' : null;
-  }
-
-  // ============================================================
-  // BUILD
-  // ============================================================
+  // ===========================================================================
+  // UI
+  // ===========================================================================
 
   @override
   Widget build(BuildContext context) {
-    final isNew = widget.item == null;
-    final isTax = widget.table == 'taxes';
-
-    final title = isNew
-        ? 'Nuevo ${widget.catalogTitle.toLowerCase()}'
-        : 'Editar ${widget.item?['name']?.toString() ?? widget.item?['nombre']?.toString() ?? 'registro'}';
+    final isProduct = widget.isProduct;
+    final isClient = widget.isClient;
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(title, overflow: TextOverflow.ellipsis),
-        actions: [
-          if (_isSaving)
-            const Padding(
-              padding: EdgeInsets.only(right: 16),
-              child: SizedBox(
-                width: 20,
-                height: 20,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              ),
-            ),
-        ],
+        title: Text(
+          _isEditing
+              ? 'Editar ${widget.catalogTitle}'
+              : 'Nuevo ${widget.catalogTitle}',
+        ),
       ),
       body: SafeArea(
-        child: Focus(
-          focusNode: _focusNode,
-          child: Form(
-            key: _formKey,
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(20),
-              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  // ── NOMBRE ────────────────────────────────────
-                  TextFormField(
-                    controller: _nameController,
+        child: Form(
+          key: _formKey,
+          child: ListView(
+            padding: const EdgeInsets.all(20),
+            children: [
+              TextFormField(
+                controller: _nameController,
+                textInputAction: TextInputAction.next,
+                onChanged: (value) {
+                  if (_isCategory && !_isEditing) {
+                    _generateCategoryCode();
+                  }
+                },
+                decoration: const InputDecoration(
+                  labelText: 'Nombre',
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) {
+                  if (value == null || value.trim().isEmpty) {
+                    return 'Ingresa un nombre.';
+                  }
+
+                  return null;
+                },
+              ),
+
+              // =================================================================
+              // CLAVE AUTOMÁTICA DE CATEGORÍA
+              // =================================================================
+              if (_isCategory)
+                Padding(
+                  padding: const EdgeInsets.only(top: 16),
+                  child: InputDecorator(
                     decoration: const InputDecoration(
-                      labelText: 'Nombre',
-                      prefixIcon: Icon(Icons.label_outline),
+                      labelText: 'Clave de categoría',
                       border: OutlineInputBorder(),
                     ),
-                    validator: _required,
-                    textInputAction: TextInputAction.next,
-                    onFieldSubmitted: (_) =>
-                        FocusScope.of(context).nextFocus(),
-                  ),
-
-                  const SizedBox(height: 16),
-
-                  // ── CÓDIGO: editable solo para catálogos NO producto ──
-                  if (!widget.isClient && !widget.isProduct) ...[
-                    TextFormField(
-                      controller: _codeController,
-                      decoration: const InputDecoration(
-                        labelText: 'Código / Clave',
-                        prefixIcon: Icon(Icons.code),
-                        border: OutlineInputBorder(),
-                      ),
-                      textInputAction: TextInputAction.next,
-                      onFieldSubmitted: (_) =>
-                          FocusScope.of(context).nextFocus(),
-                    ),
-                    const SizedBox(height: 16),
-                  ],
-
-                  // ══════════════════════════════════════════════
-                  // SECCIÓN PRODUCTO
-                  // ══════════════════════════════════════════════
-
-                  if (widget.isProduct) ...[
-                    // ── CATEGORÍA (obligatoria) ────────────────
-                    if (_loadingCategories)
-                      const InputDecorator(
-                        decoration: InputDecoration(
-                          labelText: 'Categoría *',
-                          prefixIcon: Icon(Icons.category_outlined),
-                          border: OutlineInputBorder(),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            _codeController.text.trim().isEmpty
+                                ? 'Se generará automáticamente'
+                                : _codeController.text.trim(),
+                            style: const TextStyle(fontWeight: FontWeight.w700),
+                          ),
                         ),
-                        child: Row(
-                          children: [
-                            SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            ),
-                            SizedBox(width: 10),
-                            Text('Cargando categorías...'),
-                          ],
+                        if (!_isEditing)
+                          const Icon(Icons.auto_awesome_rounded, size: 20),
+                      ],
+                    ),
+                  ),
+                ),
+
+              const SizedBox(height: 16),
+
+              // =================================================================
+              // CÓDIGO MANUAL PARA OTROS CATÁLOGOS
+              // =================================================================
+              if (!isClient && !isProduct && !_isCategory)
+                TextFormField(
+                  controller: _codeController,
+                  textInputAction: TextInputAction.next,
+                  decoration: const InputDecoration(
+                    labelText: 'Código / clave',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+
+              if (!isClient && !isProduct && !_isCategory)
+                const SizedBox(height: 16),
+
+              // =================================================================
+              // PRODUCTO
+              // =================================================================
+              if (isProduct) ...[
+                DropdownButtonFormField<int>(
+                  value: _selectedCategoryId,
+                  isExpanded: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Categoría',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: _categories
+                      .map(
+                        (category) => DropdownMenuItem<int>(
+                          value: _toInt(category['id']),
+                          child: Text(
+                            _stringValue(category, ['name', 'nombre']),
+                          ),
                         ),
                       )
-                    else
-                      DropdownButtonFormField<int>(
-                        initialValue: _selectedCategoryId,
-                        decoration: const InputDecoration(
-                          labelText: 'Categoría *',
-                          prefixIcon: Icon(Icons.category_outlined),
-                          border: OutlineInputBorder(),
-                        ),
-                        items: _categories
-                            .map((category) {
-                              final id = _toIntOrNull(category['id']);
-                              final name =
-                                  (category['name'] ?? category['nombre'] ?? '')
-                                      .toString();
-                              if (id == null) return null;
-                              return DropdownMenuItem<int>(
-                                value: id,
-                                child: Text(
-                                  name.isEmpty ? 'Sin nombre' : name,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              );
-                            })
-                            .whereType<DropdownMenuItem<int>>()
-                            .toList(),
-                        onChanged: _isSaving ? null : _onCategoryChanged,
-                        validator: (value) =>
-                            value == null ? 'Selecciona una categoría' : null,
-                      ),
+                      .toList(),
+                  onChanged: _loadingCategories ? null : _onCategoryChanged,
+                  validator: (_) {
+                    if (_selectedCategoryId == null) {
+                      return 'Selecciona una categoría.';
+                    }
 
-                    const SizedBox(height: 16),
+                    return null;
+                  },
+                ),
 
-                    // ── AVISO: sin categorías ──────────────────
-                    if (!_loadingCategories && _categories.isEmpty) ...[
-                      Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: Theme.of(context).colorScheme.errorContainer,
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Icon(Icons.warning_amber_outlined,
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onErrorContainer),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Text(
-                                'No hay categorías activas. Crea una categoría antes de guardar el producto.',
-                                style: TextStyle(
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onErrorContainer),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                    ],
+                if (_loadingCategories)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 8),
+                    child: LinearProgressIndicator(),
+                  ),
 
-                    // ── CÓDIGO GENERADO (solo lectura) ─────────
-                    if (_codeController.text.isNotEmpty) ...[
-                      InputDecorator(
-                        decoration: InputDecoration(
-                          labelText: 'Código (generado automáticamente)',
-                          prefixIcon: const Icon(Icons.qr_code_outlined),
-                          border: const OutlineInputBorder(),
-                          filled: true,
-                          fillColor:
-                              Theme.of(context).colorScheme.surfaceContainerHighest,
-                        ),
-                        child: Text(
-                          _codeController.text,
-                          style: const TextStyle(
-                              fontWeight: FontWeight.w600, fontSize: 15),
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                    ],
+                if (!_loadingCategories && _categories.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 8),
+                    child: Text(
+                      'No hay categorías disponibles. '
+                      'Crea una categoría antes de registrar productos.',
+                    ),
+                  ),
 
-                    // ── PRECIO ────────────────────────────────
-                    TextFormField(
-                      controller: _priceController,
+                if (_codeController.text.trim().isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 12),
+                    child: InputDecorator(
                       decoration: const InputDecoration(
-                        labelText: 'Precio',
-                        prefixIcon: Icon(Icons.attach_money),
+                        labelText: 'Código generado',
                         border: OutlineInputBorder(),
                       ),
+                      child: Text(
+                        _codeController.text.trim(),
+                        style: const TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                  ),
+
+                const SizedBox(height: 16),
+
+                TextFormField(
+                  controller: _priceController,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  decoration: const InputDecoration(
+                    labelText: 'Precio',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+
+                const SizedBox(height: 16),
+
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Maneja inventario'),
+                  subtitle: const Text(
+                    'Permite controlar existencias de este producto.',
+                  ),
+                  value: _esInventariable,
+                  onChanged: (value) {
+                    setState(() {
+                      _esInventariable = value;
+
+                      if (!value) {
+                        _stockController.clear();
+                      }
+                    });
+                  },
+                ),
+
+                if (_esInventariable)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: TextFormField(
+                      controller: _stockController,
                       keyboardType: const TextInputType.numberWithOptions(
-                          decimal: true),
-                      validator: _number,
-                      textInputAction: TextInputAction.next,
-                      onFieldSubmitted: (_) =>
-                          FocusScope.of(context).nextFocus(),
-                    ),
-
-                    const SizedBox(height: 16),
-
-                    // ── INVENTARIABLE / NO INVENTARIABLE ───────
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 14, vertical: 10),
-                      decoration: BoxDecoration(
-                        border: Border.all(
-                            color: Theme.of(context).colorScheme.outline),
-                        borderRadius: BorderRadius.circular(8),
+                        decimal: true,
                       ),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.warehouse_outlined,
-                              color: Colors.grey, size: 22),
-                          const SizedBox(width: 12),
-                          const Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  '¿El producto maneja inventario?',
-                                  style: TextStyle(
-                                      fontWeight: FontWeight.w600,
-                                      fontSize: 14),
-                                ),
-                                SizedBox(height: 2),
-                                Text(
-                                  'Si es inventariable, se controlará el stock al vender.',
-                                  style: TextStyle(
-                                      fontSize: 11, color: Colors.black54),
-                                ),
-                              ],
-                            ),
-                          ),
-                          Switch(
-                            value: _esInventariable,
-                            onChanged: _isSaving
-                                ? null
-                                : (value) => _safeSetState(
-                                    () => _esInventariable = value),
-                            activeThumbColor: Theme.of(context).colorScheme.primary,
-                          ),
-                        ],
+                      decoration: const InputDecoration(
+                        labelText: 'Existencia inicial',
+                        border: OutlineInputBorder(),
                       ),
                     ),
+                  ),
+              ],
 
-                    const SizedBox(height: 12),
+              // =================================================================
+              // CLIENTE
+              // =================================================================
+              if (isClient) ...[
+                const SizedBox(height: 16),
 
-                    // ── EXISTENCIA (solo si inventariable) ────
-                    AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 200),
-                      child: _esInventariable
-                          ? TextFormField(
-                              key: const ValueKey('stock_enabled'),
-                              controller: _stockController,
-                              decoration: const InputDecoration(
-                                labelText: 'Existencia inicial',
-                                prefixIcon:
-                                    Icon(Icons.warehouse_outlined),
-                                border: OutlineInputBorder(),
-                              ),
-                              keyboardType:
-                                  const TextInputType.numberWithOptions(
-                                      decimal: true),
-                              validator: _number,
+                TextFormField(
+                  controller: _emailController,
+                  keyboardType: TextInputType.emailAddress,
+                  decoration: const InputDecoration(
+                    labelText: 'Correo',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+
+                const SizedBox(height: 16),
+
+                TextFormField(
+                  controller: _phoneController,
+                  keyboardType: TextInputType.phone,
+                  decoration: const InputDecoration(
+                    labelText: 'Teléfono',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+
+                const SizedBox(height: 16),
+
+                TextFormField(
+                  controller: _rfcController,
+                  decoration: const InputDecoration(
+                    labelText: 'RFC',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ],
+
+              // =================================================================
+              // IMPUESTOS
+              // =================================================================
+              if (widget.table == 'taxes') ...[
+                const SizedBox(height: 16),
+
+                TextFormField(
+                  controller: _rateController,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  decoration: const InputDecoration(
+                    labelText: 'Tasa (%)',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ],
+
+              const SizedBox(height: 28),
+
+              // =================================================================
+              // BOTONES
+              // =================================================================
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: _saving
+                          ? null
+                          : () => Navigator.of(context).pop(),
+                      child: const Text('Cancelar'),
+                    ),
+                  ),
+
+                  const SizedBox(width: 12),
+
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: _saving ? null : _save,
+                      child: _saving
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
                             )
-                          : InputDecorator(
-                              key: const ValueKey('stock_disabled'),
-                              decoration: InputDecoration(
-                                labelText: 'Existencia',
-                                prefixIcon:
-                                    const Icon(Icons.warehouse_outlined),
-                                border: const OutlineInputBorder(),
-                                filled: true,
-                                fillColor: Colors.grey.shade100,
-                                suffixText: 'No inventariable',
-                                suffixStyle: TextStyle(
-                                    fontSize: 11,
-                                    color: Colors.grey.shade500),
-                              ),
-                              child: Text(
-                                'N/A',
-                                style: TextStyle(
-                                    color: Colors.grey.shade400,
-                                    fontSize: 14),
-                              ),
-                            ),
+                          : const Text('Guardar'),
                     ),
-
-                    const SizedBox(height: 16),
-                  ],
-
-                  // ══════════════════════════════════════════════
-                  // SECCIÓN CLIENTE
-                  // ══════════════════════════════════════════════
-
-                  if (widget.isClient) ...[
-                    TextFormField(
-                      controller: _emailController,
-                      decoration: const InputDecoration(
-                        labelText: 'Correo electrónico',
-                        prefixIcon: Icon(Icons.email_outlined),
-                        border: OutlineInputBorder(),
-                      ),
-                      keyboardType: TextInputType.emailAddress,
-                      textInputAction: TextInputAction.next,
-                      onFieldSubmitted: (_) =>
-                          FocusScope.of(context).nextFocus(),
-                    ),
-                    const SizedBox(height: 16),
-                    TextFormField(
-                      controller: _phoneController,
-                      decoration: const InputDecoration(
-                        labelText: 'Teléfono',
-                        prefixIcon: Icon(Icons.phone_outlined),
-                        border: OutlineInputBorder(),
-                      ),
-                      keyboardType: TextInputType.phone,
-                      textInputAction: TextInputAction.next,
-                      onFieldSubmitted: (_) =>
-                          FocusScope.of(context).nextFocus(),
-                    ),
-                    const SizedBox(height: 16),
-                    TextFormField(
-                      controller: _rfcController,
-                      decoration: const InputDecoration(
-                        labelText: 'RFC',
-                        prefixIcon: Icon(Icons.badge_outlined),
-                        border: OutlineInputBorder(),
-                      ),
-                      textCapitalization: TextCapitalization.characters,
-                    ),
-                    const SizedBox(height: 16),
-                  ],
-
-                  // ══════════════════════════════════════════════
-                  // SECCIÓN IMPUESTO
-                  // ══════════════════════════════════════════════
-
-                  if (isTax) ...[
-                    TextFormField(
-                      controller: _rateController,
-                      decoration: const InputDecoration(
-                        labelText: 'Tasa (%)',
-                        prefixIcon: Icon(Icons.percent),
-                        border: OutlineInputBorder(),
-                      ),
-                      keyboardType: const TextInputType.numberWithOptions(
-                          decimal: true),
-                      validator: (v) {
-                        if (v == null || v.trim().isEmpty) return 'Requerido';
-                        return double.tryParse(v.trim()) == null
-                            ? 'Número inválido'
-                            : null;
-                      },
-                    ),
-                    const SizedBox(height: 16),
-                  ],
-
-                  // ── BOTONES ────────────────────────────────
-                  const SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      OutlinedButton(
-                        onPressed: _isSaving
-                            ? null
-                            : () => Navigator.of(context).pop(false),
-                        child: const Text('Cancelar'),
-                      ),
-                      const SizedBox(width: 12),
-                      FilledButton.icon(
-                        onPressed: _isSaving ? null : _save,
-                        icon: _isSaving
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(
-                                    strokeWidth: 2),
-                              )
-                            : const Icon(Icons.save_outlined),
-                        label: Text(_isSaving ? 'Guardando...' : 'Guardar'),
-                      ),
-                    ],
                   ),
                 ],
               ),
-            ),
+            ],
           ),
         ),
       ),
