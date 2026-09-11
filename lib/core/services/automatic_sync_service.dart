@@ -1,82 +1,197 @@
 import 'dart:async';
 
-import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter/foundation.dart';
 
 import '../storage/app_storage.dart';
+import 'network_monitor.dart';
+import 'sync_service.dart';
 
+/// Sincronización automática del POS.
+///
+/// Disparadores:
+///
+/// 1. Al iniciar la aplicación.
+/// 2. Cuando la conexión vuelve a estar disponible.
+/// 3. Cada 5 minutos.
+///
+/// La sincronización real continúa centralizada en SyncService.syncManual().
 class AutomaticSyncService {
-  AutomaticSyncService({Duration? retryBase}) : _retryBase = retryBase ?? const Duration(seconds: 10);
+  AutomaticSyncService._internal();
 
-  final Duration _retryBase;
-  final Connectivity _connectivity = Connectivity();
-  final StreamController<bool> _connectionController = StreamController<bool>.broadcast();
-  StreamSubscription<List<ConnectivityResult>>? _subscription;
+  static final AutomaticSyncService _instance =
+      AutomaticSyncService._internal();
+
+  factory AutomaticSyncService() => _instance;
+
+  static const Duration _syncInterval = Duration(minutes: 5);
+
+  final NetworkMonitor _networkMonitor = NetworkMonitor();
+  final SyncService _syncService = SyncService();
+
   Timer? _timer;
-  Future<void> Function()? _syncAction;
+
+  VoidCallback? _networkListener;
+
   bool _started = false;
-  bool _disposed = false;
-  bool _running = false;
-  int _attempt = 0;
+  bool _syncInProgress = false;
 
-  Stream<bool> get onConnectivityChanged => _connectionController.stream;
+  // ============================================================
+  // INICIAR
+  // ============================================================
 
-  Future<void> start({required Future<void> Function() syncAction}) async {
-    if (_disposed) return;
-    _syncAction = syncAction;
-    if (_started) return;
+  Future<void> start() async {
+    if (_started) {
+      return;
+    }
+
     _started = true;
 
-    final result = await _connectivity.checkConnectivity();
-    final connected = result.any((r) => r != ConnectivityResult.none);
-    _emit(connected);
-    if (connected) _schedule(const Duration(seconds: 2));
+    _networkListener = () {
+      unawaited(_onNetworkStatusChanged());
+    };
 
-    _subscription = _connectivity.onConnectivityChanged.listen((result) {
-      final isConnected = result.any((r) => r != ConnectivityResult.none);
-      _emit(isConnected);
-      if (isConnected) {
-        _attempt = 0;
-        _schedule(const Duration(seconds: 2));
-      } else {
-        _timer?.cancel();
-      }
-    });
+    _networkMonitor.addListener(_networkListener!);
+
+    _timer = Timer.periodic(
+      _syncInterval,
+      (_) {
+        unawaited(_syncIfPossible());
+      },
+    );
+
+    // Intento inicial.
+    //
+    // Si todavía no hay conexión, simplemente se omite.
+    // Cuando NetworkMonitor detecte online, volverá a intentarlo.
+    await _syncIfPossible();
   }
 
-  void _emit(bool value) {
-    if (!_connectionController.isClosed) _connectionController.add(value);
+  // ============================================================
+  // CAMBIO DE RED
+  // ============================================================
+
+  Future<void> _onNetworkStatusChanged() async {
+    if (!_started) {
+      return;
+    }
+
+    if (!_networkMonitor.isOnline) {
+      return;
+    }
+
+    await _syncIfPossible();
   }
 
-  void _schedule(Duration delay) {
-    if (_disposed || _syncAction == null) return;
-    _timer?.cancel();
-    _timer = Timer(delay, _execute);
-  }
+  // ============================================================
+  // INTENTAR SINCRONIZAR
+  // ============================================================
 
-  Future<void> _execute() async {
-    if (_disposed || _running || _syncAction == null) return;
-    final token = await AppStorage().getToken();
-    if (token == null || token.isEmpty || token == 'offline-session') return;
+  Future<void> _syncIfPossible() async {
+    if (!_started) {
+      return;
+    }
 
-    _running = true;
+    if (_syncInProgress) {
+      return;
+    }
+
+    if (!_networkMonitor.isOnline) {
+      return;
+    }
+
+    final storage = AppStorage();
+
+    if (await storage.isOfflineSession()) {
+      print(
+        'ℹ️ Sync automática omitida: '
+        'sesión offline.',
+      );
+
+      return;
+    }
+
+    final companyId =
+        await storage.getEmpresaId() ?? 0;
+
+    final userId =
+        await storage.getUserId() ?? 0;
+
+    if (companyId <= 0 || userId <= 0) {
+      print(
+        'ℹ️ Sync automática omitida: '
+        'no existe una sesión válida.',
+      );
+
+      return;
+    }
+
+    _syncInProgress = true;
+
     try {
-      await _syncAction!();
-      _attempt = 0;
-      _schedule(_retryBase);
-    } catch (_) {
-      _attempt = (_attempt + 1).clamp(1, 10);
-      final seconds = _retryBase.inSeconds * _attempt;
-      _schedule(Duration(seconds: seconds));
+      print(
+        '🔄 Iniciando sincronización automática...',
+      );
+
+      final result = await _syncService.syncManual(
+        companyId: companyId,
+        userId: userId,
+        businessDate: DateTime.now(),
+      );
+
+      print(
+        '✅ Sincronización automática finalizada: '
+        'total=${result.total} '
+        'synced=${result.synced} '
+        'failed=${result.failed} '
+        'skipped=${result.skipped}',
+      );
+
+      if (result.failed > 0) {
+        print(
+          '⚠️ Sincronización automática terminó '
+          'con ${result.failed} operación(es) fallida(s).',
+        );
+      }
+    } catch (e) {
+      print(
+        '❌ Error en sincronización automática: $e',
+      );
     } finally {
-      _running = false;
+      _syncInProgress = false;
     }
   }
 
-  Future<void> dispose() async {
-    if (_disposed) return;
-    _disposed = true;
+  // ============================================================
+  // DETENER
+  // ============================================================
+
+  Future<void> stop() async {
+    if (!_started) {
+      return;
+    }
+
+    _started = false;
+
     _timer?.cancel();
-    await _subscription?.cancel();
-    await _connectionController.close();
+    _timer = null;
+
+    final listener = _networkListener;
+
+    if (listener != null) {
+      _networkMonitor.removeListener(listener);
+      _networkListener = null;
+    }
+
+    print(
+      '⏹️ Sincronización automática detenida.',
+    );
   }
+
+  // ============================================================
+  // ESTADO
+  // ============================================================
+
+  bool get isRunning => _started;
+
+  bool get isSyncing => _syncInProgress;
 }

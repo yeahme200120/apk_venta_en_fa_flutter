@@ -738,6 +738,51 @@ class ApiClient {
       );
     }
   }
+    // ============================================================
+  // CATEGORÍAS
+  // ============================================================
+
+  Future<Map<String, dynamic>> createCategory(
+    Map<String, dynamic> payload,
+  ) async {
+    return _postOperation(
+      '/api/v1/categorias',
+      payload,
+    );
+  }
+
+  Future<Map<String, dynamic>> updateCategory(
+    int serverId,
+    Map<String, dynamic> payload,
+  ) async {
+    return _putOperation(
+      '/api/v1/categorias/$serverId',
+      payload,
+    );
+  }
+
+  // ============================================================
+  // PRODUCTOS
+  // ============================================================
+
+  Future<Map<String, dynamic>> createProduct(
+    Map<String, dynamic> payload,
+  ) async {
+    return _postOperation(
+      '/api/v1/productos',
+      payload,
+    );
+  }
+
+  Future<Map<String, dynamic>> updateProduct(
+    int serverId,
+    Map<String, dynamic> payload,
+  ) async {
+    return _putOperation(
+      '/api/v1/productos/$serverId',
+      payload,
+    );
+  }
 
   // ============================================================
   // CATÁLOGO

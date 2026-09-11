@@ -21,7 +21,7 @@ class LocalDb {
   /// 8 = print_ticket
   /// 9 = products.server_id
   /// 10 = local/server IDs for categories + local product category ID
-  static const int _databaseVersion = 10;
+  static const int _databaseVersion = 11;
 
   // Notificador global para que las pantallas puedan reaccionar
   // inmediatamente a cambios de ventas sin polling periódico.
@@ -59,6 +59,7 @@ class LocalDb {
     await _createProductsTable(db);
     await _createSalesTables(db);
     await _createCatalogTables(db);
+    await _createSyncQueueTable(db);
   }
 
   // ===========================================================================
@@ -272,6 +273,65 @@ class LocalDb {
         synced_at TEXT
       )
     ''');
+  }
+
+  // ===========================================================================
+  // SYNC QUEUE
+  // ===========================================================================
+  Future<List<Map<String, dynamic>>> debugSyncQueue() async {
+    final db = await database;
+
+    return db.query('sync_queue', orderBy: 'created_at ASC');
+  }
+
+  Future<void> _createSyncQueueTable(Database db) async {
+    await db.execute('''
+    CREATE TABLE IF NOT EXISTS sync_queue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      uuid_local TEXT NOT NULL,
+      empresa_id INTEGER,
+      usuario_id INTEGER,
+      business_date TEXT,
+      entity_type TEXT NOT NULL,
+      entity_id_local INTEGER,
+      payload_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      server_status TEXT DEFAULT 'not_sent',
+      server_id INTEGER,
+      server_folio TEXT,
+      server_uuid TEXT,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      last_attempt_at TEXT,
+      next_retry_at TEXT,
+      synced_at TEXT,
+      server_received_at TEXT,
+      error_code TEXT,
+      error_message TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(uuid_local, entity_type)
+    )
+  ''');
+
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_sync_queue_status '
+      'ON sync_queue(status)',
+    );
+
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_sync_queue_retry '
+      'ON sync_queue(next_retry_at)',
+    );
+
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_sync_queue_business_date '
+      'ON sync_queue(business_date)',
+    );
+
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_sync_queue_entity '
+      'ON sync_queue(entity_type, entity_id_local)',
+    );
   }
 
   // ===========================================================================
@@ -527,6 +587,13 @@ class LocalDb {
           }
         } catch (_) {}
       }
+    }
+    // =========================================================================
+    // VERSION 11
+    // Cola local de operaciones pendientes de sincronización.
+    // =========================================================================
+    if (oldVersion < 11) {
+      await _createSyncQueueTable(db);
     }
   }
 
@@ -1112,6 +1179,136 @@ class LocalDb {
 
   Future<List<Map<String, dynamic>>> getCategories() async => (await database)
       .query('categories', where: 'is_active = 1', orderBy: 'name ASC');
+
+  // ===========================================================================
+  // SYNC QUEUE - OPERATIONS
+  // ===========================================================================
+
+  Future<int> enqueueSyncOperation({
+    required String uuidLocal,
+    required String entityType,
+    required Map<String, dynamic> payload,
+    int? empresaId,
+    int? usuarioId,
+    String? businessDate,
+    int? entityIdLocal,
+  }) async {
+    final db = await database;
+    final now = DateTime.now().toIso8601String();
+
+    return db.insert('sync_queue', {
+      'uuid_local': uuidLocal,
+      'empresa_id': empresaId,
+      'usuario_id': usuarioId,
+      'business_date': businessDate,
+      'entity_type': entityType,
+      'entity_id_local': entityIdLocal,
+      'payload_json': jsonEncode(payload),
+      'status': 'pending',
+      'server_status': 'not_sent',
+      'attempts': 0,
+      'created_at': now,
+      'updated_at': now,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<List<Map<String, dynamic>>> getPendingSyncQueue({int? limit}) async {
+    final db = await database;
+    final now = DateTime.now().toIso8601String();
+
+    return db.query(
+      'sync_queue',
+      where:
+          "status IN ('pending', 'failed') "
+          "AND (next_retry_at IS NULL OR next_retry_at <= ?)",
+      whereArgs: [now],
+      orderBy: 'created_at ASC',
+      limit: limit,
+    );
+  }
+
+  Future<void> markSyncQueueSyncing(int id) async {
+    final now = DateTime.now().toIso8601String();
+
+    await (await database).update(
+      'sync_queue',
+      {'status': 'syncing', 'last_attempt_at': now, 'updated_at': now},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<void> markSyncQueueSynced(
+    int id, {
+    int? serverId,
+    String? serverFolio,
+    String? serverUuid,
+    String? serverStatus,
+    String? serverReceivedAt,
+  }) async {
+    final now = DateTime.now().toIso8601String();
+
+    await (await database).update(
+      'sync_queue',
+      {
+        'status': 'synced',
+        'server_status': serverStatus ?? 'accepted',
+        'server_id': serverId,
+        'server_folio': serverFolio,
+        'server_uuid': serverUuid,
+        'server_received_at': serverReceivedAt,
+        'synced_at': now,
+        'error_code': null,
+        'error_message': null,
+        'next_retry_at': null,
+        'updated_at': now,
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<void> markSyncQueueFailed(
+    int id, {
+    String? errorCode,
+    required String errorMessage,
+  }) async {
+    final db = await database;
+
+    final rows = await db.query(
+      'sync_queue',
+      columns: ['attempts'],
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+
+    final currentAttempts = rows.isEmpty ? 0 : _toInt(rows.first['attempts']);
+
+    final attempts = currentAttempts + 1;
+
+    final retryMinutes = attempts.clamp(1, 30) * 2;
+
+    final nextRetry = DateTime.now().add(Duration(minutes: retryMinutes));
+
+    final now = DateTime.now().toIso8601String();
+
+    await db.update(
+      'sync_queue',
+      {
+        'status': 'failed',
+        'server_status': 'unknown',
+        'attempts': attempts,
+        'last_attempt_at': now,
+        'next_retry_at': nextRetry.toIso8601String(),
+        'error_code': errorCode,
+        'error_message': errorMessage,
+        'updated_at': now,
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
 
   /// Genera la siguiente clave disponible para una categoría.
   ///

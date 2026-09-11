@@ -1208,14 +1208,7 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
       throw Exception('No existe una sesión válida para sincronizar.');
     }
 
-    // ========================================================
-    // IMPORTANTE:
-    // SOLO LAS VENTAS SE SUBEN EN ESTE PROCESO.
-    //
-    // daily_incomes y daily_expenses NO se agregan aquí.
-    // ========================================================
-
-    final result = await _syncService.syncPendingSales(
+    final result = await _syncService.syncManual(
       companyId: companyId,
       userId: userId,
       businessDate: DateTime.now(),
@@ -1223,13 +1216,10 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
 
     if (result.failed > 0) {
       throw Exception(
-        'No se descargaron cambios porque '
-        '${result.failed} venta(s) no pudieron sincronizarse.',
+        'No se completó la sincronización porque '
+        '${result.failed} operación(es) fallaron.',
       );
     }
-
-    // Solo después de subir todas las ventas.
-    await _syncService.syncPull();
   }
 
   Future<void> _syncNow() async {

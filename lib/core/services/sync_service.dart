@@ -48,6 +48,121 @@ class SyncService {
 
   static bool _running = false;
 
+  static Timer? _automaticSyncTimer;
+  static bool _automaticSyncStarted = false;
+
+  // ============================================================
+  // SINCRONIZACIÓN AUTOMÁTICA
+  // ============================================================
+
+  /// Inicia la sincronización automática.
+  ///
+  /// La sincronización:
+  ///
+  ///   1. Se ejecuta inmediatamente.
+  ///   2. Después se repite periódicamente.
+  ///   3. Usa syncManual(), por lo que:
+  ///
+  ///      Sync Queue
+  ///          ↓
+  ///      Ventas pendientes
+  ///          ↓
+  ///      Pull servidor
+  ///
+  /// No bloquea la operación local del POS.
+  void startAutomaticSync({
+    required int companyId,
+    required int userId,
+    required DateTime businessDate,
+    Duration interval = const Duration(minutes: 2),
+  }) {
+    if (_automaticSyncStarted) {
+      return;
+    }
+
+    _automaticSyncStarted = true;
+
+    print('🔄 Sincronización automática iniciada.');
+
+    // Ejecutar una sincronización inicial.
+    unawaited(
+      _runAutomaticSync(
+        companyId: companyId,
+        userId: userId,
+        businessDate: businessDate,
+      ),
+    );
+
+    _automaticSyncTimer?.cancel();
+
+    _automaticSyncTimer = Timer.periodic(interval, (_) {
+      unawaited(
+        _runAutomaticSync(
+          companyId: companyId,
+          userId: userId,
+          businessDate: businessDate,
+        ),
+      );
+    });
+  }
+
+  /// Ejecuta una sincronización automática sin interferir
+  /// con otra sincronización que ya esté en curso.
+  Future<void> _runAutomaticSync({
+    required int companyId,
+    required int userId,
+    required DateTime businessDate,
+  }) async {
+    if (_running) {
+      print(
+        'ℹ️ Sincronización automática omitida: '
+        'ya existe una sincronización en curso.',
+      );
+
+      return;
+    }
+
+    if (await AppStorage().isOfflineSession()) {
+      print(
+        'ℹ️ Sincronización automática omitida: '
+        'sesión offline.',
+      );
+
+      return;
+    }
+
+    try {
+      print('🔄 Ejecutando sincronización automática...');
+
+      final result = await syncManual(
+        companyId: companyId,
+        userId: userId,
+        businessDate: businessDate,
+      );
+
+      print(
+        '✅ Sincronización automática finalizada: '
+        'total=${result.total} '
+        'synced=${result.synced} '
+        'failed=${result.failed} '
+        'skipped=${result.skipped}',
+      );
+    } catch (e) {
+      // La sincronización automática nunca debe cerrar
+      // ni bloquear el POS por un error de red.
+      print('⚠️ Error en sincronización automática: $e');
+    }
+  }
+
+  /// Detiene la sincronización automática.
+  void stopAutomaticSync() {
+    _automaticSyncTimer?.cancel();
+    _automaticSyncTimer = null;
+    _automaticSyncStarted = false;
+
+    print('⏹️ Sincronización automática detenida.');
+  }
+
   // ============================================================
   // SINCRONIZAR VENTAS PENDIENTES
   // ============================================================
@@ -74,9 +189,27 @@ class SyncService {
     var skipped = 0;
 
     try {
-      // ----------------------------------------------------------
-      // 1. HISTÓRICO
-      // ----------------------------------------------------------
+      // ==========================================================
+      // 1. SYNC QUEUE
+      // ==========================================================
+      //
+      // Primero resolvemos:
+      //
+      //   Categorías → Productos
+      //
+      // antes de intentar sincronizar ventas.
+      //
+
+      final queueResult = await _syncPendingQueueInternal(limit: limit);
+
+      total += queueResult.total;
+      synced += queueResult.synced;
+      failed += queueResult.failed;
+      skipped += queueResult.skipped;
+
+      // ==========================================================
+      // 2. HISTÓRICO
+      // ==========================================================
 
       final historical = await _historyDb.getPendingSalesReadyToSync(
         limit: limit,
@@ -94,9 +227,9 @@ class SyncService {
         }
       }
 
-      // ----------------------------------------------------------
-      // 2. OUTBOX DEL DÍA
-      // ----------------------------------------------------------
+      // ==========================================================
+      // 3. OUTBOX DEL DÍA
+      // ==========================================================
 
       final dayOutbox = await _dayDb.getPendingOutbox(
         companyId: companyId,
@@ -117,6 +250,14 @@ class SyncService {
         }
       }
 
+      print(
+        '✅ Sincronización general finalizada: '
+        'total=$total '
+        'synced=$synced '
+        'failed=$failed '
+        'skipped=$skipped',
+      );
+
       return SyncResult(
         total: total,
         synced: synced,
@@ -127,10 +268,109 @@ class SyncService {
       _running = false;
     }
   }
-
   // ============================================================
   // SINCRONIZAR UNA VENTA
   // ============================================================
+  // ============================================================
+  // SINCRONIZACIÓN MANUAL COMPLETA
+  // ============================================================
+
+  Future<SyncResult> syncManual({
+    required int companyId,
+    required int userId,
+    required DateTime businessDate,
+    int? limit,
+  }) async {
+    if (_running) {
+      return const SyncResult(total: 0, synced: 0, failed: 0, skipped: 0);
+    }
+
+    if (await AppStorage().isOfflineSession()) {
+      return const SyncResult(total: 0, synced: 0, failed: 0, skipped: 0);
+    }
+
+    _running = true;
+
+    var total = 0;
+    var synced = 0;
+    var failed = 0;
+    var skipped = 0;
+
+    try {
+      print('🔄 Iniciando sincronización manual completa...');
+
+      // ========================================================
+      // 1. COLA LOCAL
+      //    Categorías → Productos
+      // ========================================================
+
+      final queueResult = await _syncPendingQueueInternal(limit: limit);
+
+      total += queueResult.total;
+      synced += queueResult.synced;
+      failed += queueResult.failed;
+      skipped += queueResult.skipped;
+
+      // ========================================================
+      // 2. VENTAS PENDIENTES
+      // ========================================================
+
+      final historical = await _historyDb.getPendingSalesReadyToSync(
+        limit: limit,
+      );
+
+      for (final sale in historical) {
+        total++;
+
+        final ok = await _syncHistoricalSale(sale);
+
+        if (ok) {
+          synced++;
+        } else {
+          failed++;
+        }
+      }
+
+      final dayOutbox = await _dayDb.getPendingOutbox(
+        companyId: companyId,
+        userId: userId,
+        businessDate: businessDate,
+        limit: limit,
+      );
+
+      for (final item in dayOutbox) {
+        total++;
+
+        final ok = await _syncDayOutbox(companyId, userId, businessDate, item);
+
+        if (ok) {
+          synced++;
+        } else {
+          failed++;
+        }
+      }
+
+      // ========================================================
+// 3. PULL DEL SERVIDOR
+//
+// El Pull es independiente de los errores de subida.
+//
+// Aunque una venta, categoría o producto falle,
+// seguimos descargando los cambios del servidor.
+// ========================================================
+
+      await syncPull();
+
+      return SyncResult(
+        total: total,
+        synced: synced,
+        failed: failed,
+        skipped: skipped,
+      );
+    } finally {
+      _running = false;
+    }
+  }
 
   Future<bool> syncSaleById(int saleId) async {
     final sale = await _historyDb.getSaleById(saleId);
@@ -432,9 +672,25 @@ class SyncService {
   }
 
   // ============================================================
-  // PRODUCTOS
+  // PRODUCTOS DE VENTA DIARIA
   // ============================================================
 
+  /// Normaliza productos provenientes del OUTBOX de la base diaria.
+  ///
+  /// IMPORTANTE:
+  ///
+  /// En PosDatabaseService:
+  ///
+  ///   products.id = ID REAL DEL SERVIDOR
+  ///
+  /// Por lo tanto:
+  ///
+  ///   product_id = server product ID
+  ///
+  /// NO debe interpretarse como LocalDb.products.id.
+  ///
+  /// LocalDb se consulta únicamente como respaldo por código cuando
+  /// el producto diario no puede encontrarse en la base diaria.
   Future<List<Map<String, dynamic>>> _normalizeProducts(
     dynamic value, {
     required int companyId,
@@ -455,7 +711,12 @@ class SyncService {
         userId: userId,
         businessDate: businessDate,
       );
-    } catch (_) {
+    } catch (e) {
+      print(
+        '⚠️ No fue posible abrir la base diaria '
+        'para resolver productos: $e',
+      );
+
       dayDatabase = null;
     }
 
@@ -466,20 +727,42 @@ class SyncService {
 
       final item = Map<String, dynamic>.from(raw);
 
+      /*
+       * ----------------------------------------------------------
+       * IDENTIFICAR PRODUCTO
+       * ----------------------------------------------------------
+       *
+       * En una venta diaria:
+       *
+       *   product_id / producto_id
+       *
+       * representan el ID del producto del servidor.
+       *
+       * producto_local_id, si existe, solamente se conserva
+       * como referencia local para el payload.
+       */
+
+      final explicitServerProductId = _toInt(
+        item['producto_id'] ?? item['product_id'],
+      );
+
       final localProductId = _toInt(
-        item['producto_local_id'] ??
-            item['product_local_id'] ??
-            item['product_id'] ??
-            item['producto_id'],
+        item['producto_local_id'] ?? item['product_local_id'],
       );
 
       final cantidad = _toDouble(item['cantidad'] ?? item['quantity']);
 
-      if (localProductId <= 0 || cantidad <= 0) {
+      if (cantidad <= 0) {
         continue;
       }
 
       Map<String, dynamic>? product;
+
+      /*
+       * ----------------------------------------------------------
+       * 1. PRODUCTO EMBEBIDO
+       * ----------------------------------------------------------
+       */
 
       final embeddedProduct = item['producto'];
 
@@ -487,13 +770,74 @@ class SyncService {
         product = Map<String, dynamic>.from(embeddedProduct);
       }
 
-      if (product == null && dayDatabase != null) {
-        product = await _getDayProduct(dayDatabase, localProductId);
+      /*
+       * ----------------------------------------------------------
+       * 2. BASE DIARIA
+       * ----------------------------------------------------------
+       *
+       * Aquí el ID es SERVER ID.
+       */
+
+      if (product == null &&
+          dayDatabase != null &&
+          explicitServerProductId > 0) {
+        product = await _getDayProduct(dayDatabase, explicitServerProductId);
       }
 
-      product ??= await _historyDb.getProductById(localProductId);
+      /*
+       * ----------------------------------------------------------
+       * 3. RESPALDO POR SERVER ID EN LocalDb
+       * ----------------------------------------------------------
+       *
+       * Solo se utiliza si ya conocemos el server ID.
+       *
+       * Nunca hacemos:
+       *
+       *   LocalDb.getProductById(product_id)
+       *
+       * porque product_id de la venta diaria NO es local ID.
+       */
 
-      final serverProductId = _extractServerProductId(product);
+      if (product == null && explicitServerProductId > 0) {
+        product = await _historyDb.getProductByServerId(
+          explicitServerProductId,
+        );
+      }
+
+      /*
+       * ----------------------------------------------------------
+       * 4. RESPALDO POR CÓDIGO
+       * ----------------------------------------------------------
+       *
+       * Esto evita depender de que local_id y server_id coincidan.
+       */
+
+      if (product == null) {
+        final codeCandidate = _firstNonEmpty(item['codigo'], item['code']);
+
+        if (codeCandidate != null && codeCandidate.isNotEmpty) {
+          product = await _historyDb.getProductByCode(codeCandidate);
+        }
+      }
+
+      /*
+       * ----------------------------------------------------------
+       * SERVER ID FINAL
+       * ----------------------------------------------------------
+       */
+
+      var serverProductId = explicitServerProductId;
+
+      if (serverProductId <= 0) {
+        serverProductId = _extractServerProductId(product);
+      }
+
+      /*
+       * Si encontramos un producto mediante LocalDb por código,
+       * usamos su server_id.
+       *
+       * Si no existe mapeo, NO inventamos uno usando el id local.
+       */
 
       final code = _firstNonEmpty(
         item['codigo'],
@@ -554,9 +898,16 @@ class SyncService {
 
       final isInventoriable = _extractInventoriable(item, product);
 
+      print(
+        '🔎 PRODUCTO VENTA DIARIA '
+        'server_id=$serverProductId '
+        'local_id=${localProductId > 0 ? localProductId : '-'} '
+        'codigo=${code ?? '-'} '
+        'nombre=${name ?? '-'}',
+      );
+
       final line = <String, dynamic>{
-        'producto_local_id': localProductId,
-        'is_inventariable': isInventoriable,
+        if (localProductId > 0) 'producto_local_id': localProductId,
 
         if (serverProductId > 0) 'producto_id': serverProductId,
 
@@ -568,19 +919,13 @@ class SyncService {
           'descripcion': description,
 
         'cantidad': cantidad,
-
         'precio_unitario': unitPrice,
-
         'costo': cost,
-
         'impuesto': tax,
-
         'stock': stock,
-
         'stock_minimo': stockMinimo,
-
         'activo': activo,
-
+        'is_inventariable': isInventoriable,
         'descuento': _toDouble(item['descuento']),
       };
 
@@ -594,41 +939,32 @@ class SyncService {
   // OBTENER PRODUCTO DE LA BASE DIARIA
   // ============================================================
 
+  /// PosDatabaseService:
+  ///
+  ///   products.id = SERVER PRODUCT ID
+  ///
+  /// Nunca intenta buscar server_id porque esa columna
+  /// no existe en la base diaria.
   Future<Map<String, dynamic>?> _getDayProduct(
     Database db,
-    int localProductId,
+    int serverProductId,
   ) async {
-    try {
-      final columns = await _tableColumns(db, 'products');
-
-      if (columns.contains('server_id')) {
-        final result = await db.query(
-          'products',
-          where: 'id = ? OR server_id = ?',
-          whereArgs: [localProductId, localProductId],
-          limit: 1,
-        );
-
-        if (result.isNotEmpty) {
-          return Map<String, dynamic>.from(result.first);
-        }
-      }
-
-      final result = await db.query(
-        'products',
-        where: 'id = ?',
-        whereArgs: [localProductId],
-        limit: 1,
-      );
-
-      if (result.isEmpty) {
-        return null;
-      }
-
-      return Map<String, dynamic>.from(result.first);
-    } catch (_) {
+    if (serverProductId <= 0) {
       return null;
     }
+
+    final result = await db.query(
+      'products',
+      where: 'id = ?',
+      whereArgs: [serverProductId],
+      limit: 1,
+    );
+
+    if (result.isEmpty) {
+      return null;
+    }
+
+    return Map<String, dynamic>.from(result.first);
   }
 
   // ============================================================
@@ -704,6 +1040,18 @@ class SyncService {
   // CONSTRUIR PAYLOAD DESDE SQLITE
   // ============================================================
 
+  /// Construye el payload de una venta histórica.
+  ///
+  /// Aquí sí:
+  ///
+  ///   sale_items.product_id
+  ///          ↓
+  ///   LocalDb.products.id
+  ///          ↓
+  ///   LocalDb.products.server_id
+  ///
+  /// Nunca se utiliza el ID local como server ID si existe
+  /// la columna server_id y está vacía.
   Future<Map<String, dynamic>> _buildPayload(
     Map<String, dynamic> sale,
     List<Map<String, dynamic>> items,
@@ -783,6 +1131,14 @@ class SyncService {
     final normalizedProducts = <Map<String, dynamic>>[];
 
     for (final item in items) {
+      /*
+       * --------------------------------------------------------
+       * HISTÓRICO:
+       *
+       * item.product_id es LOCAL ID.
+       * --------------------------------------------------------
+       */
+
       final localProductId = _toInt(
         item['producto_local_id'] ?? item['product_id'] ?? item['producto_id'],
       );
@@ -856,11 +1212,23 @@ class SyncService {
 
       final isInventoriable = _extractInventoriable(item, product);
 
+      print(
+        '🔎 PRODUCTO HISTÓRICO '
+        'local_id=$localProductId '
+        'server_id=$serverProductId '
+        'codigo=${code ?? '-'} '
+        'nombre=${name ?? '-'}',
+      );
+
       normalizedProducts.add({
         'producto_local_id': localProductId,
+
         if (serverProductId > 0) 'producto_id': serverProductId,
+
         if (code != null && code.isNotEmpty) 'codigo': code,
+
         if (name != null && name.isNotEmpty) 'nombre': name,
+
         if (description != null && description.isNotEmpty)
           'descripcion': description,
 
@@ -871,8 +1239,7 @@ class SyncService {
         'stock': stock,
         'stock_minimo': stockMinimo,
         'activo': activo,
-        'is_inventariable':isInventoriable,
-
+        'is_inventariable': isInventoriable,
         'descuento': _toDouble(item['descuento']),
       });
     }
@@ -933,6 +1300,488 @@ class SyncService {
     }
 
     return count;
+  }
+
+  // ============================================================
+  // SYNC QUEUE
+  // ============================================================
+
+  /// Procesa la cola persistente de operaciones locales.
+  ///
+  /// Orden obligatorio:
+  ///
+  ///   1. Categorías
+  ///   2. Productos
+  ///
+  /// Las ventas NO se procesan aquí.
+  Future<SyncResult> syncPendingQueue({int? limit}) async {
+    if (_running) {
+      return const SyncResult(total: 0, synced: 0, failed: 0, skipped: 0);
+    }
+
+    if (await AppStorage().isOfflineSession()) {
+      return const SyncResult(total: 0, synced: 0, failed: 0, skipped: 0);
+    }
+
+    _running = true;
+
+    try {
+      return await _syncPendingQueueInternal(limit: limit);
+    } finally {
+      _running = false;
+    }
+  }
+
+  Future<SyncResult> _syncPendingQueueInternal({int? limit}) async {
+    var total = 0;
+    var synced = 0;
+    var failed = 0;
+    var skipped = 0;
+
+    final queue = await _historyDb.getPendingSyncQueue(limit: limit);
+
+    if (queue.isEmpty) {
+      print('ℹ️ Sync Queue vacía.');
+
+      return const SyncResult(total: 0, synced: 0, failed: 0, skipped: 0);
+    }
+
+    final categories = queue
+        .where(
+          (item) =>
+              item['entity_type']?.toString().trim().toLowerCase() ==
+              'category',
+        )
+        .toList();
+
+    final products = queue
+        .where(
+          (item) =>
+              item['entity_type']?.toString().trim().toLowerCase() == 'product',
+        )
+        .toList();
+
+    final ignored = queue.where((item) {
+      final type = item['entity_type']?.toString().trim().toLowerCase() ?? '';
+
+      return type != 'category' && type != 'product';
+    }).toList();
+
+    skipped += ignored.length;
+
+    if (ignored.isNotEmpty) {
+      print(
+        '⚠️ Sync Queue: '
+        '${ignored.length} operaciones ignoradas '
+        'por entity_type no soportado.',
+      );
+    }
+
+    // ==========================================================
+    // 1. CATEGORÍAS
+    // ==========================================================
+
+    for (final item in categories) {
+      total++;
+
+      final result = await _processCategoryQueueItem(item);
+
+      if (result) {
+        synced++;
+      } else {
+        failed++;
+      }
+    }
+
+    // ==========================================================
+    // 2. PRODUCTOS
+    // ==========================================================
+
+    for (final item in products) {
+      total++;
+
+      final result = await _processProductQueueItem(item);
+
+      if (result) {
+        synced++;
+      } else {
+        failed++;
+      }
+    }
+
+    print(
+      '✅ Sync Queue finalizada: '
+      'total=$total '
+      'synced=$synced '
+      'failed=$failed '
+      'skipped=$skipped',
+    );
+
+    return SyncResult(
+      total: total,
+      synced: synced,
+      failed: failed,
+      skipped: skipped,
+    );
+  }
+  // ============================================================
+  // PROCESAR CATEGORÍA
+  // ============================================================
+
+  Future<bool> _processCategoryQueueItem(Map<String, dynamic> item) async {
+    final queueId = _toInt(item['id']);
+
+    if (queueId <= 0) {
+      return false;
+    }
+
+    await _historyDb.markSyncQueueSyncing(queueId);
+
+    try {
+      final payloadJson = item['payload_json']?.toString() ?? '{}';
+
+      final decoded = jsonDecode(payloadJson);
+
+      if (decoded is! Map) {
+        throw const FormatException('Payload de categoría inválido.');
+      }
+
+      final payload = Map<String, dynamic>.from(decoded);
+
+      final localId = _toInt(payload['local_id'] ?? item['entity_id_local']);
+
+      if (localId <= 0) {
+        throw const FormatException('La categoría no tiene local_id válido.');
+      }
+
+      final existingServerId = _toInt(payload['server_id']);
+
+      final empresaId = _toInt(payload['empresa_id'] ?? item['empresa_id']);
+
+      final nombre = payload['nombre']?.toString().trim() ?? '';
+
+      if (nombre.isEmpty) {
+        throw const FormatException('La categoría no tiene nombre.');
+      }
+
+      final codigo = payload['codigo']?.toString().trim();
+
+      final activo = _toBool(payload['activo'], defaultValue: true);
+
+      final serverPayload = <String, dynamic>{
+        if (empresaId > 0) 'empresa_id': empresaId,
+        'nombre': nombre,
+        'activo': activo,
+        if (codigo != null && codigo.isNotEmpty) 'codigo': codigo,
+      };
+
+      print(
+        '🔄 Sync categoría '
+        'local=$localId '
+        'server='
+        '${existingServerId > 0 ? existingServerId : 'NUEVA'}',
+      );
+
+      final response = existingServerId > 0
+          ? await _apiClient.updateCategory(existingServerId, serverPayload)
+          : await _apiClient.createCategory(serverPayload);
+
+      final serverId = _extractServerId(response);
+
+      final resolvedServerId = serverId > 0 ? serverId : existingServerId;
+
+      if (resolvedServerId <= 0) {
+        throw Exception(
+          'El servidor no devolvió server_id '
+          'para la categoría.',
+        );
+      }
+
+      final db = await _historyDb.database;
+
+      await db.update(
+        'categories',
+        {
+          'server_id': resolvedServerId,
+          'updated_at': DateTime.now().toIso8601String(),
+        },
+        where: 'id = ?',
+        whereArgs: [localId],
+      );
+
+      await _historyDb.markSyncQueueSynced(
+        queueId,
+        serverId: resolvedServerId,
+        serverUuid: _extractServerUuid(response),
+        serverStatus: 'accepted',
+        serverReceivedAt: DateTime.now().toIso8601String(),
+      );
+
+      print(
+        '✅ Categoría sincronizada '
+        'local=$localId '
+        'server=$resolvedServerId',
+      );
+
+      return true;
+    } catch (e) {
+      print(
+        '❌ Error sincronizando categoría '
+        '${item['uuid_local']}: $e',
+      );
+
+      await _historyDb.markSyncQueueFailed(queueId, errorMessage: e.toString());
+
+      return false;
+    }
+  }
+
+  // ============================================================
+  // PROCESAR PRODUCTO
+  // ============================================================
+
+  Future<bool> _processProductQueueItem(Map<String, dynamic> item) async {
+    final queueId = _toInt(item['id']);
+
+    if (queueId <= 0) {
+      return false;
+    }
+
+    await _historyDb.markSyncQueueSyncing(queueId);
+
+    try {
+      final payloadJson = item['payload_json']?.toString() ?? '{}';
+
+      final decoded = jsonDecode(payloadJson);
+
+      if (decoded is! Map) {
+        throw const FormatException('Payload de producto inválido.');
+      }
+
+      final payload = Map<String, dynamic>.from(decoded);
+
+      final localId = _toInt(payload['local_id'] ?? item['entity_id_local']);
+
+      if (localId <= 0) {
+        throw const FormatException('El producto no tiene local_id válido.');
+      }
+
+      final existingServerId = _toInt(payload['server_id']);
+
+      final categoryLocalId = _toInt(
+        payload['categoria_local_id'] ?? payload['category_id'],
+      );
+
+      // ----------------------------------------------------------
+      // RESOLVER CATEGORÍA LOCAL → SERVIDOR
+      // ----------------------------------------------------------
+
+      int? categoryServerId;
+
+      if (categoryLocalId > 0) {
+        final db = await _historyDb.database;
+
+        final rows = await db.query(
+          'categories',
+          columns: ['id', 'server_id'],
+          where: 'id = ?',
+          whereArgs: [categoryLocalId],
+          limit: 1,
+        );
+
+        if (rows.isEmpty) {
+          throw Exception(
+            'No existe la categoría local '
+            '$categoryLocalId.',
+          );
+        }
+
+        categoryServerId = _toInt(rows.first['server_id']);
+
+        if (categoryServerId <= 0) {
+          throw Exception(
+            'La categoría local '
+            '$categoryLocalId '
+            'todavía no tiene server_id.',
+          );
+        }
+      }
+
+      final empresaId = _toInt(payload['empresa_id'] ?? item['empresa_id']);
+
+      final codigo = payload['codigo']?.toString().trim() ?? '';
+
+      final nombre = payload['nombre']?.toString().trim() ?? '';
+
+      if (codigo.isEmpty) {
+        throw const FormatException('El producto no tiene código.');
+      }
+
+      if (nombre.isEmpty) {
+        throw const FormatException('El producto no tiene nombre.');
+      }
+
+      final precio = _toDouble(payload['precio']);
+
+      final stock = _toDouble(payload['stock']);
+
+      final activo = _toBool(payload['activo'], defaultValue: true);
+
+      final inventariable = _toBool(
+        payload['inventariable'],
+        defaultValue: true,
+      );
+
+      final rawData = payload['data'];
+
+      final serverPayload = <String, dynamic>{
+        if (rawData is Map) ...Map<String, dynamic>.from(rawData),
+
+        if (empresaId > 0) 'empresa_id': empresaId,
+
+        'codigo': codigo,
+        'nombre': nombre,
+        'precio': precio,
+        'stock': stock,
+        'activo': activo,
+        'is_inventariable': inventariable,
+
+        if (categoryServerId != null) 'categoria_id': categoryServerId,
+      };
+
+      print(
+        '🔄 Sync producto '
+        'local=$localId '
+        'server='
+        '${existingServerId > 0 ? existingServerId : 'NUEVO'} '
+        'categoria='
+        '$categoryLocalId→'
+        '${categoryServerId ?? '-'}',
+      );
+
+      print(
+        '📤 PRODUCT PAYLOAD '
+        'local=$localId: '
+        '${jsonEncode(serverPayload)}',
+      );
+
+      final response = existingServerId > 0
+          ? await _apiClient.updateProduct(existingServerId, serverPayload)
+          : await _apiClient.createProduct(serverPayload);
+
+      final serverId = _extractServerId(response);
+
+      final resolvedServerId = serverId > 0 ? serverId : existingServerId;
+
+      if (resolvedServerId <= 0) {
+        throw Exception(
+          'El servidor no devolvió server_id '
+          'para el producto.',
+        );
+      }
+
+      await _historyDb.setProductServerId(
+        localId: localId,
+        serverId: resolvedServerId,
+      );
+
+      await _historyDb.markSyncQueueSynced(
+        queueId,
+        serverId: resolvedServerId,
+        serverUuid: _extractServerUuid(response),
+        serverStatus: 'accepted',
+        serverReceivedAt: DateTime.now().toIso8601String(),
+      );
+
+      print(
+        '✅ Producto sincronizado '
+        'local=$localId '
+        'server=$resolvedServerId',
+      );
+
+      return true;
+    } catch (e) {
+      print(
+        '❌ Error sincronizando producto '
+        '${item['uuid_local']}: $e',
+      );
+
+      await _historyDb.markSyncQueueFailed(queueId, errorMessage: e.toString());
+
+      return false;
+    }
+  }
+
+  // ============================================================
+  // EXTRAER SERVER ID DE RESPUESTA
+  // ============================================================
+
+  int _extractServerId(dynamic response) {
+    if (response is! Map) {
+      return 0;
+    }
+
+    final map = Map<String, dynamic>.from(response);
+
+    final direct = _toInt(map['server_id'] ?? map['id']);
+
+    if (direct > 0) {
+      return direct;
+    }
+
+    final data = map['data'];
+
+    if (data is Map) {
+      final nested = _toInt(data['server_id'] ?? data['id']);
+
+      if (nested > 0) {
+        return nested;
+      }
+    }
+
+    for (final key in const ['categoria', 'category', 'producto', 'product']) {
+      final entity = map[key];
+
+      if (entity is Map) {
+        final nested = _toInt(entity['server_id'] ?? entity['id']);
+
+        if (nested > 0) {
+          return nested;
+        }
+      }
+    }
+
+    return 0;
+  }
+
+  // ============================================================
+  // EXTRAER UUID DEL SERVIDOR
+  // ============================================================
+
+  String? _extractServerUuid(dynamic response) {
+    if (response is! Map) {
+      return null;
+    }
+
+    final map = Map<String, dynamic>.from(response);
+
+    final direct = map['server_uuid'] ?? map['uuid'];
+
+    if (direct != null && direct.toString().trim().isNotEmpty) {
+      return direct.toString().trim();
+    }
+
+    final data = map['data'];
+
+    if (data is Map) {
+      final uuid = data['server_uuid'] ?? data['uuid'];
+
+      if (uuid != null && uuid.toString().trim().isNotEmpty) {
+        return uuid.toString().trim();
+      }
+    }
+
+    return null;
   }
 
   // ============================================================
@@ -1076,7 +1925,11 @@ class SyncService {
     }
 
     if (uniqueSales.isEmpty) {
-      print('ℹ️ No existen ventas válidas para aplicar.');
+      print(
+        'ℹ️ No existen ventas válidas '
+        'para aplicar.',
+      );
+
       return;
     }
 
@@ -1515,26 +2368,20 @@ class SyncService {
   }
 
   // ============================================================
-  // COLUMNAS SQLITE
-  // ============================================================
-
-  Future<Set<String>> _tableColumns(Database db, String table) async {
-    try {
-      final result = await db.rawQuery('PRAGMA table_info($table)');
-
-      return result
-          .map((row) => row['name']?.toString() ?? '')
-          .where((name) => name.isNotEmpty)
-          .toSet();
-    } catch (_) {
-      return <String>{};
-    }
-  }
-
-  // ============================================================
   // EXTRAER SERVER ID DEL PRODUCTO
   // ============================================================
 
+  /// Diferencia explícitamente entre:
+  ///
+  /// LocalDb:
+  ///   id = LOCAL ID
+  ///   server_id = SERVER ID
+  ///
+  /// PosDatabaseService:
+  ///   id = SERVER ID
+  ///
+  /// Si el mapa tiene server_id pero está vacío,
+  /// NO usamos id como server_id.
   int _extractServerProductId(Map<String, dynamic>? product) {
     if (product == null) {
       return 0;
@@ -1549,15 +2396,14 @@ class SyncService {
     }
 
     /*
-     * Para la base diaria existente:
+     * Base diaria:
      *
-     * products.id = ID del producto del servidor.
+     * products.id = server product ID
      *
-     * Para LocalDb nueva:
-     * products.server_id = ID real del servidor.
+     * LocalDb:
      *
-     * No usamos id como server_id en LocalDb cuando
-     * existe server_id pero está vacío.
+     * products.id = local ID
+     * products.server_id = server ID
      */
     if (!product.containsKey('server_id') &&
         !product.containsKey('producto_server_id')) {
@@ -1571,7 +2417,7 @@ class SyncService {
   // PRIMER VALOR NO VACÍO
   // ============================================================
 
-  String? _firstNonEmpty(dynamic a, dynamic b, dynamic c, dynamic d) {
+  String? _firstNonEmpty(dynamic a, dynamic b, [dynamic c, dynamic d]) {
     final values = [a, b, c, d];
 
     for (final value in values) {
@@ -1584,7 +2430,6 @@ class SyncService {
 
     return null;
   }
-
   // ============================================================
   // INVENTARIO
   // ============================================================
@@ -1606,7 +2451,6 @@ class SyncService {
           product['inventariable'];
     }
 
-    // Compatibilidad con data_json
     if (value == null && product != null) {
       final rawDataJson = product['data_json'];
 
@@ -1624,10 +2468,6 @@ class SyncService {
       }
     }
 
-    // IMPORTANTE:
-    // Si no existe el campo en registros antiguos,
-    // mantenemos el comportamiento actual:
-    // por defecto SÍ maneja inventario.
     return _toBool(value, defaultValue: true);
   }
 
