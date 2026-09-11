@@ -70,10 +70,15 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
       if (_bluetoothPermission && _bluetoothEnabled) {
         _printers = await _service.pairedBluetoothPrinters();
 
-        final connected = await _service.bluetoothConnected();
+        final selectedPrinter = await _service.selectedPrinter();
 
-        if (connected) {
-          _connectedAddress = _selectedAddress;
+        if (selectedPrinter != null) {
+          final connected =
+              await _service.ensureBluetoothConnection();
+
+          if (connected) {
+            _connectedAddress = selectedPrinter.address;
+          }
         }
       }
     } catch (error) {
@@ -293,12 +298,35 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
   Future<void> _testBluetooth() async {
     if (_printingTest) return;
 
-    if (_connectedAddress == null) {
-      _showMessage('Primero conecta una impresora Bluetooth.', error: true);
+    final connected =
+        await _service.ensureBluetoothConnection();
+
+    if (!connected) {
+      _connectedAddress = null;
+
+      _showMessage(
+        'No fue posible conectar la impresora Bluetooth seleccionada.',
+        error: true,
+      );
       return;
     }
 
+    final selectedPrinter = await _service.selectedPrinter();
+
+    if (selectedPrinter == null) {
+      _connectedAddress = null;
+
+      _showMessage(
+        'No hay una impresora Bluetooth seleccionada.',
+        error: true,
+      );
+      return;
+    }
+
+    if (!mounted) return;
+
     setState(() {
+      _connectedAddress = selectedPrinter.address;
       _printingTest = true;
       _message = null;
     });

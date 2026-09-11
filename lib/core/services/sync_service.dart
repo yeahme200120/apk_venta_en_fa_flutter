@@ -59,21 +59,11 @@ class SyncService {
     int? limit,
   }) async {
     if (_running) {
-      return const SyncResult(
-        total: 0,
-        synced: 0,
-        failed: 0,
-        skipped: 0,
-      );
+      return const SyncResult(total: 0, synced: 0, failed: 0, skipped: 0);
     }
 
     if (await AppStorage().isOfflineSession()) {
-      return const SyncResult(
-        total: 0,
-        synced: 0,
-        failed: 0,
-        skipped: 0,
-      );
+      return const SyncResult(total: 0, synced: 0, failed: 0, skipped: 0);
     }
 
     _running = true;
@@ -88,16 +78,14 @@ class SyncService {
       // 1. HISTÓRICO
       // ----------------------------------------------------------
 
-      final historical =
-          await _historyDb.getPendingSalesReadyToSync(
+      final historical = await _historyDb.getPendingSalesReadyToSync(
         limit: limit,
       );
 
       for (final sale in historical) {
         total++;
 
-        final ok =
-            await _syncHistoricalSale(sale);
+        final ok = await _syncHistoricalSale(sale);
 
         if (ok) {
           synced++;
@@ -110,8 +98,7 @@ class SyncService {
       // 2. OUTBOX DEL DÍA
       // ----------------------------------------------------------
 
-      final dayOutbox =
-          await _dayDb.getPendingOutbox(
+      final dayOutbox = await _dayDb.getPendingOutbox(
         companyId: companyId,
         userId: userId,
         businessDate: businessDate,
@@ -121,12 +108,7 @@ class SyncService {
       for (final item in dayOutbox) {
         total++;
 
-        final ok = await _syncDayOutbox(
-          companyId,
-          userId,
-          businessDate,
-          item,
-        );
+        final ok = await _syncDayOutbox(companyId, userId, businessDate, item);
 
         if (ok) {
           synced++;
@@ -150,11 +132,8 @@ class SyncService {
   // SINCRONIZAR UNA VENTA
   // ============================================================
 
-  Future<bool> syncSaleById(
-    int saleId,
-  ) async {
-    final sale =
-        await _historyDb.getSaleById(saleId);
+  Future<bool> syncSaleById(int saleId) async {
+    final sale = await _historyDb.getSaleById(saleId);
 
     if (sale == null) {
       return false;
@@ -164,10 +143,7 @@ class SyncService {
       return true;
     }
 
-    return _syncHistoricalSale(
-      sale,
-      force: true,
-    );
+    return _syncHistoricalSale(sale, force: true);
   }
 
   // ============================================================
@@ -178,40 +154,26 @@ class SyncService {
     Map<String, dynamic> sale, {
     bool force = false,
   }) async {
-    final id = _toInt(
-      sale['id'],
-    );
+    final id = _toInt(sale['id']);
 
     if (id <= 0) {
       return false;
     }
 
-    if (!force &&
-        sale['next_retry_at'] != null) {
-      final nextRetry =
-          DateTime.tryParse(
-        sale['next_retry_at'].toString(),
-      );
+    if (!force && sale['next_retry_at'] != null) {
+      final nextRetry = DateTime.tryParse(sale['next_retry_at'].toString());
 
-      if (nextRetry != null &&
-          nextRetry.isAfter(
-            DateTime.now(),
-          )) {
+      if (nextRetry != null && nextRetry.isAfter(DateTime.now())) {
         return true;
       }
     }
 
-    if (sale['status']
-            ?.toString()
-            .toLowerCase() ==
-        'cancelled') {
+    if (sale['status']?.toString().toLowerCase() == 'cancelled') {
       await _historyDb.markSaleAsSynced(
         id,
         serverResponse: {
-          'server_id':
-              sale['server_id'],
-          'folio':
-              sale['server_folio'],
+          'server_id': sale['server_id'],
+          'folio': sale['server_folio'],
         },
       );
 
@@ -221,13 +183,9 @@ class SyncService {
     await _historyDb.markSaleSyncing(id);
 
     try {
-      final venta =
-          await _buildHistoricalPayload(
-        sale,
-      );
+      final venta = await _buildHistoricalPayload(sale);
 
-      final payload =
-          <String, dynamic>{
+      final payload = <String, dynamic>{
         'ventas': [venta],
       };
 
@@ -236,43 +194,25 @@ class SyncService {
         '${sale['uuid_local']}',
       );
 
-      print(
-        '📦 Payload: $payload',
-      );
+      print('📦 Payload: $payload');
 
-      final response =
-          await _apiClient.syncOffline(
-        payload,
-      );
+      final response = await _apiClient.syncOffline(payload);
 
-      final errores =
-          response['errores'];
+      final errores = response['errores'];
 
-      if (errores is List &&
-          errores.isNotEmpty) {
-        throw Exception(
-          'El servidor rechazó la venta: $errores',
-        );
+      if (errores is List && errores.isNotEmpty) {
+        throw Exception('El servidor rechazó la venta: $errores');
       }
 
-      final procesadas =
-          response['procesadas'];
+      final procesadas = response['procesadas'];
 
-      if (procesadas is List &&
-          procesadas.isEmpty) {
-        throw Exception(
-          'El servidor no confirmó la venta sincronizada.',
-        );
+      if (procesadas is List && procesadas.isEmpty) {
+        throw Exception('El servidor no confirmó la venta sincronizada.');
       }
 
-      await _applyHistoricalProductMappings(
-        response,
-      );
+      await _applyHistoricalProductMappings(response);
 
-      await _historyDb.markSaleAsSynced(
-        id,
-        serverResponse: response,
-      );
+      await _historyDb.markSaleAsSynced(id, serverResponse: response);
 
       return true;
     } catch (e) {
@@ -281,10 +221,7 @@ class SyncService {
         '${sale['uuid_local']}: $e',
       );
 
-      await _historyDb.markSaleSyncFailed(
-        id,
-        e.toString(),
-      );
+      await _historyDb.markSaleSyncFailed(id, e.toString());
 
       return false;
     }
@@ -294,30 +231,16 @@ class SyncService {
   // CONSTRUIR PAYLOAD HISTÓRICO
   // ============================================================
 
-  Future<Map<String, dynamic>>
-      _buildHistoricalPayload(
+  Future<Map<String, dynamic>> _buildHistoricalPayload(
     Map<String, dynamic> sale,
   ) async {
-    final saleId =
-        _toInt(sale['id']);
+    final saleId = _toInt(sale['id']);
 
-    final items =
-        await _historyDb
-            .getSaleItemsBySaleId(
-      saleId,
-    );
+    final items = await _historyDb.getSaleItemsBySaleId(saleId);
 
-    final payments =
-        await _historyDb
-            .getSalePaymentsBySaleId(
-      saleId,
-    );
+    final payments = await _historyDb.getSalePaymentsBySaleId(saleId);
 
-    return _buildPayload(
-      sale,
-      items,
-      payments,
-    );
+    return _buildPayload(sale, items, payments);
   }
 
   // ============================================================
@@ -330,39 +253,24 @@ class SyncService {
     DateTime date,
     Map<String, dynamic> item,
   ) async {
-    final uuid =
-        item['uuid_local']
-                ?.toString()
-                .trim() ??
-            '';
+    final uuid = item['uuid_local']?.toString().trim() ?? '';
 
     if (uuid.isEmpty) {
       return false;
     }
 
-    final attempts =
-        _toInt(item['attempts']);
+    final attempts = _toInt(item['attempts']);
 
     try {
-      final decoded =
-          jsonDecode(
-        item['payload']?.toString() ??
-            '{}',
-      );
+      final decoded = jsonDecode(item['payload']?.toString() ?? '{}');
 
       if (decoded is! Map) {
-        throw const FormatException(
-          'Payload de sincronización inválido.',
-        );
+        throw const FormatException('Payload de sincronización inválido.');
       }
 
-      final rawPayload =
-          Map<String, dynamic>.from(
-        decoded,
-      );
+      final rawPayload = Map<String, dynamic>.from(decoded);
 
-      final requestPayload =
-          await _normalizeOfflinePayload(
+      final requestPayload = await _normalizeOfflinePayload(
         rawPayload,
         uuidLocal: uuid,
         businessDate: date,
@@ -370,48 +278,31 @@ class SyncService {
         userId: userId,
       );
 
-      final ventas =
-          requestPayload['ventas'];
+      final ventas = requestPayload['ventas'];
 
-      if (ventas is! List ||
-          ventas.isEmpty) {
+      if (ventas is! List || ventas.isEmpty) {
         throw const FormatException(
           'El outbox no contiene ventas para sincronizar.',
         );
       }
 
-      print(
-        '🔄 Sincronizando outbox $uuid',
-      );
+      print('🔄 Sincronizando outbox $uuid');
 
-      final response =
-          await _apiClient.syncOffline(
-        requestPayload,
-      );
+      final response = await _apiClient.syncOffline(requestPayload);
 
-      final errores =
-          response['errores'];
+      final errores = response['errores'];
 
-      if (errores is List &&
-          errores.isNotEmpty) {
-        throw Exception(
-          'El servidor devolvió errores: $errores',
-        );
+      if (errores is List && errores.isNotEmpty) {
+        throw Exception('El servidor devolvió errores: $errores');
       }
 
-      final procesadas =
-          response['procesadas'];
+      final procesadas = response['procesadas'];
 
-      if (procesadas is List &&
-          procesadas.isEmpty) {
-        throw Exception(
-          'El servidor no confirmó la operación offline.',
-        );
+      if (procesadas is List && procesadas.isEmpty) {
+        throw Exception('El servidor no confirmó la operación offline.');
       }
 
-      await _applyHistoricalProductMappings(
-        response,
-      );
+      await _applyHistoricalProductMappings(response);
 
       await _dayDb.markOutboxSynced(
         companyId: companyId,
@@ -423,9 +314,7 @@ class SyncService {
 
       return true;
     } catch (e) {
-      print(
-        '❌ Error sincronizando outbox $uuid: $e',
-      );
+      print('❌ Error sincronizando outbox $uuid: $e');
 
       await _dayDb.markOutboxFailed(
         companyId: companyId,
@@ -444,48 +333,33 @@ class SyncService {
   // NORMALIZAR PAYLOAD OFFLINE
   // ============================================================
 
-  Future<Map<String, dynamic>>
-      _normalizeOfflinePayload(
+  Future<Map<String, dynamic>> _normalizeOfflinePayload(
     Map<String, dynamic> payload, {
     required String uuidLocal,
     required DateTime businessDate,
     required int companyId,
     required int userId,
   }) async {
-    final ventas =
-        payload['ventas'];
+    final ventas = payload['ventas'];
 
     if (ventas is List) {
-      final normalizedVentas =
-          <Map<String, dynamic>>[];
+      final normalizedVentas = <Map<String, dynamic>>[];
 
       for (final item in ventas) {
         if (item is! Map) {
           continue;
         }
 
-        final venta =
-            Map<String, dynamic>.from(
-          item,
-        );
+        final venta = Map<String, dynamic>.from(item);
 
-        final currentUuid =
-            venta['uuid_local']
-                    ?.toString()
-                    .trim() ??
-                '';
+        final currentUuid = venta['uuid_local']?.toString().trim() ?? '';
 
-        venta['uuid_local'] =
-            currentUuid.isNotEmpty
-                ? currentUuid
-                : uuidLocal;
+        venta['uuid_local'] = currentUuid.isNotEmpty ? currentUuid : uuidLocal;
 
-        venta['fecha_venta'] =
-            _normalizeSaleDate(
+        venta['fecha_venta'] = _normalizeSaleDate(
           venta['fecha_venta'] ??
               venta['business_date'] ??
-              businessDate
-                  .toIso8601String(),
+              businessDate.toIso8601String(),
         );
 
         normalizedVentas.add(
@@ -498,25 +372,17 @@ class SyncService {
         );
       }
 
-      return {
-        'ventas': normalizedVentas,
-      };
+      return {'ventas': normalizedVentas};
     }
 
-    final venta =
-        Map<String, dynamic>.from(
-      payload,
-    );
+    final venta = Map<String, dynamic>.from(payload);
 
-    venta['uuid_local'] =
-        uuidLocal;
+    venta['uuid_local'] = uuidLocal;
 
-    venta['fecha_venta'] =
-        _normalizeSaleDate(
+    venta['fecha_venta'] = _normalizeSaleDate(
       venta['fecha_venta'] ??
           venta['business_date'] ??
-          businessDate
-              .toIso8601String(),
+          businessDate.toIso8601String(),
     );
 
     return {
@@ -535,58 +401,32 @@ class SyncService {
   // NORMALIZAR VENTA
   // ============================================================
 
-  Future<Map<String, dynamic>>
-      _normalizeVenta(
+  Future<Map<String, dynamic>> _normalizeVenta(
     Map<String, dynamic> venta, {
     required int companyId,
     required int userId,
     required DateTime businessDate,
   }) async {
-    final normalized =
-        <String, dynamic>{
-      'uuid_local':
-          venta['uuid_local']
-                  ?.toString() ??
-              '',
-      'cliente_id':
-          venta['cliente_id'],
-      'productos':
-          await _normalizeProducts(
+    final normalized = <String, dynamic>{
+      'uuid_local': venta['uuid_local']?.toString() ?? '',
+      'cliente_id': venta['cliente_id'],
+      'productos': await _normalizeProducts(
         venta['productos'],
         companyId: companyId,
         userId: userId,
         businessDate: businessDate,
       ),
-      'pagos':
-          _normalizePayments(
-        venta['pagos'],
-      ),
-      'forma_pago':
-          venta['forma_pago'],
-      'monto_pagado':
-          venta['monto_pagado'],
-      'referencia':
-          venta['referencia'],
-      'descuento_global':
-          _toDouble(
-        venta['descuento_global'],
-      ),
-      'impuesto_global':
-          _toDouble(
-        venta['impuesto_global'],
-      ),
-      'dispositivo_id':
-          venta['dispositivo_id'],
-      'fecha_venta':
-          _normalizeSaleDate(
-        venta['fecha_venta'],
-      ),
+      'pagos': _normalizePayments(venta['pagos']),
+      'forma_pago': venta['forma_pago'],
+      'monto_pagado': venta['monto_pagado'],
+      'referencia': venta['referencia'],
+      'descuento_global': _toDouble(venta['descuento_global']),
+      'impuesto_global': _toDouble(venta['impuesto_global']),
+      'dispositivo_id': venta['dispositivo_id'],
+      'fecha_venta': _normalizeSaleDate(venta['fecha_venta']),
     };
 
-    normalized.removeWhere(
-      (key, value) =>
-          value == null,
-    );
+    normalized.removeWhere((key, value) => value == null);
 
     return normalized;
   }
@@ -595,8 +435,7 @@ class SyncService {
   // PRODUCTOS
   // ============================================================
 
-  Future<List<Map<String, dynamic>>>
-      _normalizeProducts(
+  Future<List<Map<String, dynamic>>> _normalizeProducts(
     dynamic value, {
     required int companyId,
     required int userId,
@@ -606,14 +445,12 @@ class SyncService {
       return [];
     }
 
-    final result =
-        <Map<String, dynamic>>[];
+    final result = <Map<String, dynamic>>[];
 
     Database? dayDatabase;
 
     try {
-      dayDatabase =
-          await _dayDb.open(
+      dayDatabase = await _dayDb.open(
         companyId: companyId,
         userId: userId,
         businessDate: businessDate,
@@ -627,89 +464,59 @@ class SyncService {
         continue;
       }
 
-      final item =
-          Map<String, dynamic>.from(
-        raw,
-      );
+      final item = Map<String, dynamic>.from(raw);
 
-      final localProductId =
-          _toInt(
+      final localProductId = _toInt(
         item['producto_local_id'] ??
             item['product_local_id'] ??
             item['product_id'] ??
             item['producto_id'],
       );
 
-      final cantidad =
-          _toDouble(
-        item['cantidad'] ??
-            item['quantity'],
-      );
+      final cantidad = _toDouble(item['cantidad'] ?? item['quantity']);
 
-      if (localProductId <= 0 ||
-          cantidad <= 0) {
+      if (localProductId <= 0 || cantidad <= 0) {
         continue;
       }
 
-      Map<String, dynamic>?
-          product;
+      Map<String, dynamic>? product;
 
-      final embeddedProduct =
-          item['producto'];
+      final embeddedProduct = item['producto'];
 
       if (embeddedProduct is Map) {
-        product =
-            Map<String, dynamic>.from(
-          embeddedProduct,
-        );
+        product = Map<String, dynamic>.from(embeddedProduct);
       }
 
-      if (product == null &&
-          dayDatabase != null) {
-        product =
-            await _getDayProduct(
-          dayDatabase,
-          localProductId,
-        );
+      if (product == null && dayDatabase != null) {
+        product = await _getDayProduct(dayDatabase, localProductId);
       }
 
-      product ??=
-          await _historyDb
-              .getProductById(
-        localProductId,
-      );
+      product ??= await _historyDb.getProductById(localProductId);
 
-      final serverProductId =
-          _extractServerProductId(
-        product,
-      );
+      final serverProductId = _extractServerProductId(product);
 
-      final code =
-          _firstNonEmpty(
+      final code = _firstNonEmpty(
         item['codigo'],
         item['code'],
         product?['code'],
         product?['codigo'],
       );
 
-      final name =
-          _firstNonEmpty(
+      final name = _firstNonEmpty(
         item['nombre'],
         item['name'],
         product?['name'],
         product?['nombre'],
       );
 
-      final description =
-          _firstNonEmpty(
+      final description = _firstNonEmpty(
         item['descripcion'],
         item['description'],
         product?['descripcion'],
         product?['description'],
       );
 
-      final unitPrice =
-          _toDouble(
+      final unitPrice = _toDouble(
         item['precio_unitario'] ??
             item['precio'] ??
             item['unit_price'] ??
@@ -717,38 +524,27 @@ class SyncService {
             product?['precio'],
       );
 
-      final cost =
-          _toDouble(
-        item['costo'] ??
-            item['cost'] ??
-            product?['cost'] ??
-            product?['costo'],
+      final cost = _toDouble(
+        item['costo'] ?? item['cost'] ?? product?['cost'] ?? product?['costo'],
       );
 
-      final tax =
-          _toDouble(
+      final tax = _toDouble(
         item['impuesto'] ??
             item['tax'] ??
             product?['tax'] ??
             product?['impuesto'],
       );
 
-      final stock =
-          _toDouble(
-        item['stock'] ??
-            product?['stock'],
-      );
+      final stock = _toDouble(item['stock'] ?? product?['stock']);
 
-      final stockMinimo =
-          _toDouble(
+      final stockMinimo = _toDouble(
         item['stock_minimo'] ??
             item['stock_min'] ??
             product?['stock_minimo'] ??
             product?['stock_min'],
       );
 
-      final activo =
-          _toBool(
+      final activo = _toBool(
         item['activo'] ??
             item['active'] ??
             product?['activo'] ??
@@ -756,32 +552,24 @@ class SyncService {
         defaultValue: true,
       );
 
-      final line =
-          <String, dynamic>{
-        'producto_local_id':
-            localProductId,
+      final isInventoriable = _extractInventoriable(item, product);
 
-        if (serverProductId > 0)
-          'producto_id':
-              serverProductId,
+      final line = <String, dynamic>{
+        'producto_local_id': localProductId,
+        'is_inventariable': isInventoriable,
 
-        if (code != null &&
-            code.isNotEmpty)
-          'codigo': code,
+        if (serverProductId > 0) 'producto_id': serverProductId,
 
-        if (name != null &&
-            name.isNotEmpty)
-          'nombre': name,
+        if (code != null && code.isNotEmpty) 'codigo': code,
 
-        if (description != null &&
-            description.isNotEmpty)
-          'descripcion':
-              description,
+        if (name != null && name.isNotEmpty) 'nombre': name,
+
+        if (description != null && description.isNotEmpty)
+          'descripcion': description,
 
         'cantidad': cantidad,
 
-        'precio_unitario':
-            unitPrice,
+        'precio_unitario': unitPrice,
 
         'costo': cost,
 
@@ -789,15 +577,11 @@ class SyncService {
 
         'stock': stock,
 
-        'stock_minimo':
-            stockMinimo,
+        'stock_minimo': stockMinimo,
 
         'activo': activo,
 
-        'descuento':
-            _toDouble(
-          item['descuento'],
-        ),
+        'descuento': _toDouble(item['descuento']),
       };
 
       result.add(line);
@@ -810,47 +594,30 @@ class SyncService {
   // OBTENER PRODUCTO DE LA BASE DIARIA
   // ============================================================
 
-  Future<Map<String, dynamic>?>
-      _getDayProduct(
+  Future<Map<String, dynamic>?> _getDayProduct(
     Database db,
     int localProductId,
   ) async {
     try {
-      final columns =
-          await _tableColumns(
-        db,
-        'products',
-      );
+      final columns = await _tableColumns(db, 'products');
 
-      if (columns.contains(
-        'server_id',
-      )) {
-        final result =
-            await db.query(
+      if (columns.contains('server_id')) {
+        final result = await db.query(
           'products',
-          where:
-              'id = ? OR server_id = ?',
-          whereArgs: [
-            localProductId,
-            localProductId,
-          ],
+          where: 'id = ? OR server_id = ?',
+          whereArgs: [localProductId, localProductId],
           limit: 1,
         );
 
         if (result.isNotEmpty) {
-          return Map<String, dynamic>.from(
-            result.first,
-          );
+          return Map<String, dynamic>.from(result.first);
         }
       }
 
-      final result =
-          await db.query(
+      final result = await db.query(
         'products',
         where: 'id = ?',
-        whereArgs: [
-          localProductId,
-        ],
+        whereArgs: [localProductId],
         limit: 1,
       );
 
@@ -858,9 +625,7 @@ class SyncService {
         return null;
       }
 
-      return Map<String, dynamic>.from(
-        result.first,
-      );
+      return Map<String, dynamic>.from(result.first);
     } catch (_) {
       return null;
     }
@@ -870,25 +635,17 @@ class SyncService {
   // MAPEAR PRODUCTOS LOCAL ↔ SERVIDOR
   // ============================================================
 
-  Future<void>
-      _applyHistoricalProductMappings(
+  Future<void> _applyHistoricalProductMappings(
     Map<String, dynamic> response,
   ) async {
-    final rawMappings =
-        response[
-          'productos_sincronizados'
-        ];
+    final rawMappings = response['productos_sincronizados'];
 
-    if (rawMappings is! List ||
-        rawMappings.isEmpty) {
+    if (rawMappings is! List || rawMappings.isEmpty) {
       return;
     }
 
     try {
-      await _historyDb
-          .applySyncProductMappings(
-        rawMappings,
-      );
+      await _historyDb.applySyncProductMappings(rawMappings);
 
       print(
         '✅ Mapeos de productos aplicados: '
@@ -908,64 +665,35 @@ class SyncService {
   // PAGOS
   // ============================================================
 
-  List<Map<String, dynamic>>
-      _normalizePayments(
-    dynamic value,
-  ) {
+  List<Map<String, dynamic>> _normalizePayments(dynamic value) {
     if (value is! List) {
       return [];
     }
 
-    final result =
-        <Map<String, dynamic>>[];
+    final result = <Map<String, dynamic>>[];
 
     for (final raw in value) {
       if (raw is! Map) {
         continue;
       }
 
-      final item =
-          Map<String, dynamic>.from(
-        raw,
-      );
+      final item = Map<String, dynamic>.from(raw);
 
-      final method =
-          item['forma_pago']
-                      ?.toString()
-                      .trim()
-                      .isNotEmpty ==
-                  true
-              ? item['forma_pago']
-                  .toString()
-              : item['method']
-                      ?.toString() ??
-                  'Efectivo';
+      final method = item['forma_pago']?.toString().trim().isNotEmpty == true
+          ? item['forma_pago'].toString()
+          : item['method']?.toString() ?? 'Efectivo';
 
-      final amount =
-          _toDouble(
-        item['monto'] ??
-            item['amount'],
-      );
+      final amount = _toDouble(item['monto'] ?? item['amount']);
 
       if (amount <= 0) {
         continue;
       }
 
       result.add({
-        'forma_pago':
-            _mapPaymentMethod(
-          method,
-        ),
-        'monto':
-            roundMoney(amount),
-        'cambio':
-            roundMoney(
-          _toDouble(
-            item['cambio'],
-          ),
-        ),
-        'referencia':
-            item['referencia'],
+        'forma_pago': _mapPaymentMethod(method),
+        'monto': roundMoney(amount),
+        'cambio': roundMoney(_toDouble(item['cambio'])),
+        'referencia': item['referencia'],
       });
     }
 
@@ -976,38 +704,24 @@ class SyncService {
   // CONSTRUIR PAYLOAD DESDE SQLITE
   // ============================================================
 
-  Future<Map<String, dynamic>>
-      _buildPayload(
+  Future<Map<String, dynamic>> _buildPayload(
     Map<String, dynamic> sale,
     List<Map<String, dynamic>> items,
     List<Map<String, dynamic>> payments,
   ) async {
-    final total =
-        _toDouble(
-      sale['total'],
-    );
+    final total = _toDouble(sale['total']);
 
-    final changeDue =
-        _toDouble(
-      sale['change_due'],
-    );
+    final changeDue = _toDouble(sale['change_due']);
 
-    final normalizedPayments =
-        <Map<String, dynamic>>[];
+    final normalizedPayments = <Map<String, dynamic>>[];
 
     var cashAdjusted = false;
     var totalNetPayments = 0.0;
 
     for (final payment in payments) {
-      final method =
-          payment['method']
-                  ?.toString() ??
-              'Efectivo';
+      final method = payment['method']?.toString() ?? 'Efectivo';
 
-      final original =
-          _toDouble(
-        payment['amount'],
-      );
+      final original = _toDouble(payment['amount']);
 
       if (original <= 0) {
         continue;
@@ -1016,11 +730,8 @@ class SyncService {
       var amount = original;
       var change = 0.0;
 
-      if (_isCash(method) &&
-          !cashAdjusted &&
-          changeDue > 0) {
-        amount =
-            original - changeDue;
+      if (_isCash(method) && !cashAdjusted && changeDue > 0) {
+        amount = original - changeDue;
 
         change = changeDue;
 
@@ -1036,125 +747,78 @@ class SyncService {
       }
 
       normalizedPayments.add({
-        'forma_pago':
-            _mapPaymentMethod(
-          method,
-        ),
-        'monto':
-            roundMoney(amount),
-        'cambio':
-            roundMoney(change),
-        'referencia':
-            payment['referencia'],
+        'forma_pago': _mapPaymentMethod(method),
+        'monto': roundMoney(amount),
+        'cambio': roundMoney(change),
+        'referencia': payment['referencia'],
       });
 
-      totalNetPayments +=
-          amount;
+      totalNetPayments += amount;
     }
 
-    final difference =
-        roundMoney(
-      total - totalNetPayments,
-    );
+    final difference = roundMoney(total - totalNetPayments);
 
-    if (difference.abs() >
-        0.009) {
-      if (normalizedPayments
-          .isNotEmpty) {
-        final first =
-            normalizedPayments
-                .first;
+    if (difference.abs() > 0.009) {
+      if (normalizedPayments.isNotEmpty) {
+        final first = normalizedPayments.first;
 
-        first['monto'] =
-            roundMoney(
-          _toDouble(
-                first['monto'],
-              ) +
-              difference,
-        );
-      } else if (difference >
-          0) {
+        first['monto'] = roundMoney(_toDouble(first['monto']) + difference);
+      } else if (difference > 0) {
         normalizedPayments.add({
-          'forma_pago':
-              'Efectivo',
-          'monto':
-              roundMoney(
-            difference,
-          ),
+          'forma_pago': 'Efectivo',
+          'monto': roundMoney(difference),
           'cambio': 0.0,
           'referencia': null,
         });
       }
     }
 
-    final fechaVenta =
-        _normalizeSaleDate(
+    final fechaVenta = _normalizeSaleDate(
       sale['fecha_venta'] ??
           sale['created_at'] ??
           sale['business_date'] ??
-          DateTime.now()
-              .toIso8601String(),
+          DateTime.now().toIso8601String(),
     );
 
-    final normalizedProducts =
-        <Map<String, dynamic>>[];
+    final normalizedProducts = <Map<String, dynamic>>[];
 
     for (final item in items) {
-      final localProductId =
-          _toInt(
-        item['producto_local_id'] ??
-            item['product_id'] ??
-            item['producto_id'],
+      final localProductId = _toInt(
+        item['producto_local_id'] ?? item['product_id'] ?? item['producto_id'],
       );
 
-      final cantidad =
-          _toDouble(
-        item['quantity'] ??
-            item['cantidad'],
-      );
+      final cantidad = _toDouble(item['quantity'] ?? item['cantidad']);
 
-      if (localProductId <= 0 ||
-          cantidad <= 0) {
+      if (localProductId <= 0 || cantidad <= 0) {
         continue;
       }
 
-      final product =
-          await _historyDb
-              .getProductById(
-        localProductId,
-      );
+      final product = await _historyDb.getProductById(localProductId);
 
-      final serverProductId =
-          _extractServerProductId(
-        product,
-      );
+      final serverProductId = _extractServerProductId(product);
 
-      final code =
-          _firstNonEmpty(
+      final code = _firstNonEmpty(
         item['codigo'],
         item['code'],
         product?['code'],
         product?['codigo'],
       );
 
-      final name =
-          _firstNonEmpty(
+      final name = _firstNonEmpty(
         item['nombre'],
         item['name'],
         product?['name'],
         product?['nombre'],
       );
 
-      final description =
-          _firstNonEmpty(
+      final description = _firstNonEmpty(
         item['descripcion'],
         item['description'],
         product?['descripcion'],
         product?['description'],
       );
 
-      final unitPrice =
-          _toDouble(
+      final unitPrice = _toDouble(
         item['unit_price'] ??
             item['precio_unitario'] ??
             item['precio'] ??
@@ -1162,38 +826,27 @@ class SyncService {
             product?['precio'],
       );
 
-      final cost =
-          _toDouble(
-        item['costo'] ??
-            item['cost'] ??
-            product?['cost'] ??
-            product?['costo'],
+      final cost = _toDouble(
+        item['costo'] ?? item['cost'] ?? product?['cost'] ?? product?['costo'],
       );
 
-      final tax =
-          _toDouble(
+      final tax = _toDouble(
         item['impuesto'] ??
             item['tax'] ??
             product?['tax'] ??
             product?['impuesto'],
       );
 
-      final stock =
-          _toDouble(
-        item['stock'] ??
-            product?['stock'],
-      );
+      final stock = _toDouble(item['stock'] ?? product?['stock']);
 
-      final stockMinimo =
-          _toDouble(
+      final stockMinimo = _toDouble(
         item['stock_minimo'] ??
             item['stock_min'] ??
             product?['stock_minimo'] ??
             product?['stock_min'],
       );
 
-      final activo =
-          _toBool(
+      final activo = _toBool(
         item['activo'] ??
             item['active'] ??
             product?['activo'] ??
@@ -1201,135 +854,74 @@ class SyncService {
         defaultValue: true,
       );
 
+      final isInventoriable = _extractInventoriable(item, product);
+
       normalizedProducts.add({
-        'producto_local_id':
-            localProductId,
-
-        if (serverProductId > 0)
-          'producto_id':
-              serverProductId,
-
-        if (code != null &&
-            code.isNotEmpty)
-          'codigo': code,
-
-        if (name != null &&
-            name.isNotEmpty)
-          'nombre': name,
-
-        if (description != null &&
-            description.isNotEmpty)
-          'descripcion':
-              description,
+        'producto_local_id': localProductId,
+        if (serverProductId > 0) 'producto_id': serverProductId,
+        if (code != null && code.isNotEmpty) 'codigo': code,
+        if (name != null && name.isNotEmpty) 'nombre': name,
+        if (description != null && description.isNotEmpty)
+          'descripcion': description,
 
         'cantidad': cantidad,
-
-        'precio_unitario':
-            unitPrice,
-
+        'precio_unitario': unitPrice,
         'costo': cost,
-
         'impuesto': tax,
-
         'stock': stock,
-
-        'stock_minimo':
-            stockMinimo,
-
+        'stock_minimo': stockMinimo,
         'activo': activo,
+        'is_inventariable':isInventoriable,
 
-        'descuento':
-            _toDouble(
-          item['descuento'],
-        ),
+        'descuento': _toDouble(item['descuento']),
       });
     }
 
     return {
-      'uuid_local':
-          sale['uuid_local']
-                  ?.toString()
-                  .trim() ??
-              '',
-      'cliente_id':
-          sale['cliente_id'],
-      'productos':
-          normalizedProducts,
-      'pagos':
-          normalizedPayments,
-      'descuento_global':
-          _toDouble(
-        sale['descuento_global'],
-      ),
-      'impuesto_global':
-          _toDouble(
-        sale['impuesto_global'],
-      ),
-      'dispositivo_id':
-          sale['dispositivo_id'],
-      'fecha_venta':
-          fechaVenta,
-    }..removeWhere(
-        (key, value) =>
-            value == null,
-      );
+      'uuid_local': sale['uuid_local']?.toString().trim() ?? '',
+      'cliente_id': sale['cliente_id'],
+      'productos': normalizedProducts,
+      'pagos': normalizedPayments,
+      'descuento_global': _toDouble(sale['descuento_global']),
+      'impuesto_global': _toDouble(sale['impuesto_global']),
+      'dispositivo_id': sale['dispositivo_id'],
+      'fecha_venta': fechaVenta,
+    }..removeWhere((key, value) => value == null);
   }
 
   // ============================================================
   // ARCHIVAR PENDIENTES DEL DÍA
   // ============================================================
 
-  Future<int>
-      archivePendingSalesFromDay({
+  Future<int> archivePendingSalesFromDay({
     required int companyId,
     required int userId,
     required DateTime businessDate,
   }) async {
-    final db =
-        await _dayDb.open(
+    final db = await _dayDb.open(
       companyId: companyId,
       userId: userId,
       businessDate: businessDate,
     );
 
-    final rows =
-        await db.query(
+    final rows = await db.query(
       'sales',
-      where:
-          "sync_status IN ('pending','failed','syncing')",
-      orderBy:
-          'created_at ASC',
+      where: "sync_status IN ('pending','failed','syncing')",
+      orderBy: 'created_at ASC',
     );
 
     var count = 0;
 
     for (final sale in rows) {
-      final uuid =
-          sale['uuid_local']
-                  ?.toString()
-                  .trim() ??
-              '';
+      final uuid = sale['uuid_local']?.toString().trim() ?? '';
 
       if (uuid.isEmpty) {
         continue;
       }
 
-      final items =
-          await _dayDb.getSaleItems(
-        db,
-        _toInt(
-          sale['id'],
-        ),
-      );
+      final items = await _dayDb.getSaleItems(db, _toInt(sale['id']));
 
-      final payments =
-          await _dayDb
-              .getSalePayments(
-        db,
-        _toInt(
-          sale['id'],
-        ),
-      );
+      final payments = await _dayDb.getSalePayments(db, _toInt(sale['id']));
 
       await _historyDb.archiveDailySale(
         sale: sale,
@@ -1347,35 +939,18 @@ class SyncService {
   // SINCRONIZAR CATÁLOGOS
   // ============================================================
 
-  Future<void> syncCatalogs({
-    bool force = false,
-  }) async {
-    final versions =
-        await _historyDb
-            .getCatalogVersions();
+  Future<void> syncCatalogs({bool force = false}) async {
+    final versions = await _historyDb.getCatalogVersions();
 
-    final cursor =
-        await _historyDb
-            .getCatalogCursor(
-      'global',
-    );
+    final cursor = await _historyDb.getCatalogCursor('global');
 
-    final String? catalogDate =
-        force
-            ? null
-            : cursor ??
-                versions['global'];
+    final String? catalogDate = force ? null : cursor ?? versions['global'];
 
-    final DateTime? desde =
-        catalogDate == null ||
-                catalogDate.trim().isEmpty
-            ? null
-            : DateTime.tryParse(
-                catalogDate,
-              );
+    final DateTime? desde = catalogDate == null || catalogDate.trim().isEmpty
+        ? null
+        : DateTime.tryParse(catalogDate);
 
-    final response =
-        await _apiClient.getCatalog(
+    final response = await _apiClient.getCatalog(
       desde: desde?.toIso8601String(),
     );
 
@@ -1383,31 +958,19 @@ class SyncService {
       return;
     }
 
-    await _historyDb
-        .syncCatalogs(
-      response,
-    );
+    await _historyDb.syncCatalogs(response);
 
     final nextCursor =
-        response['next_cursor']
-                ?.toString() ??
-            response['cursor']
-                ?.toString();
+        response['next_cursor']?.toString() ?? response['cursor']?.toString();
 
     final nextVersion =
-        response['version']
-                ?.toString() ??
-            (response['versiones']
-                    is Map
-                ? (response['versiones']
-                        as Map)['global']
-                    ?.toString()
-                : null);
+        response['version']?.toString() ??
+        (response['versiones'] is Map
+            ? (response['versiones'] as Map)['global']?.toString()
+            : null);
 
-    if (nextCursor != null ||
-        nextVersion != null) {
-      await _historyDb
-          .setCatalogVersion(
+    if (nextCursor != null || nextVersion != null) {
+      await _historyDb.setCatalogVersion(
         'global',
         nextVersion,
         cursor: nextCursor,
@@ -1419,73 +982,40 @@ class SyncService {
   // PULL DE CAMBIOS DEL SERVIDOR
   // ============================================================
 
-  Future<Map<String, dynamic>>
-      syncPull() async {
-    final cursor =
-        await _historyDb
-            .getCatalogCursor(
-      'server_changes',
-    );
+  Future<Map<String, dynamic>> syncPull() async {
+    final cursor = await _historyDb.getCatalogCursor('server_changes');
 
     print(
       '⬇️ Iniciando SYNC PULL '
       'cursor=${cursor ?? 'SIN_CURSOR'}',
     );
 
-    final response =
-        await _apiClient.syncPull(
-      cursor: cursor,
-    );
+    final response = await _apiClient.syncPull(cursor: cursor);
 
-    print(
-      '⬇️ SYNC PULL recibido.',
-    );
+    print('⬇️ SYNC PULL recibido.');
 
-    final cambios =
-        response['cambios'];
+    final cambios = response['cambios'];
 
-    final tombstones =
-        response['tombstones'];
+    final tombstones = response['tombstones'];
 
-    final serverData =
-        <String, dynamic>{};
+    final serverData = <String, dynamic>{};
 
-    List<Map<String, dynamic>>
-        ventas =
-        <Map<String, dynamic>>[];
+    List<Map<String, dynamic>> ventas = <Map<String, dynamic>>[];
 
     if (cambios is Map) {
-      final cambiosMap =
-          Map<String, dynamic>.from(
-        cambios,
-      );
+      final cambiosMap = Map<String, dynamic>.from(cambios);
 
-      final rawVentas =
-          cambiosMap.remove(
-        'ventas',
-      );
+      final rawVentas = cambiosMap.remove('ventas');
 
       if (rawVentas is List) {
         ventas = rawVentas
             .whereType<Map>()
-            .map(
-              (item) =>
-                  Map<String, dynamic>.from(
-                item,
-              ),
-            )
-            .where(
-              (venta) =>
-                  _serverSaleUuid(
-                    venta,
-                  ).isNotEmpty,
-            )
+            .map((item) => Map<String, dynamic>.from(item))
+            .where((venta) => _serverSaleUuid(venta).isNotEmpty)
             .toList();
       }
 
-      serverData.addAll(
-        cambiosMap,
-      );
+      serverData.addAll(cambiosMap);
     }
 
     print(
@@ -1494,34 +1024,22 @@ class SyncService {
     );
 
     if (tombstones != null) {
-      serverData[
-          'tombstones'] =
-          tombstones;
+      serverData['tombstones'] = tombstones;
     }
 
     if (serverData.isNotEmpty) {
-      await _historyDb
-          .syncCatalogs(
-        serverData,
-      );
+      await _historyDb.syncCatalogs(serverData);
     }
 
     if (ventas.isNotEmpty) {
-      await _upsertServerSales(
-        ventas,
-      );
+      await _upsertServerSales(ventas);
     }
 
     final nextCursor =
-        response['next_cursor']
-                ?.toString() ??
-            response['cursor']
-                ?.toString();
+        response['next_cursor']?.toString() ?? response['cursor']?.toString();
 
-    if (nextCursor != null &&
-        nextCursor.isNotEmpty) {
-      await _historyDb
-          .setCatalogVersion(
+    if (nextCursor != null && nextCursor.isNotEmpty) {
+      await _historyDb.setCatalogVersion(
         'server_changes',
         null,
         cursor: nextCursor,
@@ -1533,9 +1051,7 @@ class SyncService {
       );
     }
 
-    print(
-      '✅ SYNC PULL finalizado.',
-    );
+    print('✅ SYNC PULL finalizado.');
 
     return response;
   }
@@ -1544,34 +1060,23 @@ class SyncService {
   // UPSERT DE VENTAS RECIBIDAS
   // ============================================================
 
-  Future<void> _upsertServerSales(
-    List<Map<String, dynamic>> ventas,
-  ) async {
-    final db =
-        await _historyDb.database;
+  Future<void> _upsertServerSales(List<Map<String, dynamic>> ventas) async {
+    final db = await _historyDb.database;
 
-    final uniqueSales =
-        <String,
-            Map<String, dynamic>>{};
+    final uniqueSales = <String, Map<String, dynamic>>{};
 
     for (final venta in ventas) {
-      final uuid =
-          _serverSaleUuid(
-        venta,
-      );
+      final uuid = _serverSaleUuid(venta);
 
       if (uuid.isEmpty) {
         continue;
       }
 
-      uniqueSales[uuid] =
-          venta;
+      uniqueSales[uuid] = venta;
     }
 
     if (uniqueSales.isEmpty) {
-      print(
-        'ℹ️ No existen ventas válidas para aplicar.',
-      );
+      print('ℹ️ No existen ventas válidas para aplicar.');
       return;
     }
 
@@ -1579,32 +1084,25 @@ class SyncService {
     var updated = 0;
     var skipped = 0;
 
-    await db.transaction(
-      (txn) async {
-        for (final venta
-            in uniqueSales.values) {
-          final result =
-              await _upsertServerSale(
-            txn,
-            venta,
-          );
+    await db.transaction((txn) async {
+      for (final venta in uniqueSales.values) {
+        final result = await _upsertServerSale(txn, venta);
 
-          switch (result) {
-            case 'inserted':
-              inserted++;
-              break;
+        switch (result) {
+          case 'inserted':
+            inserted++;
+            break;
 
-            case 'updated':
-              updated++;
-              break;
+          case 'updated':
+            updated++;
+            break;
 
-            case 'skipped':
-              skipped++;
-              break;
-          }
+          case 'skipped':
+            skipped++;
+            break;
         }
-      },
-    );
+      }
+    });
 
     print(
       '✅ Ventas servidor aplicadas: '
@@ -1622,38 +1120,25 @@ class SyncService {
     dynamic txn,
     Map<String, dynamic> venta,
   ) async {
-    final uuid =
-        _serverSaleUuid(
-      venta,
-    );
+    final uuid = _serverSaleUuid(venta);
 
     if (uuid.isEmpty) {
       return 'skipped';
     }
 
-    final existing =
-        await txn.query(
+    final existing = await txn.query(
       'sales',
-      where:
-          'uuid_local = ?',
+      where: 'uuid_local = ?',
       whereArgs: [uuid],
       limit: 1,
     );
 
     if (existing.isNotEmpty) {
-      final localSale =
-          Map<String, dynamic>.from(
-        existing.first,
-      );
+      final localSale = Map<String, dynamic>.from(existing.first);
 
-      final localId =
-          _toInt(
-        localSale['id'],
-      );
+      final localId = _toInt(localSale['id']);
 
-      if (_isLocalSalePending(
-        localSale,
-      )) {
+      if (_isLocalSalePending(localSale)) {
         print(
           '⚠️ Venta $uuid '
           'pendiente localmente. '
@@ -1663,26 +1148,14 @@ class SyncService {
         return 'skipped';
       }
 
-      await _updateExistingServerSale(
-        txn,
-        localId,
-        venta,
-      );
+      await _updateExistingServerSale(txn, localId, venta);
 
       return 'updated';
     }
 
-    final saleId =
-        await _insertServerSale(
-      txn,
-      venta,
-    );
+    final saleId = await _insertServerSale(txn, venta);
 
-    await _replaceServerSaleChildren(
-      txn,
-      saleId,
-      venta,
-    );
+    await _replaceServerSaleChildren(txn, saleId, venta);
 
     return 'inserted';
   }
@@ -1691,96 +1164,44 @@ class SyncService {
   // INSERTAR VENTA SERVIDOR
   // ============================================================
 
-  Future<int> _insertServerSale(
-    dynamic txn,
-    Map<String, dynamic> venta,
-  ) async {
-    final uuid =
-        _serverSaleUuid(
-      venta,
-    );
+  Future<int> _insertServerSale(dynamic txn, Map<String, dynamic> venta) async {
+    final uuid = _serverSaleUuid(venta);
 
-    final estado =
-        venta['estado']
-                ?.toString()
-                .trim() ??
-            'pagado';
+    final estado = venta['estado']?.toString().trim() ?? 'pagado';
 
-    final payments =
-        _serverPayments(
-      venta,
-    );
+    final payments = _serverPayments(venta);
 
-    final paymentMethod =
-        payments.isNotEmpty
-            ? payments.first[
-                'method']
-            : null;
+    final paymentMethod = payments.isNotEmpty ? payments.first['method'] : null;
 
-    final cashReceived =
-        _cashReceived(
-      payments,
-    );
+    final cashReceived = _cashReceived(payments);
 
-    final changeDue =
-        _cashChange(
-      payments,
-    );
+    final changeDue = _cashChange(payments);
 
-    return txn.insert(
-      'sales',
-      {
-        'uuid_local': uuid,
-        'total':
-            _toDouble(
-          venta['total'],
-        ),
-        'status':
-            _normalizeSaleStatus(
-          estado,
-        ),
-        'sync_status':
-            'synced',
-        'payment_method':
-            paymentMethod,
-        'cash_received':
-            cashReceived,
-        'change_due':
-            changeDue,
-        'mesa_id':
-            venta['mesa_id'],
-        'mesa_nombre':
-            venta['mesa_nombre']
-                ?.toString(),
-        'created_at':
-            _serverLocalDate(
-          venta['created_at'] ??
-              venta['fecha'],
-        ),
-        'updated_at':
-            _serverLocalDate(
-          venta['updated_at'] ??
-              venta['created_at'] ??
-              venta['fecha'],
-        ),
-        'paid_at':
-            estado.toLowerCase() ==
-                    'pagado'
-                ? _serverLocalDate(
-                    venta['fecha'] ??
-                        venta['created_at'],
-                  )
-                : null,
-      },
-    );
+    return txn.insert('sales', {
+      'uuid_local': uuid,
+      'total': _toDouble(venta['total']),
+      'status': _normalizeSaleStatus(estado),
+      'sync_status': 'synced',
+      'payment_method': paymentMethod,
+      'cash_received': cashReceived,
+      'change_due': changeDue,
+      'mesa_id': venta['mesa_id'],
+      'mesa_nombre': venta['mesa_nombre']?.toString(),
+      'created_at': _serverLocalDate(venta['created_at'] ?? venta['fecha']),
+      'updated_at': _serverLocalDate(
+        venta['updated_at'] ?? venta['created_at'] ?? venta['fecha'],
+      ),
+      'paid_at': estado.toLowerCase() == 'pagado'
+          ? _serverLocalDate(venta['fecha'] ?? venta['created_at'])
+          : null,
+    });
   }
 
   // ============================================================
   // ACTUALIZAR VENTA SERVIDOR
   // ============================================================
 
-  Future<void>
-      _updateExistingServerSale(
+  Future<void> _updateExistingServerSale(
     dynamic txn,
     int saleId,
     Map<String, dynamic> venta,
@@ -1789,88 +1210,43 @@ class SyncService {
       return;
     }
 
-    final estado =
-        venta['estado']
-                ?.toString()
-                .trim() ??
-            'pagado';
+    final estado = venta['estado']?.toString().trim() ?? 'pagado';
 
-    final payments =
-        _serverPayments(
-      venta,
-    );
+    final payments = _serverPayments(venta);
 
-    final paymentMethod =
-        payments.isNotEmpty
-            ? payments.first[
-                'method']
-            : null;
+    final paymentMethod = payments.isNotEmpty ? payments.first['method'] : null;
 
     await txn.update(
       'sales',
       {
-        'total':
-            _toDouble(
-          venta['total'],
+        'total': _toDouble(venta['total']),
+        'status': _normalizeSaleStatus(estado),
+        'sync_status': 'synced',
+        'payment_method': paymentMethod,
+        'cash_received': _cashReceived(payments),
+        'change_due': _cashChange(payments),
+        'mesa_id': venta['mesa_id'],
+        'mesa_nombre': venta['mesa_nombre']?.toString(),
+        'created_at': _serverLocalDate(venta['created_at'] ?? venta['fecha']),
+        'updated_at': _serverLocalDate(
+          venta['updated_at'] ?? venta['created_at'] ?? venta['fecha'],
         ),
-        'status':
-            _normalizeSaleStatus(
-          estado,
-        ),
-        'sync_status':
-            'synced',
-        'payment_method':
-            paymentMethod,
-        'cash_received':
-            _cashReceived(
-          payments,
-        ),
-        'change_due':
-            _cashChange(
-          payments,
-        ),
-        'mesa_id':
-            venta['mesa_id'],
-        'mesa_nombre':
-            venta['mesa_nombre']
-                ?.toString(),
-        'created_at':
-            _serverLocalDate(
-          venta['created_at'] ??
-              venta['fecha'],
-        ),
-        'updated_at':
-            _serverLocalDate(
-          venta['updated_at'] ??
-              venta['created_at'] ??
-              venta['fecha'],
-        ),
-        'paid_at':
-            estado.toLowerCase() ==
-                    'pagado'
-                ? _serverLocalDate(
-                    venta['fecha'] ??
-                        venta['created_at'],
-                  )
-                : null,
+        'paid_at': estado.toLowerCase() == 'pagado'
+            ? _serverLocalDate(venta['fecha'] ?? venta['created_at'])
+            : null,
       },
       where: 'id = ?',
       whereArgs: [saleId],
     );
 
-    await _replaceServerSaleChildren(
-      txn,
-      saleId,
-      venta,
-    );
+    await _replaceServerSaleChildren(txn, saleId, venta);
   }
 
   // ============================================================
   // REEMPLAZAR DETALLES Y PAGOS
   // ============================================================
 
-  Future<void>
-      _replaceServerSaleChildren(
+  Future<void> _replaceServerSaleChildren(
     dynamic txn,
     int saleId,
     Map<String, dynamic> venta,
@@ -1879,22 +1255,15 @@ class SyncService {
       return;
     }
 
-    await txn.delete(
-      'sale_items',
-      where:
-          'sale_id = ?',
-      whereArgs: [saleId],
-    );
+    await txn.delete('sale_items', where: 'sale_id = ?', whereArgs: [saleId]);
 
     await txn.delete(
       'sale_payments',
-      where:
-          'sale_id = ?',
+      where: 'sale_id = ?',
       whereArgs: [saleId],
     );
 
-    final detalles =
-        venta['detalles'];
+    final detalles = venta['detalles'];
 
     if (detalles is List) {
       for (final raw in detalles) {
@@ -1902,86 +1271,46 @@ class SyncService {
           continue;
         }
 
-        final detalle =
-            Map<String, dynamic>.from(
-          raw,
+        final detalle = Map<String, dynamic>.from(raw);
+
+        final productId = _toInt(detalle['producto_id']);
+
+        final quantity = _toDouble(detalle['cantidad']);
+
+        final unitPrice = _toDouble(
+          detalle['precio'] ?? detalle['precio_unitario'],
         );
 
-        final productId =
-            _toInt(
-          detalle['producto_id'],
-        );
+        final total = _toDouble(detalle['total']);
 
-        final quantity =
-            _toDouble(
-          detalle['cantidad'],
-        );
-
-        final unitPrice =
-            _toDouble(
-          detalle['precio'] ??
-              detalle['precio_unitario'],
-        );
-
-        final total =
-            _toDouble(
-          detalle['total'],
-        );
-
-        if (productId <= 0 ||
-            quantity <= 0) {
+        if (productId <= 0 || quantity <= 0) {
           continue;
         }
 
-        final producto =
-            detalle['producto'];
+        final producto = detalle['producto'];
 
         String? name;
 
         if (producto is Map) {
-          name =
-              producto['nombre']
-                      ?.toString() ??
-                  producto['name']
-                      ?.toString();
+          name = producto['nombre']?.toString() ?? producto['name']?.toString();
         }
 
-        name ??=
-            detalle['nombre']
-                ?.toString() ??
-            detalle['name']
-                ?.toString();
+        name ??= detalle['nombre']?.toString() ?? detalle['name']?.toString();
 
-        final itemTotal =
-            total > 0
-                ? total
-                : roundMoney(
-                    quantity *
-                        unitPrice,
-                  );
+        final itemTotal = total > 0 ? total : roundMoney(quantity * unitPrice);
 
-        await txn.insert(
-          'sale_items',
-          {
-            'sale_id': saleId,
-            'product_id':
-                productId,
-            'name':
-                name ??
-                    'Producto',
-            'quantity':
-                quantity,
-            'unit_price':
-                unitPrice,
-            'total':
-                itemTotal,
-          },
-        );
+        await txn.insert('sale_items', {
+          'sale_id': saleId,
+          'product_id': productId,
+          'name': name ?? 'Producto',
+          'quantity': quantity,
+          'unit_price': unitPrice,
+          'total': itemTotal,
+        });
       }
     }
 
-    final pagos =
-        venta['pagos'];
+    final pagos = venta['pagos'];
 
     if (pagos is List) {
       for (final raw in pagos) {
@@ -1989,48 +1318,23 @@ class SyncService {
           continue;
         }
 
-        final pago =
-            Map<String, dynamic>.from(
-          raw,
-        );
+        final pago = Map<String, dynamic>.from(raw);
 
-        final method =
-            pago['forma_pago']
-                        ?.toString()
-                        .trim()
-                        .isNotEmpty ==
-                    true
-                ? pago[
-                    'forma_pago']
-                  .toString()
-                : pago['method']
-                        ?.toString() ??
-                    'Efectivo';
+        final method = pago['forma_pago']?.toString().trim().isNotEmpty == true
+            ? pago['forma_pago'].toString()
+            : pago['method']?.toString() ?? 'Efectivo';
 
-        final amount =
-            _toDouble(
-          pago['monto'] ??
-              pago['amount'],
-        );
+        final amount = _toDouble(pago['monto'] ?? pago['amount']);
 
         if (amount <= 0) {
           continue;
         }
 
-        await txn.insert(
-          'sale_payments',
-          {
-            'sale_id': saleId,
-            'method':
-                _mapPaymentMethod(
-              method,
-            ),
-            'amount':
-                roundMoney(
-              amount,
-            ),
-          },
-        );
+        await txn.insert('sale_payments', {
+          'sale_id': saleId,
+          'method': _mapPaymentMethod(method),
+          'amount': roundMoney(amount),
+        });
       }
     }
   }
@@ -2039,27 +1343,16 @@ class SyncService {
   // UUID
   // ============================================================
 
-  String _serverSaleUuid(
-    Map<String, dynamic> venta,
-  ) {
-    return (
-      venta['uuid'] ??
-      venta['uuid_local']
-    ).toString().trim();
+  String _serverSaleUuid(Map<String, dynamic> venta) {
+    return (venta['uuid'] ?? venta['uuid_local']).toString().trim();
   }
 
   // ============================================================
   // NO PISAR VENTA PENDIENTE
   // ============================================================
 
-  bool _isLocalSalePending(
-    Map<String, dynamic> sale,
-  ) {
-    final syncStatus =
-        sale['sync_status']
-            ?.toString()
-            .trim()
-            .toLowerCase();
+  bool _isLocalSalePending(Map<String, dynamic> sale) {
+    final syncStatus = sale['sync_status']?.toString().trim().toLowerCase();
 
     return syncStatus == null ||
         syncStatus.isEmpty ||
@@ -2072,60 +1365,37 @@ class SyncService {
   // PAGOS SERVIDOR
   // ============================================================
 
-  List<Map<String, dynamic>>
-      _serverPayments(
-    Map<String, dynamic> venta,
-  ) {
-    final raw =
-        venta['pagos'];
+  List<Map<String, dynamic>> _serverPayments(Map<String, dynamic> venta) {
+    final raw = venta['pagos'];
 
     if (raw is! List) {
       return [];
     }
 
-    final result =
-        <Map<String, dynamic>>[];
+    final result = <Map<String, dynamic>>[];
 
     for (final item in raw) {
       if (item is! Map) {
         continue;
       }
 
-      final pago =
-          Map<String, dynamic>.from(
-        item,
-      );
+      final pago = Map<String, dynamic>.from(item);
 
       final method =
-          pago['forma_pago']
-                  ?.toString() ??
-              pago['method']
-                  ?.toString() ??
-              'Efectivo';
+          pago['forma_pago']?.toString() ??
+          pago['method']?.toString() ??
+          'Efectivo';
 
-      final amount =
-          _toDouble(
-        pago['monto'] ??
-            pago['amount'],
-      );
+      final amount = _toDouble(pago['monto'] ?? pago['amount']);
 
       if (amount <= 0) {
         continue;
       }
 
       result.add({
-        'method':
-            _mapPaymentMethod(
-          method,
-        ),
-        'amount':
-            roundMoney(amount),
-        'cambio':
-            roundMoney(
-          _toDouble(
-            pago['cambio'],
-          ),
-        ),
+        'method': _mapPaymentMethod(method),
+        'amount': roundMoney(amount),
+        'cambio': roundMoney(_toDouble(pago['cambio'])),
       });
     }
 
@@ -2136,25 +1406,14 @@ class SyncService {
   // EFECTIVO RECIBIDO
   // ============================================================
 
-  double _cashReceived(
-    List<Map<String, dynamic>> payments,
-  ) {
+  double _cashReceived(List<Map<String, dynamic>> payments) {
     var total = 0.0;
 
     for (final payment in payments) {
-      final method =
-          payment['method']
-                  ?.toString() ??
-              '';
+      final method = payment['method']?.toString() ?? '';
 
       if (_isCash(method)) {
-        total +=
-            _toDouble(
-              payment['amount'],
-            ) +
-            _toDouble(
-              payment['cambio'],
-            );
+        total += _toDouble(payment['amount']) + _toDouble(payment['cambio']);
       }
     }
 
@@ -2165,15 +1424,11 @@ class SyncService {
   // CAMBIO
   // ============================================================
 
-  double _cashChange(
-    List<Map<String, dynamic>> payments,
-  ) {
+  double _cashChange(List<Map<String, dynamic>> payments) {
     var total = 0.0;
 
     for (final payment in payments) {
-      total += _toDouble(
-        payment['cambio'],
-      );
+      total += _toDouble(payment['cambio']);
     }
 
     return roundMoney(total);
@@ -2183,13 +1438,8 @@ class SyncService {
   // ESTADO LOCAL
   // ============================================================
 
-  String _normalizeSaleStatus(
-    String status,
-  ) {
-    final normalized =
-        status
-            .trim()
-            .toLowerCase();
+  String _normalizeSaleStatus(String status) {
+    final normalized = status.trim().toLowerCase();
 
     switch (normalized) {
       case 'paid':
@@ -2212,9 +1462,7 @@ class SyncService {
         return 'pending';
 
       default:
-        return status.trim().isEmpty
-            ? 'paid'
-            : status;
+        return status.trim().isEmpty ? 'paid' : status;
     }
   }
 
@@ -2222,24 +1470,18 @@ class SyncService {
   // FECHA ISO NORMALIZADA
   // ============================================================
 
-  String _normalizeSaleDate(
-    dynamic value,
-  ) {
+  String _normalizeSaleDate(dynamic value) {
     if (value is DateTime) {
       return value.toIso8601String();
     }
 
-    final text =
-        value?.toString().trim() ??
-            '';
+    final text = value?.toString().trim() ?? '';
 
     if (text.isEmpty) {
-      return DateTime.now()
-          .toIso8601String();
+      return DateTime.now().toIso8601String();
     }
 
-    final parsed =
-        DateTime.tryParse(text);
+    final parsed = DateTime.tryParse(text);
 
     if (parsed != null) {
       return parsed.toIso8601String();
@@ -2252,62 +1494,37 @@ class SyncService {
   // FECHA DEL SERVIDOR → HORA LOCAL
   // ============================================================
 
-  String _serverLocalDate(
-    dynamic value,
-  ) {
+  String _serverLocalDate(dynamic value) {
     if (value is DateTime) {
-      return value
-          .toLocal()
-          .toIso8601String();
+      return value.toLocal().toIso8601String();
     }
 
-    final text =
-        value?.toString().trim() ??
-            '';
+    final text = value?.toString().trim() ?? '';
 
     if (text.isEmpty) {
-      return DateTime.now()
-          .toIso8601String();
+      return DateTime.now().toIso8601String();
     }
 
-    final parsed =
-        DateTime.tryParse(text);
+    final parsed = DateTime.tryParse(text);
 
     if (parsed == null) {
       return text;
     }
 
-    return parsed
-        .toLocal()
-        .toIso8601String();
+    return parsed.toLocal().toIso8601String();
   }
 
   // ============================================================
   // COLUMNAS SQLITE
   // ============================================================
 
-  Future<Set<String>>
-      _tableColumns(
-    Database db,
-    String table,
-  ) async {
+  Future<Set<String>> _tableColumns(Database db, String table) async {
     try {
-      final result =
-          await db.rawQuery(
-        'PRAGMA table_info($table)',
-      );
+      final result = await db.rawQuery('PRAGMA table_info($table)');
 
       return result
-          .map(
-            (row) =>
-                row['name']
-                    ?.toString() ??
-                '',
-          )
-          .where(
-            (name) =>
-                name.isNotEmpty,
-          )
+          .map((row) => row['name']?.toString() ?? '')
+          .where((name) => name.isNotEmpty)
           .toSet();
     } catch (_) {
       return <String>{};
@@ -2318,19 +1535,13 @@ class SyncService {
   // EXTRAER SERVER ID DEL PRODUCTO
   // ============================================================
 
-  int _extractServerProductId(
-    Map<String, dynamic>?
-        product,
-  ) {
+  int _extractServerProductId(Map<String, dynamic>? product) {
     if (product == null) {
       return 0;
     }
 
-    final serverId =
-        _toInt(
-      product['server_id'] ??
-          product[
-              'producto_server_id'],
+    final serverId = _toInt(
+      product['server_id'] ?? product['producto_server_id'],
     );
 
     if (serverId > 0) {
@@ -2348,15 +1559,9 @@ class SyncService {
      * No usamos id como server_id en LocalDb cuando
      * existe server_id pero está vacío.
      */
-    if (!product.containsKey(
-          'server_id',
-        ) &&
-        !product.containsKey(
-          'producto_server_id',
-        )) {
-      return _toInt(
-        product['id'],
-      );
+    if (!product.containsKey('server_id') &&
+        !product.containsKey('producto_server_id')) {
+      return _toInt(product['id']);
     }
 
     return 0;
@@ -2366,23 +1571,11 @@ class SyncService {
   // PRIMER VALOR NO VACÍO
   // ============================================================
 
-  String? _firstNonEmpty(
-    dynamic a,
-    dynamic b,
-    dynamic c,
-    dynamic d,
-  ) {
-    final values = [
-      a,
-      b,
-      c,
-      d,
-    ];
+  String? _firstNonEmpty(dynamic a, dynamic b, dynamic c, dynamic d) {
+    final values = [a, b, c, d];
 
     for (final value in values) {
-      final text =
-          value?.toString().trim() ??
-              '';
+      final text = value?.toString().trim() ?? '';
 
       if (text.isNotEmpty) {
         return text;
@@ -2393,13 +1586,56 @@ class SyncService {
   }
 
   // ============================================================
+  // INVENTARIO
+  // ============================================================
+
+  bool _extractInventoriable(dynamic item, Map<String, dynamic>? product) {
+    dynamic value;
+
+    if (item is Map) {
+      value =
+          item['is_inventariable'] ??
+          item['isInventoriable'] ??
+          item['inventariable'];
+    }
+
+    if (value == null && product != null) {
+      value =
+          product['is_inventariable'] ??
+          product['isInventoriable'] ??
+          product['inventariable'];
+    }
+
+    // Compatibilidad con data_json
+    if (value == null && product != null) {
+      final rawDataJson = product['data_json'];
+
+      if (rawDataJson is String && rawDataJson.trim().isNotEmpty) {
+        try {
+          final decoded = jsonDecode(rawDataJson);
+
+          if (decoded is Map) {
+            value =
+                decoded['is_inventariable'] ??
+                decoded['isInventoriable'] ??
+                decoded['inventariable'];
+          }
+        } catch (_) {}
+      }
+    }
+
+    // IMPORTANTE:
+    // Si no existe el campo en registros antiguos,
+    // mantenemos el comportamiento actual:
+    // por defecto SÍ maneja inventario.
+    return _toBool(value, defaultValue: true);
+  }
+
+  // ============================================================
   // BOOLEAN
   // ============================================================
 
-  bool _toBool(
-    dynamic value, {
-    bool defaultValue = false,
-  }) {
+  bool _toBool(dynamic value, {bool defaultValue = false}) {
     if (value is bool) {
       return value;
     }
@@ -2408,12 +1644,7 @@ class SyncService {
       return value != 0;
     }
 
-    final text =
-        value
-                ?.toString()
-                .trim()
-                .toLowerCase() ??
-            '';
+    final text = value?.toString().trim().toLowerCase() ?? '';
 
     if (text == 'true' ||
         text == '1' ||
@@ -2423,9 +1654,7 @@ class SyncService {
       return true;
     }
 
-    if (text == 'false' ||
-        text == '0' ||
-        text == 'no') {
+    if (text == 'false' || text == '0' || text == 'no') {
       return false;
     }
 
@@ -2436,9 +1665,7 @@ class SyncService {
   // CONVERSION
   // ============================================================
 
-  int _toInt(
-    dynamic value,
-  ) {
+  int _toInt(dynamic value) {
     if (value is int) {
       return value;
     }
@@ -2447,96 +1674,59 @@ class SyncService {
       return value.toInt();
     }
 
-    return int.tryParse(
-          value?.toString() ??
-              '',
-        ) ??
-        0;
+    return int.tryParse(value?.toString() ?? '') ?? 0;
   }
 
-  double _toDouble(
-    dynamic value,
-  ) {
+  double _toDouble(dynamic value) {
     if (value is num) {
       return value.toDouble();
     }
 
-    var text =
-        value?.toString() ?? '';
+    var text = value?.toString() ?? '';
 
-    text = text.replaceAll(
-      ',',
-      '.',
-    );
+    text = text.replaceAll(',', '.');
 
-    return double.tryParse(
-          text,
-        ) ??
-        0.0;
+    return double.tryParse(text) ?? 0.0;
   }
 
-  double roundMoney(
-    double value,
-  ) {
-    return double.parse(
-      value.toStringAsFixed(2),
-    );
+  double roundMoney(double value) {
+    return double.parse(value.toStringAsFixed(2));
   }
 
-  bool _isCash(
-    String method,
-  ) {
-    return method
-            .trim()
-            .toLowerCase() ==
-        'efectivo';
+  bool _isCash(String method) {
+    return method.trim().toLowerCase() == 'efectivo';
   }
 
   // ============================================================
   // MAPEAR FORMAS DE PAGO
   // ============================================================
 
-  String _mapPaymentMethod(
-    String method,
-  ) {
-    final normalized =
-        method
-            .trim()
-            .toLowerCase();
+  String _mapPaymentMethod(String method) {
+    final normalized = method.trim().toLowerCase();
 
-    if (normalized ==
-        'efectivo') {
+    if (normalized == 'efectivo') {
       return 'Efectivo';
     }
 
-    if (normalized ==
-            'tarjeta' ||
-        normalized ==
-            'tarjeta crédito' ||
-        normalized ==
-            'tarjeta credito') {
+    if (normalized == 'tarjeta' ||
+        normalized == 'tarjeta crédito' ||
+        normalized == 'tarjeta credito') {
       return 'Tarjeta Crédito';
     }
 
-    if (normalized ==
-            'tarjeta débito' ||
-        normalized ==
-            'tarjeta debito') {
+    if (normalized == 'tarjeta débito' || normalized == 'tarjeta debito') {
       return 'Tarjeta Débito';
     }
 
-    if (normalized ==
-        'transferencia') {
+    if (normalized == 'transferencia') {
       return 'Transferencia';
     }
 
-    if (normalized == 'crédito' ||
-        normalized == 'credito') {
+    if (normalized == 'crédito' || normalized == 'credito') {
       return 'Crédito';
     }
 
-    if (normalized ==
-        'cheque') {
+    if (normalized == 'cheque') {
       return 'Cheque';
     }
 

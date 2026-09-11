@@ -736,10 +736,6 @@ class PosScreenState extends State<PosScreen> {
         '${selectedPrinter?.displayName ?? "NINGUNA"}',
       );
 
-      var connected = await _printerService.bluetoothConnected();
-
-      debugPrint('🔌 Bluetooth conectado: $connected');
-
       // ========================================================
       // CASO 1: NO HAY IMPRESORA SELECCIONADA
       // ========================================================
@@ -774,32 +770,26 @@ class PosScreenState extends State<PosScreen> {
 
           return false;
         }
-
-        connected = await _printerService.bluetoothConnected();
       }
 
       // ========================================================
-      // CASO 2: HAY IMPRESORA PERO NO ESTÁ CONECTADA
+      // CASO 2: CONECTAR IMPRESORA SELECCIONADA
       // ========================================================
 
-      if (!connected) {
-        debugPrint(
-          '🔄 Intentando reconectar: '
-          '${selectedPrinter.displayName} '
-          '(${selectedPrinter.address})',
-        );
+      var connected = await _printerService.ensureBluetoothConnection();
 
-        connected = await _printerService.reconnectSelectedPrinter();
-
-        debugPrint('🔌 Resultado de reconexión: $connected');
-      }
+      debugPrint('🔌 Bluetooth conectado: $connected');
 
       // ========================================================
       // CASO 3: NO SE PUDO CONECTAR
       // ========================================================
 
       if (!connected) {
-        debugPrint('⚠️ No fue posible reconectar la impresora.');
+        debugPrint(
+          '⚠️ No fue posible conectar la impresora '
+          '${selectedPrinter.displayName} '
+          '(${selectedPrinter.address}).',
+        );
 
         final shouldPrint = await _showPrinterConnectionDialog();
 
@@ -818,7 +808,21 @@ class PosScreenState extends State<PosScreen> {
           return false;
         }
 
-        connected = await _printerService.bluetoothConnected();
+        // El diálogo puede haber seleccionado/cambiado la impresora.
+        selectedPrinter = await _printerService.selectedPrinter();
+
+        if (selectedPrinter == null) {
+          debugPrint('❌ No hay impresora seleccionada después del diálogo.');
+
+          return false;
+        }
+
+        connected = await _printerService.ensureBluetoothConnection();
+
+        debugPrint(
+          '🔌 Resultado de conexión después del diálogo: '
+          '$connected',
+        );
 
         if (!connected) {
           debugPrint('❌ La impresora sigue sin conexión.');

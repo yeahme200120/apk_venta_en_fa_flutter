@@ -660,6 +660,8 @@ class PrinterService {
 
   bool _printing = false;
 
+  bool _connecting = false;
+
   String? get connectedAddress =>
       _connectedAddress;
 
@@ -824,16 +826,22 @@ class PrinterService {
 
   Future<bool>
       bluetoothConnected() async {
-    final connected =
-        await PrintBluetoothThermal
-            .connectionStatus;
+    try {
+      final connected =
+          await PrintBluetoothThermal
+              .connectionStatus;
 
-    if (!connected) {
+      if (!connected) {
+        _connectedAddress = null;
+        _cancelInactivityTimer();
+      }
+
+      return connected;
+    } catch (_) {
       _connectedAddress = null;
       _cancelInactivityTimer();
+      return false;
     }
-
-    return connected;
   }
 
   // ============================================================
@@ -965,17 +973,22 @@ class PrinterService {
         await selectedPrinterAddress();
 
     if (address == null ||
-        address.isEmpty) {
+        address.trim().isEmpty) {
       return null;
     }
+
+    final normalizedAddress =
+        address.trim().toLowerCase();
 
     final printers =
         await pairedBluetoothPrinters();
 
     for (final printer
         in printers) {
-      if (printer.address ==
-          address) {
+      if (printer.address
+              .trim()
+              .toLowerCase() ==
+          normalizedAddress) {
         return printer;
       }
     }
@@ -1082,6 +1095,39 @@ class PrinterService {
     );
   }
 
+  Future<bool>
+      ensureBluetoothConnection() async {
+    if (_connecting) {
+      return false;
+    }
+
+    final connected =
+        await PrintBluetoothThermal
+            .connectionStatus;
+
+    if (connected) {
+      return true;
+    }
+
+    final address =
+        await selectedPrinterAddress();
+
+    if (address == null ||
+        address.trim().isEmpty) {
+      return false;
+    }
+
+    _connecting = true;
+
+    try {
+      return await connectBluetooth(
+        address,
+      );
+    } finally {
+      _connecting = false;
+    }
+  }
+
   // ============================================================
   // SELECCIÓN Y CONEXIÓN
   // ============================================================
@@ -1178,15 +1224,11 @@ class PrinterService {
 
     try {
       final connected =
-          await PrintBluetoothThermal
-              .connectionStatus;
+          await ensureBluetoothConnection();
 
       if (!connected) {
-        _connectedAddress = null;
-        _cancelInactivityTimer();
-
         return PrintOperationResult.error(
-          'La impresora Bluetooth no está conectada.',
+          'La impresora Bluetooth no está conectada y no fue posible reconectarla.',
         );
       }
 
@@ -2854,20 +2896,6 @@ class PrinterService {
 
   Future<void> dispose() async {
     _cancelInactivityTimer();
-
-    try {
-      final connected =
-          await PrintBluetoothThermal
-              .connectionStatus;
-
-      if (connected) {
-        await PrintBluetoothThermal
-            .disconnect;
-      }
-    } catch (_) {
-      // No interrumpir la destrucción.
-    } finally {
-      _connectedAddress = null;
-    }
+    _connectedAddress = null;
   }
 }
