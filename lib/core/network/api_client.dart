@@ -1,21 +1,45 @@
+import 'dart:io';
+
 import 'package:dio/dio.dart';
 
 import '../config/app_config.dart';
 import '../storage/app_storage.dart';
 
+// ============================================================
+// AUTENTICACIÓN
+// ============================================================
+//
+// CAMBIO AUTH:
+// Excepción tipada para que SyncService pueda distinguir una
+// sesión expirada de cualquier otro error de red/API.
+//
+// NO contiene token ni información sensible.
+//
+class AuthenticationException implements Exception {
+  const AuthenticationException([
+    this.message =
+        'La sesión ha expirado. Inicia sesión nuevamente.',
+  ]);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
 class ApiClient {
   ApiClient()
-      : _dio = Dio(
-          BaseOptions(
-            baseUrl: AppConfig.apiBaseUrlNormalized,
-            connectTimeout: const Duration(seconds: 15),
-            receiveTimeout: const Duration(seconds: 20),
-            headers: const {
-              'Content-Type': 'application/json',
-              'Accept': 'application/json',
-            },
-          ),
-        ) {
+    : _dio = Dio(
+        BaseOptions(
+          baseUrl: AppConfig.apiBaseUrlNormalized,
+          connectTimeout: const Duration(seconds: 15),
+          receiveTimeout: const Duration(seconds: 20),
+          headers: const {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
+        ),
+      ) {
     _dio.interceptors.add(
       InterceptorsWrapper(
         onRequest: (options, handler) async {
@@ -67,6 +91,10 @@ class ApiClient {
 
   Dio get dio => _dio;
 
+  // ============================================================
+  // MANEJO CENTRALIZADO DE ERRORES
+  // ============================================================
+
   static String parseApiError(
     dynamic payload, {
     String fallback = 'Ocurrió un error.',
@@ -103,8 +131,7 @@ class ApiClient {
           payload['error'] ??
           payload['detail'];
 
-      if (message is String &&
-          message.trim().isNotEmpty) {
+      if (message is String && message.trim().isNotEmpty) {
         return message.trim();
       }
     }
@@ -116,6 +143,60 @@ class ApiClient {
 
     return fallback;
   }
+
+  /// Conserva el tipo DioException original.
+  ///
+  /// CAMBIO AUTH:
+  /// Cuando el servidor devuelve 401, se lanza una excepción
+  /// tipada AuthenticationException.
+  ///
+  /// Esto permite que SyncService:
+  ///
+  /// - NO marque ventas como failed.
+  /// - NO marque outbox como failed.
+  /// - NO marque operaciones de sync_queue como failed.
+  /// - Regrese elementos syncing -> pending/queued.
+  /// - Detenga inmediatamente la sincronización actual.
+  ///
+  /// Para cualquier otro error se conserva el comportamiento
+  /// anterior y se lanza DioException.
+  Never _throwDioError(
+    DioException error, {
+    required String fallback,
+  }) {
+    final message = parseApiError(
+      error.response?.data,
+      fallback: fallback,
+    );
+
+    // ==========================================================
+    // CAMBIO AUTH:
+    // 401 = sesión expirada/no autorizada.
+    //
+    // NO convertirlo en DioException porque SyncService necesita
+    // identificar específicamente este caso.
+    // ==========================================================
+    if (error.response?.statusCode == 401) {
+      throw AuthenticationException(
+        message.isNotEmpty
+            ? message
+            : 'La sesión ha expirado. Inicia sesión nuevamente.',
+      );
+    }
+
+    throw DioException(
+      requestOptions: error.requestOptions,
+      response: error.response,
+      type: error.type,
+      error: message,
+      stackTrace: error.stackTrace,
+      message: message,
+    );
+  }
+
+  // ============================================================
+  // AUTENTICACIÓN
+  // ============================================================
 
   Future<Map<String, dynamic>> login({
     required String identifier,
@@ -141,20 +222,16 @@ class ApiClient {
         'Respuesta inválida del servidor',
       );
     } on DioException catch (e) {
-      final message = parseApiError(
-        e.response?.data,
+      _throwDioError(
+        e,
         fallback: 'Error de autenticación',
       );
-
-      throw Exception(message);
     }
   }
 
   Future<Map<String, dynamic>> getCurrentUser() async {
     try {
-      final response = await _dio.get(
-        '/api/v1/user',
-      );
+      final response = await _dio.get('/api/v1/user');
 
       if (response.statusCode == 200 &&
           response.data is Map) {
@@ -167,11 +244,9 @@ class ApiClient {
         'No se pudo cargar el usuario',
       );
     } on DioException catch (e) {
-      throw Exception(
-        parseApiError(
-          e.response?.data,
-          fallback: 'No se pudo cargar el perfil',
-        ),
+      _throwDioError(
+        e,
+        fallback: 'No se pudo cargar el perfil',
       );
     }
   }
@@ -196,11 +271,9 @@ class ApiClient {
         'No se pudo actualizar el perfil',
       );
     } on DioException catch (e) {
-      throw Exception(
-        parseApiError(
-          e.response?.data,
-          fallback: 'No se pudo actualizar el perfil',
-        ),
+      _throwDioError(
+        e,
+        fallback: 'No se pudo actualizar el perfil',
       );
     }
   }
@@ -230,11 +303,9 @@ class ApiClient {
         'No se pudo cambiar la contraseña',
       );
     } on DioException catch (e) {
-      throw Exception(
-        parseApiError(
-          e.response?.data,
-          fallback: 'No se pudo cambiar la contraseña',
-        ),
+      _throwDioError(
+        e,
+        fallback: 'No se pudo cambiar la contraseña',
       );
     }
   }
@@ -261,11 +332,9 @@ class ApiClient {
         'No se pudo solicitar el restablecimiento',
       );
     } on DioException catch (e) {
-      throw Exception(
-        parseApiError(
-          e.response?.data,
-          fallback: 'No se pudo recuperar la contraseña',
-        ),
+      _throwDioError(
+        e,
+        fallback: 'No se pudo recuperar la contraseña',
       );
     }
   }
@@ -296,11 +365,9 @@ class ApiClient {
         'No se pudo restablecer la contraseña',
       );
     } on DioException catch (e) {
-      throw Exception(
-        parseApiError(
-          e.response?.data,
-          fallback: 'No se pudo recuperar la contraseña',
-        ),
+      _throwDioError(
+        e,
+        fallback: 'No se pudo recuperar la contraseña',
       );
     }
   }
@@ -322,11 +389,9 @@ class ApiClient {
         'No se pudieron cargar los permisos',
       );
     } on DioException catch (e) {
-      throw Exception(
-        parseApiError(
-          e.response?.data,
-          fallback: 'No se pudieron cargar los permisos',
-        ),
+      _throwDioError(
+        e,
+        fallback: 'No se pudieron cargar los permisos',
       );
     }
   }
@@ -343,7 +408,8 @@ class ApiClient {
 
       if (response.statusCode == 200 &&
           response.data is Map) {
-        final payload = Map<String, dynamic>.from(
+        final payload =
+            Map<String, dynamic>.from(
           response.data as Map,
         );
 
@@ -358,11 +424,9 @@ class ApiClient {
         'No se pudo consultar el estado operativo',
       );
     } on DioException catch (e) {
-      throw Exception(
-        parseApiError(
-          e.response?.data,
-          fallback: 'No se pudo consultar el estado operativo',
-        ),
+      _throwDioError(
+        e,
+        fallback: 'No se pudo consultar el estado operativo',
       );
     }
   }
@@ -391,11 +455,9 @@ class ApiClient {
         'No se pudo consultar la caja actual',
       );
     } on DioException catch (e) {
-      throw Exception(
-        parseApiError(
-          e.response?.data,
-          fallback: 'No se pudo consultar la caja actual',
-        ),
+      _throwDioError(
+        e,
+        fallback: 'No se pudo consultar la caja actual',
       );
     }
   }
@@ -404,17 +466,14 @@ class ApiClient {
   // OPERACIONES DE CAJA
   // ============================================================
 
-  Future<List<Map<String, dynamic>>>
-      getCashOperations({
+  Future<List<Map<String, dynamic>>> getCashOperations({
     int? cashRegisterId,
     DateTime? date,
   }) async {
-    final queryParameters =
-        <String, dynamic>{};
+    final queryParameters = <String, dynamic>{};
 
     if (cashRegisterId != null) {
-      queryParameters['caja_id'] =
-          cashRegisterId;
+      queryParameters['caja_id'] = cashRegisterId;
     }
 
     if (date != null) {
@@ -422,9 +481,7 @@ class ApiClient {
           date.toIso8601String();
     }
 
-    Future<Response<dynamic>> request(
-      String path,
-    ) {
+    Future<Response<dynamic>> request(String path) {
       return _dio.get(
         path,
         queryParameters:
@@ -447,12 +504,10 @@ class ApiClient {
           '/api/v1/caja/operaciones',
         );
       } else {
-        throw Exception(
-          parseApiError(
-            e.response?.data,
-            fallback:
-                'No se pudieron consultar las operaciones de caja',
-          ),
+        _throwDioError(
+          e,
+          fallback:
+              'No se pudieron consultar las operaciones de caja',
         );
       }
     }
@@ -488,7 +543,8 @@ class ApiClient {
     return payload
         .whereType<Map>()
         .map(
-          (item) => Map<String, dynamic>.from(item),
+          (item) =>
+              Map<String, dynamic>.from(item),
         )
         .toList();
   }
@@ -524,7 +580,8 @@ class ApiClient {
     return _postOperation(
       '/api/v1/cajas/$cashRegisterId/cerrar',
       {
-        'monto_cierre_declarado': declaredAmount,
+        'monto_cierre_declarado':
+            declaredAmount,
         if (notes != null &&
             notes.trim().isNotEmpty)
           'notas': notes.trim(),
@@ -542,29 +599,26 @@ class ApiClient {
         '/api/v1/mesas',
       );
 
-      final data = response.data is Map
-          ? (response.data as Map)['data']
-          : null;
+      final data =
+          response.data is Map
+              ? (response.data as Map)['data']
+              : null;
 
       if (data is List) {
         return data
             .whereType<Map>()
             .map(
-              (item) => Map<String, dynamic>.from(
-                item,
-              ),
+              (item) =>
+                  Map<String, dynamic>.from(item),
             )
             .toList();
       }
 
       return const [];
     } on DioException catch (e) {
-      throw Exception(
-        parseApiError(
-          e.response?.data,
-          fallback:
-              'No se pudieron consultar las mesas',
-        ),
+      _throwDioError(
+        e,
+        fallback: 'No se pudieron consultar las mesas',
       );
     }
   }
@@ -576,8 +630,7 @@ class ApiClient {
     String? notes,
     bool? active,
   }) {
-    final payload =
-        <String, dynamic>{
+    final payload = <String, dynamic>{
       'nombre': name.trim(),
       if (capacity != null)
         'capacidad': capacity,
@@ -625,12 +678,10 @@ class ApiClient {
         'Respuesta inválida del servidor',
       );
     } on DioException catch (e) {
-      throw Exception(
-        parseApiError(
-          e.response?.data,
-          fallback:
-              'No se pudo completar la operación',
-        ),
+      _throwDioError(
+        e,
+        fallback:
+            'No se pudo completar la operación',
       );
     }
   }
@@ -655,12 +706,10 @@ class ApiClient {
         'Respuesta inválida del servidor',
       );
     } on DioException catch (e) {
-      throw Exception(
-        parseApiError(
-          e.response?.data,
-          fallback:
-              'No se pudo completar la operación',
-        ),
+      _throwDioError(
+        e,
+        fallback:
+            'No se pudo completar la operación',
       );
     }
   }
@@ -729,16 +778,15 @@ class ApiClient {
         'No se pudieron obtener las estadísticas del mes',
       );
     } on DioException catch (e) {
-      throw Exception(
-        parseApiError(
-          e.response?.data,
-          fallback:
-              'No se pudieron obtener las estadísticas del mes',
-        ),
+      _throwDioError(
+        e,
+        fallback:
+            'No se pudieron obtener las estadísticas del mes',
       );
     }
   }
-    // ============================================================
+
+  // ============================================================
   // CATEGORÍAS
   // ============================================================
 
@@ -797,9 +845,7 @@ class ApiClient {
         queryParameters:
             desde == null
                 ? null
-                : {
-                    'desde': desde,
-                  },
+                : {'desde': desde},
       );
 
       if (response.statusCode == 200 &&
@@ -813,16 +859,10 @@ class ApiClient {
         'Respuesta inválida del catálogo',
       );
     } on DioException catch (e) {
-      if (e.response?.statusCode == 401) {
-        await AppStorage().logOut();
-      }
-
-      throw Exception(
-        parseApiError(
-          e.response?.data,
-          fallback:
-              'No se pudo descargar el catálogo',
-        ),
+      _throwDioError(
+        e,
+        fallback:
+            'No se pudo descargar el catálogo',
       );
     }
   }
@@ -831,8 +871,7 @@ class ApiClient {
     DateTime? desde,
   }) async {
     return getCatalog(
-      desde:
-          desde?.toIso8601String(),
+      desde: desde?.toIso8601String(),
     );
   }
 
@@ -860,12 +899,10 @@ class ApiClient {
         'No se pudo sincronizar la venta fuera de línea',
       );
     } on DioException catch (e) {
-      throw Exception(
-        parseApiError(
-          e.response?.data,
-          fallback:
-              'No se pudo sincronizar la venta fuera de línea',
-        ),
+      _throwDioError(
+        e,
+        fallback:
+            'No se pudo sincronizar la venta fuera de línea',
       );
     }
   }
@@ -880,10 +917,7 @@ class ApiClient {
             cursor == null ||
                     cursor.trim().isEmpty
                 ? null
-                : {
-                    'cursor':
-                        cursor.trim(),
-                  },
+                : {'cursor': cursor.trim()},
       );
 
       if (response.statusCode == 200 &&
@@ -897,12 +931,10 @@ class ApiClient {
         'No se pudieron obtener los cambios',
       );
     } on DioException catch (e) {
-      throw Exception(
-        parseApiError(
-          e.response?.data,
-          fallback:
-              'No se pudieron obtener los cambios',
-        ),
+      _throwDioError(
+        e,
+        fallback:
+            'No se pudieron obtener los cambios',
       );
     }
   }
@@ -927,12 +959,10 @@ class ApiClient {
         'No se pudo completar la sincronización',
       );
     } on DioException catch (e) {
-      throw Exception(
-        parseApiError(
-          e.response?.data,
-          fallback:
-              'No se pudo completar la sincronización',
-        ),
+      _throwDioError(
+        e,
+        fallback:
+            'No se pudo completar la sincronización',
       );
     }
   }
@@ -958,12 +988,10 @@ class ApiClient {
         'No se pudo sincronizar la venta',
       );
     } on DioException catch (e) {
-      throw Exception(
-        parseApiError(
-          e.response?.data,
-          fallback:
-              'No se pudo sincronizar la venta',
-        ),
+      _throwDioError(
+        e,
+        fallback:
+            'No se pudo sincronizar la venta',
       );
     }
   }
@@ -989,12 +1017,10 @@ class ApiClient {
         'No se pudo procesar la devolución',
       );
     } on DioException catch (e) {
-      throw Exception(
-        parseApiError(
-          e.response?.data,
-          fallback:
-              'No se pudo procesar la devolución',
-        ),
+      _throwDioError(
+        e,
+        fallback:
+            'No se pudo procesar la devolución',
       );
     }
   }
@@ -1024,12 +1050,10 @@ class ApiClient {
         'No se pudo cancelar la venta',
       );
     } on DioException catch (e) {
-      throw Exception(
-        parseApiError(
-          e.response?.data,
-          fallback:
-              'No se pudo cancelar la venta',
-        ),
+      _throwDioError(
+        e,
+        fallback:
+            'No se pudo cancelar la venta',
       );
     }
   }
@@ -1038,8 +1062,7 @@ class ApiClient {
   // CONFIGURACIÓN DE EMPRESA
   // ============================================================
 
-  Future<Map<String, dynamic>>
-      getCompanyConfig() async {
+  Future<Map<String, dynamic>> getCompanyConfig() async {
     try {
       final response = await _dio.get(
         '/api/v1/admin/empresa/config',
@@ -1047,6 +1070,10 @@ class ApiClient {
 
       if (response.statusCode == 200 &&
           response.data is Map) {
+        print(
+          '[COMPANY CONFIG] response.data = ${response.data}',
+        );
+
         return Map<String, dynamic>.from(
           response.data as Map,
         );
@@ -1056,18 +1083,15 @@ class ApiClient {
         'No se pudo cargar la configuración de empresa',
       );
     } on DioException catch (e) {
-      throw Exception(
-        parseApiError(
-          e.response?.data,
-          fallback:
-              'No se pudo cargar la configuración de empresa',
-        ),
+      _throwDioError(
+        e,
+        fallback:
+            'No se pudo cargar la configuración de empresa',
       );
     }
   }
 
-  Future<Map<String, dynamic>>
-      updateCompanyConfig(
+  Future<Map<String, dynamic>> updateCompanyConfig(
     Map<String, dynamic> payload,
   ) async {
     try {
@@ -1087,12 +1111,10 @@ class ApiClient {
         'No se pudo actualizar la configuración de empresa',
       );
     } on DioException catch (e) {
-      throw Exception(
-        parseApiError(
-          e.response?.data,
-          fallback:
-              'No se pudo actualizar la configuración de empresa',
-        ),
+      _throwDioError(
+        e,
+        fallback:
+            'No se pudo actualizar la configuración de empresa',
       );
     }
   }
@@ -1101,8 +1123,7 @@ class ApiClient {
   // CONFIGURACIÓN DE TICKET
   // ============================================================
 
-  Future<Map<String, dynamic>>
-      getTicketConfig() async {
+  Future<Map<String, dynamic>> getTicketConfig() async {
     try {
       final response = await _dio.get(
         '/api/v1/ticket/config',
@@ -1119,18 +1140,15 @@ class ApiClient {
         'No se pudo cargar la configuración del ticket',
       );
     } on DioException catch (e) {
-      throw Exception(
-        parseApiError(
-          e.response?.data,
-          fallback:
-              'No se pudo cargar la configuración del ticket',
-        ),
+      _throwDioError(
+        e,
+        fallback:
+            'No se pudo cargar la configuración del ticket',
       );
     }
   }
 
-  Future<Map<String, dynamic>>
-      updateTicketConfig(
+  Future<Map<String, dynamic>> updateTicketConfig(
     Map<String, dynamic> payload,
   ) async {
     try {
@@ -1150,12 +1168,10 @@ class ApiClient {
         'No se pudo actualizar la configuración del ticket',
       );
     } on DioException catch (e) {
-      throw Exception(
-        parseApiError(
-          e.response?.data,
-          fallback:
-              'No se pudo actualizar la configuración del ticket',
-        ),
+      _throwDioError(
+        e,
+        fallback:
+            'No se pudo actualizar la configuración del ticket',
       );
     }
   }
@@ -1164,8 +1180,7 @@ class ApiClient {
   // COMPARTIR REPORTE DIARIO
   // ============================================================
 
-  Future<Map<String, dynamic>>
-      shareDailyReport(
+  Future<Map<String, dynamic>> shareDailyReport(
     Map<String, dynamic> payload,
   ) async {
     try {
@@ -1185,12 +1200,118 @@ class ApiClient {
         'No se pudo compartir el reporte',
       );
     } on DioException catch (e) {
+      _throwDioError(
+        e,
+        fallback:
+            'No se pudo compartir el reporte',
+      );
+    }
+  }
+
+  Future<Map<String, dynamic>> getCompanyLogo() async {
+    try {
+      final response = await _dio.get(
+        '/api/v1/empresa/logo',
+      );
+
+      if (response.statusCode == 200 &&
+          response.data is Map) {
+        return Map<String, dynamic>.from(
+          response.data as Map,
+        );
+      }
+
       throw Exception(
-        parseApiError(
-          e.response?.data,
-          fallback:
-              'No se pudo compartir el reporte',
+        'No se pudo obtener el logo de la empresa',
+      );
+    } on DioException catch (e) {
+      _throwDioError(
+        e,
+        fallback:
+            'No se pudo obtener el logo de la empresa',
+      );
+    }
+  }
+
+  Future<List<int>?> downloadCompanyLogo({
+    String? logoUrl,
+  }) async {
+    final normalizedUrl =
+        logoUrl?.trim();
+
+    if (normalizedUrl == null ||
+        normalizedUrl.isEmpty) {
+      return null;
+    }
+
+    try {
+      final response =
+          await _dio.get<List<int>>(
+        normalizedUrl,
+        options: Options(
+          responseType: ResponseType.bytes,
         ),
+      );
+
+      if (response.statusCode == 200 &&
+          response.data != null &&
+          response.data!.isNotEmpty) {
+        return response.data!;
+      }
+
+      return null;
+    } on DioException catch (e) {
+      _throwDioError(
+        e,
+        fallback:
+            'No se pudo descargar el logo de la empresa',
+      );
+    }
+  }
+
+  Future<Map<String, dynamic>> uploadCompanyLogo(
+    File logoFile,
+  ) async {
+    try {
+      if (!await logoFile.exists()) {
+        throw Exception(
+          'El archivo del logo no existe.',
+        );
+      }
+
+      final formData =
+          FormData.fromMap({
+        'logo': await MultipartFile.fromFile(
+          logoFile.path,
+          filename: 'logo.webp',
+        ),
+      });
+
+      final response = await _dio.post(
+        '/api/v1/empresa/logo',
+        data: formData,
+        options: Options(
+          contentType:
+              'multipart/form-data',
+        ),
+      );
+
+      if ((response.statusCode == 200 ||
+              response.statusCode == 201) &&
+          response.data is Map) {
+        return Map<String, dynamic>.from(
+          response.data as Map,
+        );
+      }
+
+      throw Exception(
+        'No se pudo actualizar el logo de la empresa',
+      );
+    } on DioException catch (e) {
+      _throwDioError(
+        e,
+        fallback:
+            'No se pudo actualizar el logo de la empresa',
       );
     }
   }

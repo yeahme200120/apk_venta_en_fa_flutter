@@ -30,62 +30,76 @@ class _SplashScreenState
     _verificarSesion();
   }
 
-  Future<void> _verificarSesion() async {
-    await Future.delayed(
+  void _verificarSesion() {
+    _timer = Timer(
       const Duration(seconds: 2),
+      () async {
+        if (!mounted) {
+          return;
+        }
+
+        try {
+          final hasSession =
+              await _authService.hasSession();
+
+          if (!mounted) {
+            return;
+          }
+
+          if (hasSession) {
+            Navigator.of(context)
+                .pushReplacement(
+              MaterialPageRoute(
+                builder: (_) =>
+                    const HomeShell(),
+              ),
+            );
+
+            return;
+          }
+
+          Navigator.of(context)
+              .pushReplacement(
+            MaterialPageRoute(
+              builder: (_) =>
+                  const LoginScreen(),
+            ),
+          );
+        } catch (_) {
+          if (!mounted) {
+            return;
+          }
+
+          Navigator.of(context)
+              .pushReplacement(
+            MaterialPageRoute(
+              builder: (_) =>
+                  const LoginScreen(),
+            ),
+          );
+        }
+      },
     );
-
-    if (!mounted) {
-      return;
-    }
-
-    try {
-      final hasSession =
-          await _authService.hasSession();
-
-      if (!mounted) {
-        return;
-      }
-
-      if (hasSession) {
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(
-            builder: (_) => const HomeShell(),
-          ),
-        );
-      } else {
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(
-            builder: (_) => const LoginScreen(),
-          ),
-        );
-      }
-    } catch (error) {
-      if (!mounted) {
-        return;
-      }
-
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(
-          builder: (_) => const LoginScreen(),
-        ),
-      );
-    }
   }
 
   @override
   void dispose() {
     _timer?.cancel();
+    _timer = null;
+
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(
+    BuildContext context,
+  ) {
     final colors =
         Theme.of(context).colorScheme;
 
     return Scaffold(
-      backgroundColor: colors.surface,
+      backgroundColor:
+          colors.surface,
       body: Center(
         child: Image.asset(
           'assets/images/logo.png',

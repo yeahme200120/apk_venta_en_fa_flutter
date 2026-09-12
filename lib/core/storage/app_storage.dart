@@ -46,6 +46,11 @@ class AppStorage {
   static const String _operationStateKey =
       'operation_state';
 
+  // Indica si las credenciales offline pertenecen
+  // al día comercial actualmente autorizado.
+  static const String _offlineDayValidKey =
+      'offline_day_valid';
+
   // ============================================================
   // LIMPIAR STORAGE
   // ============================================================
@@ -79,6 +84,18 @@ class AppStorage {
     if (cleanToken.isEmpty) {
       throw ArgumentError(
         'El token de sesión no puede estar vacío.',
+      );
+    }
+
+    if (userId <= 0) {
+      throw ArgumentError(
+        'El ID del usuario no es válido.',
+      );
+    }
+
+    if (empresaId <= 0) {
+      throw ArgumentError(
+        'El ID de la empresa no es válido.',
       );
     }
 
@@ -143,6 +160,13 @@ class AppStorage {
       await prefs.setString(
         _businessDateKey,
         serverBusinessDate.trim(),
+      );
+
+      // Las credenciales offline quedan asociadas
+      // al día comercial que acaba de validar el servidor.
+      await prefs.setBool(
+        _offlineDayValidKey,
+        true,
       );
     }
   }
@@ -531,6 +555,11 @@ class AppStorage {
       _offlinePasswordKey,
       password,
     );
+
+    await prefs.setBool(
+      _offlineDayValidKey,
+      true,
+    );
   }
 
   Future<String?> getOfflineIdentifier() async {
@@ -564,6 +593,9 @@ class AppStorage {
     final empresaId =
         await getLastOnlineEmpresaId();
 
+    final dayValid =
+        await isOfflineDayValid();
+
     return identifier != null &&
         identifier.trim().isNotEmpty &&
         password != null &&
@@ -571,7 +603,8 @@ class AppStorage {
         userId != null &&
         userId > 0 &&
         empresaId != null &&
-        empresaId > 0;
+        empresaId > 0 &&
+        dayValid;
   }
 
   Future<int?> getLastOnlineUserId() async {
@@ -590,6 +623,112 @@ class AppStorage {
     return prefs.getInt(
       _lastOnlineEmpresaIdKey,
     );
+  }
+
+  // ============================================================
+  // VALIDACIÓN DEL DÍA OFFLINE
+  // ============================================================
+
+  Future<void> saveOfflineDayValid(
+    bool value,
+  ) async {
+    final prefs =
+        await SharedPreferences.getInstance();
+
+    await prefs.setBool(
+      _offlineDayValidKey,
+      value,
+    );
+  }
+
+  Future<bool> isOfflineDayValid() async {
+    final prefs =
+        await SharedPreferences.getInstance();
+
+    return prefs.getBool(
+          _offlineDayValidKey,
+        ) ??
+        false;
+  }
+
+  // ============================================================
+  // INVALIDAR SESIÓN POR CAMBIO DE DÍA COMERCIAL
+  // ============================================================
+
+  Future<void>
+      invalidateSessionForBusinessDateChange() async {
+    final prefs =
+        await SharedPreferences.getInstance();
+
+    // Sesión activa.
+    await prefs.remove(
+      _tokenKey,
+    );
+
+    await prefs.remove(
+      _userIdKey,
+    );
+
+    await prefs.remove(
+      _empresaIdKey,
+    );
+
+    await prefs.remove(
+      _userNameKey,
+    );
+
+    await prefs.remove(
+      _companyNameKey,
+    );
+
+    await prefs.remove(
+      _roleKey,
+    );
+
+    await prefs.remove(
+      _loggedKey,
+    );
+
+    // Las credenciales anteriores ya no pueden
+    // utilizarse para entrar offline al nuevo día.
+    await prefs.remove(
+      _offlineIdentifierKey,
+    );
+
+    await prefs.remove(
+      _offlinePasswordKey,
+    );
+
+    await prefs.remove(
+      _lastOnlineUserIdKey,
+    );
+
+    await prefs.remove(
+      _lastOnlineEmpresaIdKey,
+    );
+
+    await prefs.remove(
+      _lastOnlineAtKey,
+    );
+
+    await prefs.setBool(
+      _offlineDayValidKey,
+      false,
+    );
+
+    // La fecha comercial se elimina para que
+    // el siguiente login online establezca
+    // explícitamente la nueva fecha autorizada.
+    await prefs.remove(
+      _businessDateKey,
+    );
+
+    // No eliminamos:
+    // - ticket_config
+    // - operation_state
+    //
+    // La configuración persistente no pertenece
+    // exclusivamente al día operativo.
   }
 
   // ============================================================
@@ -655,5 +794,8 @@ class AppStorage {
     // - última conexión
     //
     // Esto permite volver a iniciar sesión sin internet.
+    //
+    // Tampoco invalidamos _offlineDayValidKey:
+    // cerrar sesión normal no significa cambio de día.
   }
 }

@@ -34,8 +34,8 @@ dependencies:
   cupertino_icons: ^1.0.8
   dio: ^5.7.0
   sqflite: ^2.4.1
-  path_provider: ^2.1.5
-  shared_preferences: ^2.5.3
+  path_provider: ^2.1.6
+  shared_preferences: ^2.5.5
   connectivity_plus: ^6.1.1
   internet_connection_checker_plus: ^2.0.4
   print_bluetooth_thermal: ^1.2.4
@@ -45,6 +45,9 @@ dependencies:
   flex_color_picker: ^3.8.0
   bluetooth_print_plus: ^2.4.6
   uuid: ^4.4.0
+  image_picker: ^1.2.3
+  image_cropper: ^12.2.1
+  qr_flutter: ^4.1.0
 
 dev_dependencies:
   flutter_test:

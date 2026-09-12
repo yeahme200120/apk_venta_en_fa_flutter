@@ -52,6 +52,151 @@ class SyncService {
   static bool _automaticSyncStarted = false;
 
   // ============================================================
+  // 🔐 AUTH
+  // ============================================================
+
+  /// Comprueba que exista una sesión autenticada válida antes
+  /// de intentar sincronizar.
+  ///
+  /// Esto evita iniciar peticiones cuando el usuario ya fue
+  /// desconectado por expiración de sesión.
+  Future<bool> _hasAuthenticatedSession() async {
+    final storage = AppStorage();
+
+    final loggedIn = await storage.isLoggedIn();
+    final token = await storage.getToken();
+
+    return loggedIn && token != null && token.trim().isNotEmpty;
+  }
+
+  /// Identifica exclusivamente los errores de autenticación.
+  ///
+  /// Un error 401 NO debe convertirse en failed porque los datos
+  /// siguen pendientes y deben poder reintentarse después de
+  /// iniciar sesión nuevamente.
+  bool _isAuthenticationError(Object error) {
+    return error is AuthenticationException;
+  }
+
+  /// Devuelve una operación de venta histórica que estaba en
+  /// "syncing" a "pending".
+  ///
+  /// No se marca como failed porque la causa fue la sesión.
+  Future<void> _resetHistoricalSaleForAuthentication(int saleId) async {
+    if (saleId <= 0) {
+      return;
+    }
+
+    try {
+      await _historyDb.resetSaleForRetry(saleId);
+
+      print(
+        '🔐 Venta histórica $saleId '
+        'regresada a pendiente por autenticación.',
+      );
+    } catch (e) {
+      print(
+        '⚠️ No fue posible regresar la venta histórica '
+        '$saleId a pendiente: $e',
+      );
+    }
+  }
+
+  /// Regresa un elemento del outbox diario de "syncing" a "queued".
+  ///
+  /// También devuelve la venta asociada a "pending".
+  Future<void> _resetDayOutboxForAuthentication({
+    required int companyId,
+    required int userId,
+    required DateTime businessDate,
+    required String uuidLocal,
+  }) async {
+    if (uuidLocal.trim().isEmpty) {
+      return;
+    }
+
+    try {
+      final db = await _dayDb.open(
+        companyId: companyId,
+        userId: userId,
+        businessDate: businessDate,
+      );
+
+      final now = DateTime.now().toIso8601String();
+
+      await db.transaction((txn) async {
+        await txn.update(
+          'sync_outbox',
+          {
+            'status': 'queued',
+            'next_retry_at': null,
+            'error_message': null,
+            'updated_at': now,
+          },
+          where: 'uuid_local = ?',
+          whereArgs: [uuidLocal],
+        );
+
+        await txn.update(
+          'sales',
+          {
+            'sync_status': 'pending',
+            'next_retry_at': null,
+            'error_message': null,
+            'updated_at': now,
+          },
+          where: 'uuid_local = ?',
+          whereArgs: [uuidLocal],
+        );
+      });
+
+      print(
+        '🔐 Outbox $uuidLocal '
+        'regresado a queued por autenticación.',
+      );
+    } catch (e) {
+      print(
+        '⚠️ No fue posible regresar outbox $uuidLocal '
+        'a queued: $e',
+      );
+    }
+  }
+
+  /// Regresa una operación de sync_queue de "syncing" a "pending".
+  Future<void> _resetSyncQueueItemForAuthentication(int queueId) async {
+    if (queueId <= 0) {
+      return;
+    }
+
+    try {
+      final db = await _historyDb.database;
+
+      await db.update(
+        'sync_queue',
+        {
+          'status': 'pending',
+          'error_code': null,
+          'error_message': null,
+          'next_retry_at': null,
+          'updated_at': DateTime.now().toIso8601String(),
+        },
+        where: 'id = ?',
+        whereArgs: [queueId],
+      );
+
+      print(
+        '🔐 Sync Queue $queueId '
+        'regresada a pending por autenticación.',
+      );
+    } catch (e) {
+      print(
+        '⚠️ No fue posible regresar Sync Queue '
+        '$queueId a pending: $e',
+      );
+    }
+  }
+
+  // ============================================================
   // SINCRONIZACIÓN AUTOMÁTICA
   // ============================================================
 
@@ -84,7 +229,6 @@ class SyncService {
 
     print('🔄 Sincronización automática iniciada.');
 
-    // Ejecutar una sincronización inicial.
     unawaited(
       _runAutomaticSync(
         companyId: companyId,
@@ -131,6 +275,16 @@ class SyncService {
       return;
     }
 
+    // 🔐 AUTH
+    if (!await _hasAuthenticatedSession()) {
+      print(
+        'ℹ️ Sincronización automática omitida: '
+        'no existe sesión autenticada.',
+      );
+
+      return;
+    }
+
     try {
       print('🔄 Ejecutando sincronización automática...');
 
@@ -147,6 +301,13 @@ class SyncService {
         'failed=${result.failed} '
         'skipped=${result.skipped}',
       );
+    } on AuthenticationException catch (e) {
+      // 🔐 AUTH
+      // Nunca convertir 401 en failed.
+      print(
+        '🔐 Sincronización automática detenida: '
+        'sesión no autenticada: $e',
+      );
     } catch (e) {
       // La sincronización automática nunca debe cerrar
       // ni bloquear el POS por un error de red.
@@ -161,6 +322,55 @@ class SyncService {
     _automaticSyncStarted = false;
 
     print('⏹️ Sincronización automática detenida.');
+  }
+
+  // ============================================================
+  // SINCRONIZACIÓN MANUAL
+  // ============================================================
+  //
+  // CAMBIO AUTH:
+  // Se conserva este método público porque es utilizado por:
+  // - AutomaticSyncService
+  // - DailyStatsScreen
+  // - otras llamadas internas de SyncService
+  //
+  // La lógica real continúa centralizada en syncPendingSales().
+  // Esto evita duplicar la lógica de sincronización.
+  //
+  Future<SyncResult> syncManual({
+    required int companyId,
+    required int userId,
+    required DateTime businessDate,
+    int? limit,
+  }) async {
+    // ==========================================================
+    // CAMBIO AUTH:
+    // Si no existe una sesión autenticada, no se intenta llamar
+    // nuevamente al servidor.
+    //
+    // syncPendingSales() también mantiene sus propias validaciones,
+    // por lo que este método no altera la lógica existente.
+    // ==========================================================
+    final storage = AppStorage();
+
+    final loggedIn = await storage.isLoggedIn();
+    final token = await storage.getToken();
+
+    if (!loggedIn || token == null || token.trim().isEmpty) {
+      print(
+        'ℹ️ Sincronización manual omitida: '
+        'no existe una sesión autenticada.',
+      );
+
+      return const SyncResult(total: 0, synced: 0, failed: 0, skipped: 0);
+    }
+
+    return syncPendingSales(
+      companyId: companyId,
+      userId: userId,
+      businessDate: businessDate,
+      limit: limit,
+    );
   }
 
   // ============================================================
@@ -181,6 +391,16 @@ class SyncService {
       return const SyncResult(total: 0, synced: 0, failed: 0, skipped: 0);
     }
 
+    // 🔐 AUTH
+    if (!await _hasAuthenticatedSession()) {
+      print(
+        '🔐 Sincronización omitida: '
+        'no existe sesión autenticada.',
+      );
+
+      return const SyncResult(total: 0, synced: 0, failed: 0, skipped: 0);
+    }
+
     _running = true;
 
     var total = 0;
@@ -192,13 +412,6 @@ class SyncService {
       // ==========================================================
       // 1. SYNC QUEUE
       // ==========================================================
-      //
-      // Primero resolvemos:
-      //
-      //   Categorías → Productos
-      //
-      // antes de intentar sincronizar ventas.
-      //
 
       final queueResult = await _syncPendingQueueInternal(limit: limit);
 
@@ -264,113 +477,24 @@ class SyncService {
         failed: failed,
         skipped: skipped,
       );
+    } on AuthenticationException {
+      // 🔐 AUTH
+      // La operación actual ya fue regresada a pending/queued.
+      // Se detiene inmediatamente toda la sincronización.
+      print(
+        '🔐 Sesión expirada durante sincronización. '
+        'Los pendientes permanecen disponibles para reintento.',
+      );
+
+      rethrow;
     } finally {
       _running = false;
     }
   }
+
   // ============================================================
   // SINCRONIZAR UNA VENTA
   // ============================================================
-  // ============================================================
-  // SINCRONIZACIÓN MANUAL COMPLETA
-  // ============================================================
-
-  Future<SyncResult> syncManual({
-    required int companyId,
-    required int userId,
-    required DateTime businessDate,
-    int? limit,
-  }) async {
-    if (_running) {
-      return const SyncResult(total: 0, synced: 0, failed: 0, skipped: 0);
-    }
-
-    if (await AppStorage().isOfflineSession()) {
-      return const SyncResult(total: 0, synced: 0, failed: 0, skipped: 0);
-    }
-
-    _running = true;
-
-    var total = 0;
-    var synced = 0;
-    var failed = 0;
-    var skipped = 0;
-
-    try {
-      print('🔄 Iniciando sincronización manual completa...');
-
-      // ========================================================
-      // 1. COLA LOCAL
-      //    Categorías → Productos
-      // ========================================================
-
-      final queueResult = await _syncPendingQueueInternal(limit: limit);
-
-      total += queueResult.total;
-      synced += queueResult.synced;
-      failed += queueResult.failed;
-      skipped += queueResult.skipped;
-
-      // ========================================================
-      // 2. VENTAS PENDIENTES
-      // ========================================================
-
-      final historical = await _historyDb.getPendingSalesReadyToSync(
-        limit: limit,
-      );
-
-      for (final sale in historical) {
-        total++;
-
-        final ok = await _syncHistoricalSale(sale);
-
-        if (ok) {
-          synced++;
-        } else {
-          failed++;
-        }
-      }
-
-      final dayOutbox = await _dayDb.getPendingOutbox(
-        companyId: companyId,
-        userId: userId,
-        businessDate: businessDate,
-        limit: limit,
-      );
-
-      for (final item in dayOutbox) {
-        total++;
-
-        final ok = await _syncDayOutbox(companyId, userId, businessDate, item);
-
-        if (ok) {
-          synced++;
-        } else {
-          failed++;
-        }
-      }
-
-      // ========================================================
-// 3. PULL DEL SERVIDOR
-//
-// El Pull es independiente de los errores de subida.
-//
-// Aunque una venta, categoría o producto falle,
-// seguimos descargando los cambios del servidor.
-// ========================================================
-
-      await syncPull();
-
-      return SyncResult(
-        total: total,
-        synced: synced,
-        failed: failed,
-        skipped: skipped,
-      );
-    } finally {
-      _running = false;
-    }
-  }
 
   Future<bool> syncSaleById(int saleId) async {
     final sale = await _historyDb.getSaleById(saleId);
@@ -381,6 +505,16 @@ class SyncService {
 
     if (sale['sync_status'] == 'synced') {
       return true;
+    }
+
+    // 🔐 AUTH
+    if (!await _hasAuthenticatedSession()) {
+      print(
+        '🔐 No se puede sincronizar venta $saleId: '
+        'no existe sesión autenticada.',
+      );
+
+      return false;
     }
 
     return _syncHistoricalSale(sale, force: true);
@@ -455,6 +589,20 @@ class SyncService {
       await _historyDb.markSaleAsSynced(id, serverResponse: response);
 
       return true;
+    } on AuthenticationException {
+      // 🔐 AUTH
+      // IMPORTANTE:
+      // NO usar markSaleSyncFailed().
+      // La venta sigue pendiente y podrá reintentarse después
+      // de iniciar sesión nuevamente.
+      print(
+        '🔐 Sesión expirada sincronizando venta histórica '
+        '${sale['uuid_local']}.',
+      );
+
+      await _resetHistoricalSaleForAuthentication(id);
+
+      rethrow;
     } catch (e) {
       print(
         '❌ Error sincronizando venta histórica '
@@ -553,6 +701,20 @@ class SyncService {
       );
 
       return true;
+    } on AuthenticationException {
+      // 🔐 AUTH
+      // NO marcar como failed.
+      // El outbox vuelve a queued y la venta a pending.
+      print('🔐 Sesión expirada sincronizando outbox $uuid.');
+
+      await _resetDayOutboxForAuthentication(
+        companyId: companyId,
+        userId: userId,
+        businessDate: date,
+        uuidLocal: uuid,
+      );
+
+      rethrow;
     } catch (e) {
       print('❌ Error sincronizando outbox $uuid: $e');
 
@@ -727,21 +889,6 @@ class SyncService {
 
       final item = Map<String, dynamic>.from(raw);
 
-      /*
-       * ----------------------------------------------------------
-       * IDENTIFICAR PRODUCTO
-       * ----------------------------------------------------------
-       *
-       * En una venta diaria:
-       *
-       *   product_id / producto_id
-       *
-       * representan el ID del producto del servidor.
-       *
-       * producto_local_id, si existe, solamente se conserva
-       * como referencia local para el payload.
-       */
-
       final explicitServerProductId = _toInt(
         item['producto_id'] ?? item['product_id'],
       );
@@ -758,25 +905,11 @@ class SyncService {
 
       Map<String, dynamic>? product;
 
-      /*
-       * ----------------------------------------------------------
-       * 1. PRODUCTO EMBEBIDO
-       * ----------------------------------------------------------
-       */
-
       final embeddedProduct = item['producto'];
 
       if (embeddedProduct is Map) {
         product = Map<String, dynamic>.from(embeddedProduct);
       }
-
-      /*
-       * ----------------------------------------------------------
-       * 2. BASE DIARIA
-       * ----------------------------------------------------------
-       *
-       * Aquí el ID es SERVER ID.
-       */
 
       if (product == null &&
           dayDatabase != null &&
@@ -784,33 +917,11 @@ class SyncService {
         product = await _getDayProduct(dayDatabase, explicitServerProductId);
       }
 
-      /*
-       * ----------------------------------------------------------
-       * 3. RESPALDO POR SERVER ID EN LocalDb
-       * ----------------------------------------------------------
-       *
-       * Solo se utiliza si ya conocemos el server ID.
-       *
-       * Nunca hacemos:
-       *
-       *   LocalDb.getProductById(product_id)
-       *
-       * porque product_id de la venta diaria NO es local ID.
-       */
-
       if (product == null && explicitServerProductId > 0) {
         product = await _historyDb.getProductByServerId(
           explicitServerProductId,
         );
       }
-
-      /*
-       * ----------------------------------------------------------
-       * 4. RESPALDO POR CÓDIGO
-       * ----------------------------------------------------------
-       *
-       * Esto evita depender de que local_id y server_id coincidan.
-       */
 
       if (product == null) {
         final codeCandidate = _firstNonEmpty(item['codigo'], item['code']);
@@ -820,24 +931,11 @@ class SyncService {
         }
       }
 
-      /*
-       * ----------------------------------------------------------
-       * SERVER ID FINAL
-       * ----------------------------------------------------------
-       */
-
       var serverProductId = explicitServerProductId;
 
       if (serverProductId <= 0) {
         serverProductId = _extractServerProductId(product);
       }
-
-      /*
-       * Si encontramos un producto mediante LocalDb por código,
-       * usamos su server_id.
-       *
-       * Si no existe mapeo, NO inventamos uno usando el id local.
-       */
 
       final code = _firstNonEmpty(
         item['codigo'],
@@ -908,16 +1006,11 @@ class SyncService {
 
       final line = <String, dynamic>{
         if (localProductId > 0) 'producto_local_id': localProductId,
-
         if (serverProductId > 0) 'producto_id': serverProductId,
-
         if (code != null && code.isNotEmpty) 'codigo': code,
-
         if (name != null && name.isNotEmpty) 'nombre': name,
-
         if (description != null && description.isNotEmpty)
           'descripcion': description,
-
         'cantidad': cantidad,
         'precio_unitario': unitPrice,
         'costo': cost,
@@ -939,12 +1032,6 @@ class SyncService {
   // OBTENER PRODUCTO DE LA BASE DIARIA
   // ============================================================
 
-  /// PosDatabaseService:
-  ///
-  ///   products.id = SERVER PRODUCT ID
-  ///
-  /// Nunca intenta buscar server_id porque esa columna
-  /// no existe en la base diaria.
   Future<Map<String, dynamic>?> _getDayProduct(
     Database db,
     int serverProductId,
@@ -1040,18 +1127,6 @@ class SyncService {
   // CONSTRUIR PAYLOAD DESDE SQLITE
   // ============================================================
 
-  /// Construye el payload de una venta histórica.
-  ///
-  /// Aquí sí:
-  ///
-  ///   sale_items.product_id
-  ///          ↓
-  ///   LocalDb.products.id
-  ///          ↓
-  ///   LocalDb.products.server_id
-  ///
-  /// Nunca se utiliza el ID local como server ID si existe
-  /// la columna server_id y está vacía.
   Future<Map<String, dynamic>> _buildPayload(
     Map<String, dynamic> sale,
     List<Map<String, dynamic>> items,
@@ -1131,14 +1206,6 @@ class SyncService {
     final normalizedProducts = <Map<String, dynamic>>[];
 
     for (final item in items) {
-      /*
-       * --------------------------------------------------------
-       * HISTÓRICO:
-       *
-       * item.product_id es LOCAL ID.
-       * --------------------------------------------------------
-       */
-
       final localProductId = _toInt(
         item['producto_local_id'] ?? item['product_id'] ?? item['producto_id'],
       );
@@ -1222,16 +1289,11 @@ class SyncService {
 
       normalizedProducts.add({
         'producto_local_id': localProductId,
-
         if (serverProductId > 0) 'producto_id': serverProductId,
-
         if (code != null && code.isNotEmpty) 'codigo': code,
-
         if (name != null && name.isNotEmpty) 'nombre': name,
-
         if (description != null && description.isNotEmpty)
           'descripcion': description,
-
         'cantidad': cantidad,
         'precio_unitario': unitPrice,
         'costo': cost,
@@ -1306,20 +1368,22 @@ class SyncService {
   // SYNC QUEUE
   // ============================================================
 
-  /// Procesa la cola persistente de operaciones locales.
-  ///
-  /// Orden obligatorio:
-  ///
-  ///   1. Categorías
-  ///   2. Productos
-  ///
-  /// Las ventas NO se procesan aquí.
   Future<SyncResult> syncPendingQueue({int? limit}) async {
     if (_running) {
       return const SyncResult(total: 0, synced: 0, failed: 0, skipped: 0);
     }
 
     if (await AppStorage().isOfflineSession()) {
+      return const SyncResult(total: 0, synced: 0, failed: 0, skipped: 0);
+    }
+
+    // 🔐 AUTH
+    if (!await _hasAuthenticatedSession()) {
+      print(
+        '🔐 Sync Queue omitida: '
+        'no existe sesión autenticada.',
+      );
+
       return const SyncResult(total: 0, synced: 0, failed: 0, skipped: 0);
     }
 
@@ -1424,6 +1488,7 @@ class SyncService {
       skipped: skipped,
     );
   }
+
   // ============================================================
   // PROCESAR CATEGORÍA
   // ============================================================
@@ -1524,6 +1589,17 @@ class SyncService {
       );
 
       return true;
+    } on AuthenticationException {
+      // 🔐 AUTH
+      // NO marcar como failed.
+      await _resetSyncQueueItemForAuthentication(queueId);
+
+      print(
+        '🔐 Sesión expirada sincronizando categoría '
+        '${item['uuid_local']}.',
+      );
+
+      rethrow;
     } catch (e) {
       print(
         '❌ Error sincronizando categoría '
@@ -1636,16 +1712,13 @@ class SyncService {
 
       final serverPayload = <String, dynamic>{
         if (rawData is Map) ...Map<String, dynamic>.from(rawData),
-
         if (empresaId > 0) 'empresa_id': empresaId,
-
         'codigo': codigo,
         'nombre': nombre,
         'precio': precio,
         'stock': stock,
         'activo': activo,
         'is_inventariable': inventariable,
-
         if (categoryServerId != null) 'categoria_id': categoryServerId,
       };
 
@@ -1700,6 +1773,17 @@ class SyncService {
       );
 
       return true;
+    } on AuthenticationException {
+      // 🔐 AUTH
+      // NO marcar como failed.
+      await _resetSyncQueueItemForAuthentication(queueId);
+
+      print(
+        '🔐 Sesión expirada sincronizando producto '
+        '${item['uuid_local']}.',
+      );
+
+      rethrow;
     } catch (e) {
       print(
         '❌ Error sincronizando producto '
@@ -1839,6 +1923,10 @@ class SyncService {
       'cursor=${cursor ?? 'SIN_CURSOR'}',
     );
 
+    // 🔐 AUTH
+    // AuthenticationException se propaga intencionalmente.
+    // No se convierte en un error genérico porque el cursor NO
+    // debe avanzar cuando la sesión expiró.
     final response = await _apiClient.syncPull(cursor: cursor);
 
     print('⬇️ SYNC PULL recibido.');
@@ -1865,6 +1953,9 @@ class SyncService {
       }
 
       serverData.addAll(cambiosMap);
+      final empresa = cambiosMap['empresa'];
+
+      print('🏢 EMPRESA RECIBIDA EN SYNC: $empresa');
     }
 
     print(
@@ -1879,6 +1970,10 @@ class SyncService {
     if (serverData.isNotEmpty) {
       await _historyDb.syncCatalogs(serverData);
     }
+
+    final empresaLocal = await _historyDb.getCompany();
+
+    print('🏢 EMPRESA LOCAL: $empresaLocal');
 
     if (ventas.isNotEmpty) {
       await _upsertServerSales(ventas);
@@ -2371,17 +2466,6 @@ class SyncService {
   // EXTRAER SERVER ID DEL PRODUCTO
   // ============================================================
 
-  /// Diferencia explícitamente entre:
-  ///
-  /// LocalDb:
-  ///   id = LOCAL ID
-  ///   server_id = SERVER ID
-  ///
-  /// PosDatabaseService:
-  ///   id = SERVER ID
-  ///
-  /// Si el mapa tiene server_id pero está vacío,
-  /// NO usamos id como server_id.
   int _extractServerProductId(Map<String, dynamic>? product) {
     if (product == null) {
       return 0;
@@ -2395,16 +2479,6 @@ class SyncService {
       return serverId;
     }
 
-    /*
-     * Base diaria:
-     *
-     * products.id = server product ID
-     *
-     * LocalDb:
-     *
-     * products.id = local ID
-     * products.server_id = server ID
-     */
     if (!product.containsKey('server_id') &&
         !product.containsKey('producto_server_id')) {
       return _toInt(product['id']);
@@ -2430,6 +2504,7 @@ class SyncService {
 
     return null;
   }
+
   // ============================================================
   // INVENTARIO
   // ============================================================

@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:esc_pos_printer_plus/esc_pos_printer_plus.dart';
 import 'package:esc_pos_utils_plus/esc_pos_utils_plus.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:print_bluetooth_thermal/print_bluetooth_thermal.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -85,131 +87,111 @@ class TicketConfig {
     String? direccionFallback,
     String? telefonoFallback,
   }) {
-    final map = _unwrapConfig(
-      source,
-    );
+    final map = _unwrapConfig(source);
 
     final papel = _string(
       map['papel'],
       fallback: '58mm',
     );
 
-    final campos =
-        _parseCampos(
+    final campos = _parseCampos(
       map['campos'],
     );
 
     final mostrarDireccion =
-        campos.containsKey(
-              'direccion',
-            )
+        campos.containsKey('direccion')
             ? campos['direccion']!
-            : true;
+            : _boolValue(
+                map['mostrar_direccion'],
+                fallback: true,
+              );
 
     final mostrarTelefono =
-        campos.containsKey(
-              'telefono',
-            )
+        campos.containsKey('telefono')
             ? campos['telefono']!
-            : true;
+            : _boolValue(
+                map['mostrar_telefono'],
+                fallback: true,
+              );
 
     final mostrarFecha =
-        campos.containsKey(
-              'fecha',
-            )
+        campos.containsKey('fecha')
             ? campos['fecha']!
-            : true;
+            : _boolValue(
+                map['mostrar_fecha'],
+                fallback: true,
+              );
 
     final mostrarProductos =
-        campos.containsKey(
-              'productos',
-            )
+        campos.containsKey('productos')
             ? campos['productos']!
             : true;
 
     final mostrarTotal =
-        campos.containsKey(
-              'total',
-            )
+        campos.containsKey('total')
             ? campos['total']!
             : true;
 
     final nombreNegocioVisible =
-        campos.containsKey(
-              'nombre_negocio',
-            )
-            ? campos[
-                'nombre_negocio']!
+        campos.containsKey('nombre_negocio')
+            ? campos['nombre_negocio']!
             : true;
 
-    final empresa =
-        _string(
-          map['nombre_negocio'] ??
-              map['empresa'] ??
-              map['nombreEmpresa'] ??
-              empresaFallback,
-        ).isNotEmpty
-        ? _string(
-            map['nombre_negocio'] ??
-                map['empresa'] ??
-                map['nombreEmpresa'] ??
-                empresaFallback,
-          )
+    final empresaValue = _string(
+      map['nombre_negocio'] ??
+          map['empresa'] ??
+          map['nombreEmpresa'] ??
+          empresaFallback,
+    );
+
+    final empresa = empresaValue.isNotEmpty
+        ? empresaValue
         : 'Mi Empresa';
 
-    final cabecera =
-        _nullableString(
+    final cabecera = _nullableString(
       map['cabecera'] ??
           map['encabezado'],
     );
 
-    final pie =
-        _nullableString(
+    final pie = _nullableString(
       map['pie_pagina'] ??
           map['pie'],
     );
 
-    final fuente =
-        _nullableString(
+    final fuente = _nullableString(
       map['fuente'],
     );
 
-    final tamanoFuente =
-        _intValue(
-          map['tamano_fuente'],
-          fallback: 12,
-        ).clamp(
-          8,
-          30,
-        );
+    final tamanoFuente = _intValue(
+      map['tamano_fuente'],
+      fallback: 12,
+    ).clamp(
+      8,
+      30,
+    );
 
-    final alineacion =
-        _string(
-          map['alineacion'],
-          fallback: 'izquierda',
-        ).toLowerCase();
+    final alineacion = _string(
+      map['alineacion'],
+      fallback: 'izquierda',
+    ).toLowerCase();
 
-    final mostrarLogo =
-        _boolValue(
-          map['mostrar_logo'],
-          fallback: false,
-        );
+    final mostrarLogo = _boolValue(
+      map['mostrar_logo'],
+      fallback: false,
+    );
 
-    final mostrarQr =
-        _boolValue(
-          map['mostrar_qr'],
-          fallback: false,
-        );
+    final mostrarQr = _boolValue(
+      map['mostrar_qr'],
+      fallback: false,
+    );
 
-    final qrContenido =
-        _nullableString(
+    final qrContenido = _nullableString(
       map['qr_contenido'],
     );
 
     return TicketConfig(
       empresa: empresa,
-      rfc:
-          _nullableString(
+      rfc: _nullableString(
         map['rfc'],
       ),
       direccion:
@@ -222,23 +204,20 @@ class TicketConfig {
             map['telefono'],
           ) ??
           telefonoFallback,
-      email:
-          _nullableString(
+      email: _nullableString(
         map['email'],
       ),
       encabezado: cabecera,
-      pie:
-          pie ??
-          'Gracias por su compra',
-      logoPath:
-          _nullableString(
+      pie: pie ?? 'Gracias por su compra',
+      logoPath: _nullableString(
         map['logo_path'] ??
             map['logoPath'] ??
             map['logo_url'] ??
             map['logoUrl'],
       ),
-      paperSize:
-          _paperSize(papel),
+      paperSize: _paperSize(
+        papel,
+      ),
       mostrarLogo:
           mostrarLogo &&
           nombreNegocioVisible,
@@ -246,47 +225,39 @@ class TicketConfig {
           mostrarDireccion,
       mostrarTelefono:
           mostrarTelefono,
-      mostrarEmail:
-          _boolValue(
+      mostrarEmail: _boolValue(
         map['mostrar_email'],
         fallback: false,
       ),
-      mostrarVendedor:
-          _boolValue(
+      mostrarVendedor: _boolValue(
         map['mostrar_vendedor'],
         fallback: true,
       ),
-      mostrarMetodoPago:
-          _boolValue(
+      mostrarMetodoPago: _boolValue(
         map['mostrar_metodo_pago'],
         fallback: true,
       ),
-      mostrarCambio:
-          _boolValue(
+      mostrarCambio: _boolValue(
         map['mostrar_cambio'],
         fallback: true,
       ),
-      mostrarFolio:
-          _boolValue(
+      mostrarFolio: _boolValue(
         map['mostrar_folio'],
         fallback: true,
       ),
-      mostrarFecha:
-          mostrarFecha,
-      cortarTicket:
-          _boolValue(
+      mostrarFecha: mostrarFecha,
+      cortarTicket: _boolValue(
         map['cortar_ticket'],
         fallback: true,
       ),
-      copies:
-          _intValue(
-            map['copies'] ??
-                map['copias'],
-            fallback: 1,
-          ).clamp(
-            1,
-            10,
-          ),
+      copies: _intValue(
+        map['copies'] ??
+            map['copias'],
+        fallback: 1,
+      ).clamp(
+        1,
+        10,
+      ),
       campos: {
         ...campos,
         'nombre_negocio':
@@ -302,39 +273,69 @@ class TicketConfig {
         'total':
             mostrarTotal,
       },
-      mostrarQr:
-          mostrarQr,
-      qrContenido:
-          qrContenido,
-      fuente:
-          fuente,
-      tamanoFuente:
-          tamanoFuente,
-      alineacion:
-          alineacion,
+      mostrarQr: mostrarQr,
+      qrContenido: qrContenido,
+      fuente: fuente,
+      tamanoFuente: tamanoFuente,
+      alineacion: alineacion,
     );
   }
 
   Map<String, dynamic> toMap() {
     return {
       'papel':
-          paperSize ==
-                  PaperSize.mm80
+          paperSize == PaperSize.mm80
               ? '80mm'
               : '58mm',
       'fuente':
-          fuente ??
-              'Arial',
+          fuente ?? 'Arial',
       'tamano_fuente':
           tamanoFuente,
       'alineacion':
           alineacion,
+
       'mostrar_logo':
           mostrarLogo,
+
+      'mostrar_direccion':
+          mostrarDireccion,
+
+      'mostrar_telefono':
+          mostrarTelefono,
+
+      'mostrar_email':
+          mostrarEmail,
+
+      'mostrar_vendedor':
+          mostrarVendedor,
+
+      'mostrar_metodo_pago':
+          mostrarMetodoPago,
+
+      'mostrar_cambio':
+          mostrarCambio,
+
+      'mostrar_folio':
+          mostrarFolio,
+
+      'mostrar_fecha':
+          mostrarFecha,
+
+      'cortar_ticket':
+          cortarTicket,
+
+      'copias':
+          copies,
+
+      'logo_path':
+          logoPath,
+
       'mostrar_qr':
           mostrarQr,
+
       'qr_contenido':
           qrContenido,
+
       'campos':
           campos.entries.map(
         (entry) {
@@ -346,15 +347,16 @@ class TicketConfig {
           };
         },
       ).toList(),
+
       'cabecera':
           encabezado,
+
       'pie_pagina':
           pie,
     };
   }
 
-  static Map<String, dynamic>
-      _unwrapConfig(
+  static Map<String, dynamic> _unwrapConfig(
     Map<String, dynamic> source,
   ) {
     final config =
@@ -371,8 +373,7 @@ class TicketConfig {
     );
   }
 
-  static Map<String, bool>
-      _parseCampos(
+  static Map<String, bool> _parseCampos(
     dynamic value,
   ) {
     if (value is! List) {
@@ -446,8 +447,7 @@ class TicketConfig {
               '',
             );
 
-    if (normalized
-        .contains('80')) {
+    if (normalized.contains('80')) {
       return PaperSize.mm80;
     }
 
@@ -651,6 +651,18 @@ class PrinterService {
       _selectedPrinterKey =
       'selected_printer_mac';
 
+  /// ==========================================================
+  /// CACHE LOCAL DEL LOGO
+  /// ==========================================================
+
+  static const String
+      _companyLogoPathKey =
+      'company_logo_local_path';
+
+  static const String
+      _companyLogoRemoteKey =
+      'company_logo_remote_path';
+
   final Duration
       inactivityTimeout;
 
@@ -686,7 +698,10 @@ class PrinterService {
           await ApiClient()
               .getTicketConfig();
 
-      final config =
+      final logoPath =
+          await _resolveCompanyLogo();
+
+      final remoteConfig =
           TicketConfig.fromMap(
         remote,
         empresaFallback:
@@ -697,8 +712,64 @@ class PrinterService {
             telefono,
       );
 
-      await storage
-          .saveTicketConfig(
+      final config =
+          TicketConfig(
+        empresa:
+            remoteConfig.empresa,
+        rfc:
+            remoteConfig.rfc,
+        direccion:
+            remoteConfig.direccion,
+        telefono:
+            remoteConfig.telefono,
+        email:
+            remoteConfig.email,
+        encabezado:
+            remoteConfig.encabezado,
+        pie:
+            remoteConfig.pie,
+        logoPath:
+            logoPath ??
+                remoteConfig.logoPath,
+        paperSize:
+            remoteConfig.paperSize,
+        mostrarLogo:
+            remoteConfig.mostrarLogo,
+        mostrarDireccion:
+            remoteConfig.mostrarDireccion,
+        mostrarTelefono:
+            remoteConfig.mostrarTelefono,
+        mostrarEmail:
+            remoteConfig.mostrarEmail,
+        mostrarVendedor:
+            remoteConfig.mostrarVendedor,
+        mostrarMetodoPago:
+            remoteConfig.mostrarMetodoPago,
+        mostrarCambio:
+            remoteConfig.mostrarCambio,
+        mostrarFolio:
+            remoteConfig.mostrarFolio,
+        mostrarFecha:
+            remoteConfig.mostrarFecha,
+        cortarTicket:
+            remoteConfig.cortarTicket,
+        copies:
+            remoteConfig.copies,
+        campos:
+            remoteConfig.campos,
+        mostrarQr:
+            remoteConfig.mostrarQr,
+        qrContenido:
+            remoteConfig.qrContenido,
+        fuente:
+            remoteConfig.fuente,
+        tamanoFuente:
+            remoteConfig.tamanoFuente,
+        alineacion:
+            remoteConfig.alineacion,
+      );
+
+      await storage.saveTicketConfig(
         config.toMap(),
       );
 
@@ -709,6 +780,15 @@ class PrinterService {
               .getTicketConfig();
 
       if (cached.isNotEmpty) {
+        final logoPath =
+            await _useCachedCompanyLogo();
+
+        if (logoPath != null &&
+            logoPath.isNotEmpty) {
+          cached['logo_path'] =
+              logoPath;
+        }
+
         return TicketConfig.fromMap(
           cached,
           empresaFallback:
@@ -720,6 +800,9 @@ class PrinterService {
         );
       }
 
+      final logoPath =
+          await _useCachedCompanyLogo();
+
       return TicketConfig(
         empresa:
             empresa ??
@@ -728,6 +811,8 @@ class PrinterService {
             direccion,
         telefono:
             telefono,
+        logoPath:
+            logoPath,
       );
     }
   }
@@ -742,6 +827,9 @@ class PrinterService {
         await AppStorage()
             .getTicketConfig();
 
+    final logoPath =
+        await _useCachedCompanyLogo();
+
     if (cached.isEmpty) {
       return TicketConfig(
         empresa:
@@ -751,7 +839,15 @@ class PrinterService {
             direccion,
         telefono:
             telefono,
+        logoPath:
+            logoPath,
       );
+    }
+
+    if (logoPath != null &&
+        logoPath.isNotEmpty) {
+      cached['logo_path'] =
+          logoPath;
     }
 
     return TicketConfig.fromMap(
@@ -780,6 +876,197 @@ class PrinterService {
   }
 
   // ============================================================
+  // LOGO DE EMPRESA
+  // ============================================================
+
+  Future<String?>
+      _resolveCompanyLogo() async {
+    try {
+      final response =
+          await ApiClient()
+              .getCompanyLogo();
+
+      final logoUrl =
+          _stringValueFromDynamic(
+        response,
+        [
+          'logo_url',
+          'logoUrl',
+          'url',
+        ],
+      );
+
+      final logoPath =
+          _stringValueFromDynamic(
+        response,
+        [
+          'logo',
+          'logo_path',
+          'logoPath',
+        ],
+      );
+
+      final remoteKey =
+          logoPath.isNotEmpty
+              ? logoPath
+              : logoUrl;
+
+      if (remoteKey.isEmpty) {
+        return _useCachedCompanyLogo();
+      }
+
+      final prefs =
+          await SharedPreferences
+              .getInstance();
+
+      final cachedPath =
+          prefs.getString(
+        _companyLogoPathKey,
+      );
+
+      final cachedRemote =
+          prefs.getString(
+        _companyLogoRemoteKey,
+      );
+
+      if (cachedPath != null &&
+          cachedPath.trim().isNotEmpty &&
+          cachedRemote == remoteKey) {
+        final cachedFile =
+            File(
+          cachedPath,
+        );
+
+        if (await cachedFile.exists()) {
+          return cachedFile.path;
+        }
+      }
+
+      if (logoUrl.isEmpty) {
+        return _useCachedCompanyLogo();
+      }
+
+      final bytes =
+          await ApiClient()
+              .downloadCompanyLogo(
+        logoUrl: logoUrl,
+      );
+
+      if (bytes == null ||
+          bytes.isEmpty) {
+        return _useCachedCompanyLogo();
+      }
+
+      final directory =
+          await getApplicationDocumentsDirectory();
+
+      final logoDirectory =
+          Directory(
+        '${directory.path}/company',
+      );
+
+      if (!await logoDirectory
+          .exists()) {
+        await logoDirectory
+            .create(
+          recursive: true,
+        );
+      }
+
+      final localFile =
+          File(
+        '${logoDirectory.path}/company_logo.webp',
+      );
+
+      await localFile.writeAsBytes(
+        bytes,
+        flush: true,
+      );
+
+      await prefs.setString(
+        _companyLogoPathKey,
+        localFile.path,
+      );
+
+      await prefs.setString(
+        _companyLogoRemoteKey,
+        remoteKey,
+      );
+
+      return localFile.path;
+    } catch (_) {
+      return _useCachedCompanyLogo();
+    }
+  }
+
+  Future<String?>
+      _useCachedCompanyLogo() async {
+    try {
+      final prefs =
+          await SharedPreferences
+              .getInstance();
+
+      final cachedPath =
+          prefs.getString(
+        _companyLogoPathKey,
+      );
+
+      if (cachedPath == null ||
+          cachedPath.trim().isEmpty) {
+        return null;
+      }
+
+      final file =
+          File(
+        cachedPath,
+      );
+
+      if (await file.exists()) {
+        return file.path;
+      }
+
+      await prefs.remove(
+        _companyLogoPathKey,
+      );
+
+      await prefs.remove(
+        _companyLogoRemoteKey,
+      );
+
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  String _stringValueFromDynamic(
+    dynamic source,
+    List<String> keys,
+  ) {
+    if (source is! Map) {
+      return '';
+    }
+
+    for (final key in keys) {
+      final value =
+          source[key];
+
+      if (value == null) {
+        continue;
+      }
+
+      final text =
+          value.toString().trim();
+
+      if (text.isNotEmpty) {
+        return text;
+      }
+    }
+
+    return '';
+  }
+
+  // ============================================================
   // IMPRESORAS BLUETOOTH
   // ============================================================
 
@@ -799,8 +1086,10 @@ class PrinterService {
                 .trim();
 
         return PrinterDevice(
-          name: printer.name.trim(),
-          address: address,
+          name:
+              printer.name.trim(),
+          address:
+              address,
           alias:
               aliases[address] ??
                   '',
@@ -2267,25 +2556,11 @@ class PrinterService {
       );
 
       bytes.addAll(
-        generator.text(
-          'QR:',
-          styles:
-              const PosStyles(
-            align:
-                PosAlign.center,
-            bold: true,
-          ),
-        ),
-      );
-
-      bytes.addAll(
-        generator.text(
-          config.qrContenido!,
-          styles:
-              const PosStyles(
-            align:
-                PosAlign.center,
-          ),
+        generator.qrcode(
+          config.qrContenido!.trim(),
+          align: PosAlign.center,
+          size: QRSize.size5,
+          cor: QRCorrection.M,
         ),
       );
     }
@@ -2599,25 +2874,11 @@ class PrinterService {
       );
 
       bytes.addAll(
-        generator.text(
-          'QR:',
-          styles:
-              const PosStyles(
-            align:
-                PosAlign.center,
-            bold: true,
-          ),
-        ),
-      );
-
-      bytes.addAll(
-        generator.text(
-          config.qrContenido!,
-          styles:
-              const PosStyles(
-            align:
-                PosAlign.center,
-          ),
+        generator.qrcode(
+          config.qrContenido!.trim(),
+          align: PosAlign.center,
+          size: QRSize.size5,
+          cor: QRCorrection.M,
         ),
       );
     }

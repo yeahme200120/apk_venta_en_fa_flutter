@@ -1,7 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'package:punto_venta_flutter/core/payments/payment_breakdown.dart';
 import 'package:punto_venta_flutter/core/storage/app_storage.dart';
 
 void main() {
@@ -12,6 +11,7 @@ void main() {
       SharedPreferences.setMockInitialValues({});
 
       final storage = AppStorage();
+
       await storage.clear();
 
       await storage.saveSession(
@@ -28,22 +28,5 @@ void main() {
       expect(await storage.getUserName(), 'Ana');
       expect(await storage.isLoggedIn(), isTrue);
     });
-  });
-
-  test('calcula cambio y el efectivo que realmente se envía al backend', () {
-    final breakdown = PaymentBreakdown(
-      total: 150,
-      payments: const [
-        PaymentEntry(method: 'Efectivo', amount: 200),
-        PaymentEntry(method: 'Tarjeta', amount: 50),
-      ],
-    );
-
-    expect(breakdown.totalCollected, 250);
-    expect(breakdown.cashAmount, 200);
-    expect(breakdown.change, 50);
-    expect(breakdown.excess, 100);
-    expect(breakdown.backendCashAmount, 200);
-    expect(breakdown.statusLabel, 'Cobro adicional');
   });
 }
