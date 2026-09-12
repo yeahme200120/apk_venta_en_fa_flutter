@@ -69,15 +69,6 @@ class SyncService {
     return loggedIn && token != null && token.trim().isNotEmpty;
   }
 
-  /// Identifica exclusivamente los errores de autenticación.
-  ///
-  /// Un error 401 NO debe convertirse en failed porque los datos
-  /// siguen pendientes y deben poder reintentarse después de
-  /// iniciar sesión nuevamente.
-  bool _isAuthenticationError(Object error) {
-    return error is AuthenticationException;
-  }
-
   /// Devuelve una operación de venta histórica que estaba en
   /// "syncing" a "pending".
   ///

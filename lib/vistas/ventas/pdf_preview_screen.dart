@@ -73,7 +73,7 @@ class _PdfPreviewScreenState extends State<PdfPreviewScreen> {
         canChangePageFormat: false,
         canChangeOrientation: false,
         allowPrinting: false,
-        allowSharing: false,
+        allowSharing: true,
         maxPageWidth: 420,
       ),
     );

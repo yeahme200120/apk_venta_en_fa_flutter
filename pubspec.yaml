@@ -50,6 +50,8 @@ dependencies:
   qr_flutter: ^4.1.0
   pdf: ^3.11.3
   printing: ^5.15.0
+  share_plus: ^11.0.0
+  image: ^4.5.4
 
 dev_dependencies:
   flutter_test:

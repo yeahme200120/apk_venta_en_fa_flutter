@@ -154,10 +154,6 @@ class PosScreenState extends State<PosScreen> {
     await _loadProducts();
   }
 
-  Future<void> _refreshLocalDataSilently() async {
-    await _handleSalesChanged();
-  }
-
   Future<void> _refreshAll() async {
     if (!mounted || _syncing) return;
 
@@ -362,63 +358,6 @@ class PosScreenState extends State<PosScreen> {
     }
 
     return true;
-  }
-
-  Future<void> _savePendingSale() async {
-    if (_cartNotifier.value.isEmpty || !await _canOperateSale()) {
-      return;
-    }
-
-    try {
-      if (_pendingSaleId == null) {
-        await _db.saveSale(
-          uuid: 'sale_${DateTime.now().millisecondsSinceEpoch}',
-          items: _currentSaleItems(),
-          payments: const [],
-          total: _total,
-          status: 'pending',
-          tableId: _selectedTableId,
-          tableName: _selectedTableName,
-        );
-      } else {
-        final updated = await _db.updatePendingSale(
-          saleId: _pendingSaleId!,
-          items: _currentSaleItems(),
-          total: _total,
-          tableId: _selectedTableId,
-          tableName: _selectedTableName,
-        );
-
-        if (!updated) {
-          throw StateError('La venta pendiente ya no está disponible.');
-        }
-      }
-    } on StateError catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(error.message.toString())));
-      }
-
-      return;
-    }
-
-    if (!mounted) return;
-
-    _setCart([]);
-
-    setState(() {
-      _pendingSaleId = null;
-      _selectedTableId = null;
-      _selectedTableName = null;
-    });
-
-    await _loadProducts();
-
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Venta guardada como pendiente.')),
-      );
-    }
   }
 
   // ============================================================
@@ -1144,8 +1083,7 @@ class PosScreenState extends State<PosScreen> {
                     (item) => SaleItemModel(
                       id: 0,
                       saleId: savedSaleId,
-                      productId:
-                          int.tryParse('${item['product_id'] ?? 0}') ?? 0,
+                      productId: int.tryParse('${item['product_id']}') ?? 0,
                       name: item['name']?.toString() ?? '',
                       quantity: item['quantity'] is num
                           ? (item['quantity'] as num).toDouble()
@@ -1232,118 +1170,6 @@ class PosScreenState extends State<PosScreen> {
       builder: (_) => _PaymentDialog(total: _total),
     );
   }
-
-  // ============================================================
-  // VER PENDIENTES
-  // ============================================================
-
-  Future<void> _showPendingSales() async {
-    final sales = (await _db.getTodaySales())
-        .where((sale) => sale['status'] == 'pending')
-        .toList();
-
-    if (!mounted) return;
-
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      builder: (sheetContext) {
-        return SafeArea(
-          child: SizedBox(
-            height: MediaQuery.of(sheetContext).size.height * .75,
-            child: ListView(
-              padding: const EdgeInsets.all(16),
-              children: [
-                const Text(
-                  'Ventas pendientes',
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 8),
-                if (sales.isEmpty)
-                  const ListTile(title: Text('No hay ventas pendientes.')),
-                ...sales.map(
-                  (sale) => ListTile(
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 4,
-                      vertical: 4,
-                    ),
-                    title: Text(
-                      'Venta #${sale['id']} — '
-                      '\$${(sale['total'] as num).toStringAsFixed(2)}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    subtitle: Text(
-                      sale['mesa_nombre'] == null
-                          ? 'Aún no pagada'
-                          : 'Mesa: ${sale['mesa_nombre']}',
-                    ),
-                    trailing: IconButton(
-                      tooltip: 'Eliminar pendiente',
-                      icon: const Icon(Icons.delete_outline),
-                      onPressed: () async {
-                        await _db.deletePendingSale(sale['id'] as int);
-
-                        if (sheetContext.mounted) {
-                          Navigator.pop(sheetContext);
-                        }
-
-                        await _loadProducts();
-                      },
-                    ),
-                    onTap: () async {
-                      final items = await _db.getSaleItemsBySaleId(
-                        sale['id'] as int,
-                      );
-
-                      final cart = <CartItem>[];
-
-                      for (final item in items) {
-                        Product? product;
-
-                        for (final candidate in _products) {
-                          if (candidate.id == item['product_id']) {
-                            product = candidate;
-                            break;
-                          }
-                        }
-
-                        if (product == null) {
-                          continue;
-                        }
-
-                        cart.add(
-                          CartItem(
-                            product: product,
-                            quantity: (item['quantity'] as num).toInt(),
-                          ),
-                        );
-                      }
-
-                      if (!mounted) return;
-
-                      _setCart(cart);
-
-                      setState(() {
-                        _pendingSaleId = sale['id'] as int;
-                        _selectedTableId = sale['mesa_id'] as int?;
-                        _selectedTableName = sale['mesa_nombre']?.toString();
-                      });
-
-                      if (sheetContext.mounted) {
-                        Navigator.pop(sheetContext);
-                      }
-                    },
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-
   // ============================================================
   // OPERACIÓN
   // ============================================================

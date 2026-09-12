@@ -1,11 +1,16 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 
 import '../../core/database/local_db.dart';
 import '../../core/models/sale_model.dart';
+import '../../core/models/ticket_data.dart';
 import '../../core/network/api_client.dart';
 import '../../core/services/catalog_service.dart';
+import '../../core/services/pdf_service.dart';
 import '../../core/services/printer_service.dart';
 import '../../core/services/sync_service.dart';
+import '../../core/services/whatsapp_service.dart';
 import '../../core/storage/app_storage.dart';
 import 'pdf_preview_screen.dart';
 
@@ -792,6 +797,81 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
   }
 
   // ============================================================
+  // COMPARTIR TICKET POR WHATSAPP
+  // ============================================================
+
+  Future<void> _shareTicketToWhatsApp() async {
+    if (_printing || _syncing) {
+      return;
+    }
+
+    if (widget.sale.items.isEmpty) {
+      _showMessage(
+        'La venta no contiene productos para compartir.',
+        error: true,
+      );
+      return;
+    }
+
+    setState(() {
+      _printing = true;
+    });
+
+    try {
+      final config = await _printerService.loadTicketConfig();
+
+      final ticket = TicketData.fromSale(
+        sale: widget.sale,
+        config: config,
+      );
+
+      final Uint8List pdfBytes = await PdfService.generateSalePdf(
+        ticket: ticket,
+      );
+
+      final folio = widget.sale.folio?.trim();
+
+      final fileName = folio != null && folio.isNotEmpty
+          ? 'ticket_$folio.pdf'
+          : 'ticket_${widget.sale.uuidLocal}.pdf';
+
+      final shared = await WhatsAppService.sharePdf(
+        bytes: pdfBytes,
+        fileName: fileName,
+        text: 'Ticket de venta ${folio ?? widget.sale.uuidLocal}',
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      if (!shared) {
+        _showMessage(
+          'No fue posible abrir el selector para compartir el ticket.',
+          error: true,
+        );
+      }
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      _showMessage(
+        'No fue posible compartir el ticket: $error',
+        error: true,
+      );
+    } finally {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _printing = false;
+      });
+    }
+  }
+
+  // ============================================================
   // REIMPRIMIR TICKET DE VENTA
   // ============================================================
 
@@ -1007,6 +1087,12 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
             tooltip: 'Ver PDF',
             onPressed: busy ? null : _openPdfPreview,
             icon: const Icon(Icons.picture_as_pdf_outlined),
+          ),
+
+          IconButton(
+            tooltip: 'Compartir por WhatsApp',
+            onPressed: busy ? null : _shareTicketToWhatsApp,
+            icon: const Icon(Icons.chat_outlined),
           ),
 
           IconButton(
