@@ -6,6 +6,7 @@ list(APPEND FLUTTER_PLUGIN_LIST
   bluetooth_print_plus
   charset_converter
   file_selector_linux
+  printing
 )
 
 list(APPEND FLUTTER_FFI_PLUGIN_LIST

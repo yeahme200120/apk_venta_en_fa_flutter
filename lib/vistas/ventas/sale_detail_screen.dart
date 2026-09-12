@@ -7,6 +7,7 @@ import '../../core/services/catalog_service.dart';
 import '../../core/services/printer_service.dart';
 import '../../core/services/sync_service.dart';
 import '../../core/storage/app_storage.dart';
+import 'pdf_preview_screen.dart';
 
 class SaleDetailScreen extends StatefulWidget {
   const SaleDetailScreen({super.key, required this.sale});
@@ -777,6 +778,20 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
   }
 
   // ============================================================
+  // VISTA PREVIA PDF
+  // ============================================================
+
+  void _openPdfPreview() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => PdfPreviewScreen(
+          sale: widget.sale,
+        ),
+      ),
+    );
+  }
+
+  // ============================================================
   // REIMPRIMIR TICKET DE VENTA
   // ============================================================
 
@@ -986,6 +1001,12 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                 : const Icon(Icons.sync_outlined),
+          ),
+
+          IconButton(
+            tooltip: 'Ver PDF',
+            onPressed: busy ? null : _openPdfPreview,
+            icon: const Icon(Icons.picture_as_pdf_outlined),
           ),
 
           IconButton(

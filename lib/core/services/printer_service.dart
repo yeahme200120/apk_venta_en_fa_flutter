@@ -666,19 +666,75 @@ class PrinterService {
   final Duration
       inactivityTimeout;
 
-  Timer? _inactivityTimer;
+  /// ==========================================================
+  /// ESTADO BLUETOOTH COMPARTIDO
+  /// ==========================================================
+  ///
+  /// PrintBluetoothThermal mantiene la conexión a nivel global.
+  /// Por eso el estado de PrinterService también debe ser
+  /// compartido entre las distintas instancias creadas por
+  /// las diferentes pantallas.
+  ///
 
-  String? _connectedAddress;
+  static Timer? _inactivityTimer;
 
-  bool _printing = false;
+  static String? _connectedAddress;
 
-  bool _connecting = false;
+  static bool _printing = false;
+
+  static Future<void>?
+      _bluetoothOperation;
+
+  static Duration
+      _activeInactivityTimeout =
+      const Duration(
+    minutes: 30,
+  );
 
   String? get connectedAddress =>
       _connectedAddress;
 
   bool get isPrinting =>
       _printing;
+
+  /// ==========================================================
+  /// BLOQUEO GLOBAL DE OPERACIONES BLUETOOTH
+  /// ==========================================================
+  ///
+  /// Evita conexiones/desconexiones simultáneas provenientes de
+  /// diferentes instancias de PrinterService.
+  ///
+
+  static Future<T>
+      _withBluetoothLock<T>(
+    Future<T> Function() operation,
+  ) async {
+    final previous =
+        _bluetoothOperation ??
+            Future<void>.value();
+
+    final completer =
+        Completer<void>();
+
+    _bluetoothOperation =
+        completer.future;
+
+    try {
+      await previous;
+      return await operation();
+    } finally {
+      if (!completer.isCompleted) {
+        completer.complete();
+      }
+
+      if (identical(
+        _bluetoothOperation,
+        completer.future,
+      )) {
+        _bluetoothOperation = null;
+      }
+    }
+  }
 
   /// ==========================================================
   /// CONFIGURACIÓN DE TICKET
@@ -1123,12 +1179,31 @@ class PrinterService {
       if (!connected) {
         _connectedAddress = null;
         _cancelInactivityTimer();
+
+        return false;
       }
 
-      return connected;
+      if (_connectedAddress == null ||
+          _connectedAddress!
+              .trim()
+              .isEmpty) {
+        final selected =
+            await selectedPrinterAddress();
+
+        if (selected != null &&
+            selected.trim().isNotEmpty) {
+          _connectedAddress =
+              selected.trim();
+        }
+      }
+
+      _restartInactivityTimer();
+
+      return true;
     } catch (_) {
       _connectedAddress = null;
       _cancelInactivityTimer();
+
       return false;
     }
   }
@@ -1297,6 +1372,24 @@ class PrinterService {
       milliseconds: 500,
     ),
   }) async {
+    return _withBluetoothLock(
+      () => _connectBluetoothUnlocked(
+        address,
+        attempts: attempts,
+        retryDelay: retryDelay,
+      ),
+    );
+  }
+
+  Future<bool>
+      _connectBluetoothUnlocked(
+    String address, {
+    int attempts = 3,
+    Duration retryDelay =
+        const Duration(
+      milliseconds: 500,
+    ),
+  }) async {
     final normalizedAddress =
         address.trim();
 
@@ -1305,6 +1398,10 @@ class PrinterService {
     }
 
     _cancelInactivityTimer();
+
+    if (attempts <= 0) {
+      attempts = 1;
+    }
 
     for (
       var attempt = 0;
@@ -1317,14 +1414,25 @@ class PrinterService {
                 .connectionStatus;
 
         if (alreadyConnected) {
-          if (_connectedAddress ==
-              normalizedAddress) {
+          final currentAddress =
+              _connectedAddress;
+
+          if (currentAddress != null &&
+              currentAddress
+                      .trim()
+                      .toLowerCase() ==
+                  normalizedAddress
+                      .toLowerCase()) {
+            await selectPrinter(
+              normalizedAddress,
+            );
+
             _restartInactivityTimer();
 
             return true;
           }
 
-          await disconnectBluetooth();
+          await _disconnectBluetoothUnlocked();
         }
 
         final connected =
@@ -1375,7 +1483,7 @@ class PrinterService {
         await selectedPrinterAddress();
 
     if (address == null ||
-        address.isEmpty) {
+        address.trim().isEmpty) {
       return false;
     }
 
@@ -1386,35 +1494,50 @@ class PrinterService {
 
   Future<bool>
       ensureBluetoothConnection() async {
-    if (_connecting) {
-      return false;
-    }
+    return _withBluetoothLock(
+      () async {
+        final connected =
+            await PrintBluetoothThermal
+                .connectionStatus;
 
-    final connected =
-        await PrintBluetoothThermal
-            .connectionStatus;
+        if (connected) {
+          if (_connectedAddress == null ||
+              _connectedAddress!
+                  .trim()
+                  .isEmpty) {
+            final selected =
+                await selectedPrinterAddress();
 
-    if (connected) {
-      return true;
-    }
+            if (selected != null &&
+                selected
+                    .trim()
+                    .isNotEmpty) {
+              _connectedAddress =
+                  selected.trim();
+            }
+          }
 
-    final address =
-        await selectedPrinterAddress();
+          _restartInactivityTimer();
 
-    if (address == null ||
-        address.trim().isEmpty) {
-      return false;
-    }
+          return true;
+        }
 
-    _connecting = true;
+        _connectedAddress = null;
+        _cancelInactivityTimer();
 
-    try {
-      return await connectBluetooth(
-        address,
-      );
-    } finally {
-      _connecting = false;
-    }
+        final address =
+            await selectedPrinterAddress();
+
+        if (address == null ||
+            address.trim().isEmpty) {
+          return false;
+        }
+
+        return _connectBluetoothUnlocked(
+          address,
+        );
+      },
+    );
   }
 
   // ============================================================
@@ -1448,6 +1571,13 @@ class PrinterService {
 
   Future<void>
       disconnectBluetooth() async {
+    await _withBluetoothLock(
+      _disconnectBluetoothUnlocked,
+    );
+  }
+
+  Future<void>
+      _disconnectBluetoothUnlocked() async {
     _cancelInactivityTimer();
 
     try {
@@ -1465,9 +1595,12 @@ class PrinterService {
   void _restartInactivityTimer() {
     _cancelInactivityTimer();
 
+    _activeInactivityTimeout =
+        inactivityTimeout;
+
     _inactivityTimer =
         Timer(
-      inactivityTimeout,
+      _activeInactivityTimeout,
       () async {
         try {
           final connected =
@@ -1476,6 +1609,8 @@ class PrinterService {
 
           if (connected) {
             await disconnectBluetooth();
+          } else {
+            _connectedAddress = null;
           }
         } catch (_) {
           _connectedAddress = null;
@@ -1484,7 +1619,7 @@ class PrinterService {
     );
   }
 
-  void _cancelInactivityTimer() {
+  static void _cancelInactivityTimer() {
     _inactivityTimer?.cancel();
     _inactivityTimer = null;
   }
@@ -3156,7 +3291,8 @@ class PrinterService {
   // ============================================================
 
   Future<void> dispose() async {
-    _cancelInactivityTimer();
-    _connectedAddress = null;
+    // El estado Bluetooth es compartido entre las instancias.
+    // Una pantalla puede destruir su PrinterService sin
+    // desconectar la impresora utilizada por otra pantalla.
   }
 }
