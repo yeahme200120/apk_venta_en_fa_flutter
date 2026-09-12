@@ -1,6 +1,7 @@
 ﻿import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:esc_pos_utils_plus/esc_pos_utils_plus.dart';
 
 import '../../core/database/local_db.dart';
 import '../../core/models/product.dart';
@@ -15,7 +16,10 @@ import 'cart_screen.dart';
 import '../ventas/sale_detail_screen.dart';
 
 class PosScreen extends StatefulWidget {
-  const PosScreen({super.key, this.onCartChanged});
+  const PosScreen({
+    super.key,
+    this.onCartChanged,
+  });
 
   final ValueChanged<int>? onCartChanged;
 
@@ -25,10 +29,9 @@ class PosScreen extends StatefulWidget {
 
 class PosScreenState extends State<PosScreen> {
   final LocalDb _db = LocalDb();
-  final PrinterService _printerService = PrinterService();
   final TextEditingController _searchController = TextEditingController();
-  final ValueNotifier<List<CartItem>> _cartNotifier =
-      ValueNotifier<List<CartItem>>([]);
+  final ValueNotifier<List<CartItem>> _cartNotifier = ValueNotifier([]);
+  final PrinterService _printerService = PrinterService();
 
   StreamSubscription<void>? _salesChangesSubscription;
   bool _refreshing = false;
@@ -36,6 +39,10 @@ class PosScreenState extends State<PosScreen> {
   bool _refreshQueued = false;
 
   List<Product> _products = [];
+  List<Map<String, dynamic>> _categories = const [];
+  int? _selectedCategoryId;
+  bool _isCardView = false;
+  bool _isLoadingCategories = false;
   bool _isLoading = true;
 
   int _todaySales = 0;
@@ -43,6 +50,7 @@ class PosScreenState extends State<PosScreen> {
   int _cancelledSales = 0;
 
   int? _pendingSaleId;
+  bool _processingSale = false;
 
   bool _cajasActivas = false;
   bool _mesasActivas = false;
@@ -73,6 +81,7 @@ class PosScreenState extends State<PosScreen> {
     });
 
     _loadProducts();
+    _loadCategories();
     _loadOperationState();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -85,7 +94,6 @@ class PosScreenState extends State<PosScreen> {
   void dispose() {
     _salesChangesSubscription?.cancel();
     _salesChangesSubscription = null;
-    _printerService.dispose();
     _searchController.dispose();
     _cartNotifier.dispose();
     super.dispose();
@@ -94,6 +102,48 @@ class PosScreenState extends State<PosScreen> {
   // ============================================================
   // CARGA DE DATOS
   // ============================================================
+
+  Future<void> _loadCategories() async {
+    if (_isLoadingCategories) return;
+
+    _isLoadingCategories = true;
+
+    try {
+      final rows = await _db.getCategories();
+      final categories = rows
+          .map((row) => Map<String, dynamic>.from(row))
+          .toList();
+
+      if (!mounted) return;
+
+      final availableIds = categories
+          .map((category) => _parseCategoryId(category['id']))
+          .whereType<int>()
+          .toSet();
+
+      setState(() {
+        _categories = categories;
+        if (_selectedCategoryId != null &&
+            !availableIds.contains(_selectedCategoryId)) {
+          _selectedCategoryId = null;
+        }
+      });
+    } catch (error) {
+      debugPrint('No fue posible cargar categorías: $error');
+    } finally {
+      _isLoadingCategories = false;
+    }
+  }
+
+  int? _parseCategoryId(dynamic value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return int.tryParse(value?.toString() ?? '');
+  }
+
+  String _categoryName(Map<String, dynamic> category) {
+    return (category['name'] ?? category['nombre'] ?? 'Sin nombre').toString();
+  }
 
   Future<void> _loadProducts({bool showLoading = false}) async {
     if (_refreshing) return;
@@ -131,7 +181,9 @@ class PosScreenState extends State<PosScreen> {
       });
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No fue posible actualizar la caja: $error')),
+        SnackBar(
+          content: Text('No fue posible actualizar la caja: $error'),
+        ),
       );
     } finally {
       _refreshing = false;
@@ -154,6 +206,10 @@ class PosScreenState extends State<PosScreen> {
     await _loadProducts();
   }
 
+  Future<void> _refreshLocalDataSilently() async {
+    await _handleSalesChanged();
+  }
+
   Future<void> _refreshAll() async {
     if (!mounted || _syncing) return;
 
@@ -164,7 +220,6 @@ class PosScreenState extends State<PosScreen> {
     try {
       try {
         final offline = await AppStorage().isOfflineSession();
-
         if (!offline) {
           await SyncService().syncPull();
         }
@@ -187,7 +242,9 @@ class PosScreenState extends State<PosScreen> {
       if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No fue posible actualizar la caja: $error')),
+        SnackBar(
+          content: Text('No fue posible actualizar la caja: $error'),
+        ),
       );
     } finally {
       if (mounted) {
@@ -239,23 +296,60 @@ class PosScreenState extends State<PosScreen> {
         .toList();
   }
 
-  double get _total =>
-      _cartNotifier.value.fold(0, (sum, item) => sum + item.subtotal);
+  double get _total => _cartNotifier.value.fold(0, (sum, item) => sum + item.subtotal);
+
+  bool _canAddProduct(Product product) {
+    // Los productos no inventariables no dependen del stock.
+    if (!product.isInventoriable) {
+      return true;
+    }
+
+    // Los productos inventariables requieren existencia disponible.
+    return product.stock > 0;
+  }
 
   void _addToCart(Product product) {
-    final current = List<CartItem>.from(_cartNotifier.value);
+    if (!_canAddProduct(product)) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('El producto no tiene stock disponible.'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+      return;
+    }
 
+    final current = List<CartItem>.from(_cartNotifier.value);
     final index = current.indexWhere((item) => item.product.id == product.id);
 
     if (index >= 0) {
       final existing = current[index];
+
+      if (product.isInventoriable && existing.quantity >= product.stock) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('No hay más existencia disponible.'),
+              duration: Duration(seconds: 2),
+            ),
+          );
+        }
+        return;
+      }
 
       current[index] = CartItem(
         product: existing.product,
         quantity: existing.quantity + 1,
       );
     } else {
-      current.add(CartItem(product: product, quantity: 1));
+      current.add(
+        CartItem(
+          product: product,
+          quantity: 1,
+        ),
+      );
     }
 
     _setCart(current);
@@ -263,20 +357,14 @@ class PosScreenState extends State<PosScreen> {
 
   void _changeQuantity(int productId, int delta) {
     final current = List<CartItem>.from(_cartNotifier.value);
-
     final index = current.indexWhere((item) => item.product.id == productId);
-
     if (index == -1) return;
 
     final newQty = current[index].quantity + delta;
-
     if (newQty <= 0) {
       current.removeAt(index);
     } else {
-      current[index] = CartItem(
-        product: current[index].product,
-        quantity: newQty,
-      );
+      current[index] = CartItem(product: current[index].product, quantity: newQty);
     }
 
     _setCart(current);
@@ -284,15 +372,11 @@ class PosScreenState extends State<PosScreen> {
 
   void _removeFromCart(int productId) {
     final current = List<CartItem>.from(_cartNotifier.value);
-
     current.removeWhere((item) => item.product.id == productId);
-
     _setCart(current);
   }
 
-  void _clearCart() {
-    _setCart([]);
-  }
+  void _clearCart() => _setCart([]);
 
   // ============================================================
   // ABRIR CARRITO
@@ -314,7 +398,6 @@ class PosScreenState extends State<PosScreen> {
     );
 
     if (!mounted) return;
-
     _notifyCartChanged();
   }
 
@@ -331,9 +414,7 @@ class PosScreenState extends State<PosScreen> {
       ),
     );
 
-    if (mounted) {
-      setState(() {});
-    }
+    if (mounted) setState(() {});
   }
 
   // ============================================================
@@ -347,788 +428,53 @@ class PosScreenState extends State<PosScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text(
-              'Un cajero debe abrir la caja antes de registrar o cobrar ventas.',
-            ),
+            content: Text('Un cajero debe abrir la caja antes de registrar o cobrar ventas.'),
           ),
         );
       }
-
       return false;
     }
-
     return true;
   }
 
-  // ============================================================
-  // DIÁLOGO DE IMPRESORA
-  // ============================================================
-
-  Future<bool> _showPrinterConnectionDialog() async {
-    try {
-      var printers = await _printerService.pairedBluetoothPrinters();
-
-      if (!mounted) {
-        return false;
-      }
-
-      final result = await showDialog<bool>(
-        context: context,
-        barrierDismissible: false,
-        builder: (dialogContext) {
-          PrinterDevice? selectedPrinter;
-          bool loading = false;
-          String? errorMessage;
-
-          Future<void> refreshPrinters(StateSetter setDialogState) async {
-            setDialogState(() {
-              loading = true;
-              errorMessage = null;
-            });
-
-            try {
-              final updated = await _printerService.pairedBluetoothPrinters();
-
-              if (!dialogContext.mounted) {
-                return;
-              }
-
-              setDialogState(() {
-                printers = updated;
-
-                if (selectedPrinter != null &&
-                    !updated.any(
-                      (printer) => printer.address == selectedPrinter!.address,
-                    )) {
-                  selectedPrinter = null;
-                }
-              });
-            } catch (error) {
-              if (!dialogContext.mounted) {
-                return;
-              }
-
-              setDialogState(() {
-                errorMessage =
-                    'No fue posible obtener las impresoras Bluetooth.';
-              });
-
-              debugPrint('❌ Error actualizando impresoras: $error');
-            } finally {
-              if (dialogContext.mounted) {
-                setDialogState(() {
-                  loading = false;
-                });
-              }
-            }
-          }
-
-          Future<void> connectSelected(StateSetter setDialogState) async {
-            if (selectedPrinter == null) {
-              setDialogState(() {
-                errorMessage = 'Selecciona una impresora antes de continuar.';
-              });
-
-              return;
-            }
-
-            setDialogState(() {
-              loading = true;
-              errorMessage = null;
-            });
-
-            try {
-              final connected = await _printerService.selectAndConnectPrinter(
-                selectedPrinter!.address,
-              );
-
-              if (!dialogContext.mounted) {
-                return;
-              }
-
-              if (connected) {
-                Navigator.of(dialogContext).pop(true);
-                return;
-              }
-
-              setDialogState(() {
-                errorMessage =
-                    'No fue posible conectar con la impresora '
-                    '${selectedPrinter!.displayName}.';
-              });
-            } catch (error) {
-              if (!dialogContext.mounted) {
-                return;
-              }
-
-              setDialogState(() {
-                errorMessage = 'Error al conectar con la impresora: $error';
-              });
-            } finally {
-              if (dialogContext.mounted) {
-                setDialogState(() {
-                  loading = false;
-                });
-              }
-            }
-          }
-
-          return StatefulBuilder(
-            builder: (context, setDialogState) {
-              return AlertDialog(
-                title: const Row(
-                  children: [
-                    Icon(Icons.print_outlined),
-                    SizedBox(width: 10),
-                    Expanded(child: Text('Impresora de tickets')),
-                  ],
-                ),
-                content: SizedBox(
-                  width: 420,
-                  child: SingleChildScrollView(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        const Text(
-                          'No hay una impresora de tickets conectada.',
-                          style: TextStyle(fontWeight: FontWeight.w600),
-                        ),
-                        const SizedBox(height: 8),
-                        const Text(
-                          'Selecciona una impresora Bluetooth emparejada '
-                          'para imprimir el ticket automáticamente.',
-                        ),
-                        const SizedBox(height: 20),
-
-                        if (loading)
-                          const Padding(
-                            padding: EdgeInsets.symmetric(vertical: 20),
-                            child: Center(child: CircularProgressIndicator()),
-                          )
-                        else if (printers.isEmpty)
-                          Container(
-                            padding: const EdgeInsets.all(16),
-                            decoration: BoxDecoration(
-                              color: Colors.orange.withValues(alpha: 0.08),
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(
-                                color: Colors.orange.withValues(alpha: 0.3),
-                              ),
-                            ),
-                            child: const Column(
-                              children: [
-                                Icon(Icons.bluetooth_disabled, size: 36),
-                                SizedBox(height: 10),
-                                Text(
-                                  'No hay impresoras Bluetooth emparejadas.',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(fontWeight: FontWeight.w600),
-                                ),
-                                SizedBox(height: 6),
-                                Text(
-                                  'Empareja la impresora desde los ajustes '
-                                  'Bluetooth de Android y después actualiza '
-                                  'esta lista.',
-                                  textAlign: TextAlign.center,
-                                ),
-                              ],
-                            ),
-                          )
-                        else
-                          DropdownButtonFormField<String>(
-                            initialValue: selectedPrinter?.address,
-                            isExpanded: true,
-                            decoration: const InputDecoration(
-                              labelText: 'Impresora',
-                              prefixIcon: Icon(Icons.print),
-                              border: OutlineInputBorder(),
-                            ),
-                            items: printers.map((printer) {
-                              return DropdownMenuItem<String>(
-                                value: printer.address,
-                                child: Text(
-                                  printer.displayName,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              );
-                            }).toList(),
-                            onChanged: loading
-                                ? null
-                                : (value) {
-                                    if (value == null) {
-                                      return;
-                                    }
-
-                                    final printer = printers.firstWhere(
-                                      (item) => item.address == value,
-                                    );
-
-                                    setDialogState(() {
-                                      selectedPrinter = printer;
-                                      errorMessage = null;
-                                    });
-                                  },
-                          ),
-
-                        if (errorMessage != null) ...[
-                          const SizedBox(height: 14),
-                          Container(
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              color: Colors.red.withValues(alpha: 0.08),
-                              borderRadius: BorderRadius.circular(10),
-                              border: Border.all(
-                                color: Colors.red.withValues(alpha: 0.25),
-                              ),
-                            ),
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const Icon(
-                                  Icons.error_outline,
-                                  color: Colors.red,
-                                ),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: Text(
-                                    errorMessage!,
-                                    style: const TextStyle(color: Colors.red),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-
-                        const SizedBox(height: 16),
-
-                        OutlinedButton.icon(
-                          onPressed: loading
-                              ? null
-                              : () => refreshPrinters(setDialogState),
-                          icon: const Icon(Icons.refresh),
-                          label: const Text('Actualizar impresoras'),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                actions: [
-                  TextButton(
-                    onPressed: loading
-                        ? null
-                        : () {
-                            Navigator.of(dialogContext).pop(false);
-                          },
-                    child: const Text('Continuar sin imprimir'),
-                  ),
-                  FilledButton.icon(
-                    onPressed: loading || selectedPrinter == null
-                        ? null
-                        : () => connectSelected(setDialogState),
-                    icon: const Icon(Icons.bluetooth_connected),
-                    label: const Text('Conectar e imprimir'),
-                  ),
-                ],
-              );
-            },
-          );
-        },
-      );
-
-      return result ?? false;
-    } catch (error, stackTrace) {
-      debugPrint('❌ Error mostrando diálogo de impresora: $error');
-      debugPrint('$stackTrace');
-
-      return false;
-    }
-  }
-
-  // ============================================================
-  // IMPRESIÓN AUTOMÁTICA
-  // ============================================================
-
-  Future<bool> _printSaleAutomatically({
-    required int saleId,
-    required List<Map<String, dynamic>> saleItems,
-    required List<Map<String, dynamic>> payments,
-    required double total,
-    required double cashReceived,
-    required double change,
-  }) async {
-    debugPrint('══════════════════════════════════════');
-    debugPrint('🖨️ INICIO IMPRESIÓN AUTOMÁTICA');
-    debugPrint('🧾 Venta: $saleId');
-    debugPrint('💰 Total: $total');
-    debugPrint('💵 Efectivo recibido: $cashReceived');
-    debugPrint('🔄 Cambio: $change');
-    debugPrint('💳 Pagos: $payments');
+  Future<void> _savePendingSale() async {
+    if (_cartNotifier.value.isEmpty || !await _canOperateSale()) return;
 
     try {
-      var selectedPrinter = await _printerService.selectedPrinter();
-
-      debugPrint(
-        '🖨️ Impresora seleccionada: '
-        '${selectedPrinter?.displayName ?? "NINGUNA"}',
-      );
-
-      // ========================================================
-      // CASO 1: NO HAY IMPRESORA SELECCIONADA
-      // ========================================================
-
-      if (selectedPrinter == null) {
-        debugPrint('⚠️ No hay impresora seleccionada.');
-
-        final shouldPrint = await _showPrinterConnectionDialog();
-
-        if (!shouldPrint) {
-          debugPrint('🖨️ Usuario decidió continuar sin imprimir.');
-
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Venta guardada sin imprimir ticket.'),
-                duration: Duration(seconds: 3),
-              ),
-            );
-          }
-
-          return false;
-        }
-
-        selectedPrinter = await _printerService.selectedPrinter();
-
-        if (selectedPrinter == null) {
-          debugPrint(
-            '❌ No quedó una impresora seleccionada '
-            'después del diálogo.',
-          );
-
-          return false;
-        }
-      }
-
-      // ========================================================
-      // CASO 2: CONECTAR IMPRESORA SELECCIONADA
-      // ========================================================
-
-      var connected = await _printerService.ensureBluetoothConnection();
-
-      debugPrint('🔌 Bluetooth conectado: $connected');
-
-      // ========================================================
-      // CASO 3: NO SE PUDO CONECTAR
-      // ========================================================
-
-      if (!connected) {
-        debugPrint(
-          '⚠️ No fue posible conectar la impresora '
-          '${selectedPrinter.displayName} '
-          '(${selectedPrinter.address}).',
-        );
-
-        final shouldPrint = await _showPrinterConnectionDialog();
-
-        if (!shouldPrint) {
-          debugPrint('🖨️ Usuario decidió continuar sin imprimir.');
-
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Venta guardada sin imprimir ticket.'),
-                duration: Duration(seconds: 3),
-              ),
-            );
-          }
-
-          return false;
-        }
-
-        // El diálogo puede haber seleccionado/cambiado la impresora.
-        selectedPrinter = await _printerService.selectedPrinter();
-
-        if (selectedPrinter == null) {
-          debugPrint('❌ No hay impresora seleccionada después del diálogo.');
-
-          return false;
-        }
-
-        connected = await _printerService.ensureBluetoothConnection();
-
-        debugPrint(
-          '🔌 Resultado de conexión después del diálogo: '
-          '$connected',
-        );
-
-        if (!connected) {
-          debugPrint('❌ La impresora sigue sin conexión.');
-
-          return false;
-        }
-      }
-
-      // ========================================================
-      // CASO 4: IMPRIMIR
-      // ========================================================
-
-      final saleForPrint = <String, dynamic>{
-        'id': saleId,
-        'folio': saleId.toString(),
-        'fecha': DateTime.now().toIso8601String(),
-        'items': saleItems,
-        'total': total,
-        'payments': payments,
-        'cashReceived': cashReceived,
-        'changeDue': change,
-      };
-
-      debugPrint('✅ Impresora conectada.');
-      debugPrint('🖨️ Enviando ticket...');
-
-      final result = await _printerService.printSale(saleForPrint);
-
-      debugPrint(
-        '🖨️ Resultado impresión: '
-        'success=${result.success}, '
-        'message=${result.message}',
-      );
-
-      if (!result.success) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                'Venta guardada, pero no fue posible imprimir: '
-                '${result.message}',
-              ),
-              duration: const Duration(seconds: 5),
-            ),
-          );
-        }
-
-        return false;
-      }
-
-      debugPrint('✅ TICKET IMPRESO CORRECTAMENTE');
-      debugPrint('══════════════════════════════════════');
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Ticket impreso correctamente.'),
-            duration: Duration(seconds: 2),
-          ),
-        );
-      }
-
-      return true;
-    } catch (error, stackTrace) {
-      debugPrint('❌ ERROR DE IMPRESIÓN: $error');
-      debugPrint('$stackTrace');
-      debugPrint('══════════════════════════════════════');
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Venta guardada, pero ocurrió un error al imprimir: '
-              '$error',
-            ),
-            duration: const Duration(seconds: 5),
-          ),
-        );
-      }
-
-      return false;
-    }
-  }
-
-  // ============================================================
-  // CONFIRMAR VENTA
-  // ============================================================
-
-  Future<bool> _confirmSale() async {
-    if (_cartNotifier.value.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Agrega productos al carrito antes de confirmar.'),
-        ),
-      );
-
-      return false;
-    }
-
-    if (!await _canOperateSale()) {
-      return false;
-    }
-
-    final paymentData = await _showPaymentDialog();
-
-    if (paymentData == null) {
-      return false;
-    }
-
-    final uuid = 'sale_${DateTime.now().millisecondsSinceEpoch}';
-
-    final saleItems = _currentSaleItems();
-
-    final payments =
-        (paymentData['payments'] as List<Map<String, dynamic>>?) ?? const [];
-
-    final breakdown = PaymentBreakdown(
-      total: _total,
-      payments: payments
-          .map(
-            (item) => PaymentEntry(
-              method: (item['method'] ?? '').toString().trim(),
-              amount: item['amount'] is num
-                  ? (item['amount'] as num).toDouble()
-                  : 0.0,
-            ),
-          )
-          .where((entry) => entry.method.isNotEmpty && entry.amount > 0)
-          .toList(),
-    );
-
-    final cashReceived = breakdown.cashAmount;
-    final change = breakdown.change;
-
-    // sale_payments conserva los importes APLICADOS a la venta.
-    // cashReceived conserva el efectivo realmente recibido
-    // y changeDue conserva el cambio entregado.
-    final adjustedPayments = <Map<String, dynamic>>[];
-
-    var remainingChange = change;
-
-    for (final payment in payments) {
-      final method = (payment['method'] ?? '').toString().trim();
-
-      final originalAmount = payment['amount'] is num
-          ? (payment['amount'] as num).toDouble()
-          : 0.0;
-
-      if (method.isEmpty || originalAmount <= 0) {
-        continue;
-      }
-
-      var appliedAmount = originalAmount;
-
-      if (method == 'Efectivo' && remainingChange > 0) {
-        final deduction = remainingChange < appliedAmount
-            ? remainingChange
-            : appliedAmount;
-
-        appliedAmount -= deduction;
-        remainingChange -= deduction;
-      }
-
-      if (appliedAmount > 0.005) {
-        adjustedPayments.add({
-          'method': method,
-          'amount': double.parse(appliedAmount.toStringAsFixed(2)),
-        });
-      }
-    }
-
-    final appliedTotal = adjustedPayments.fold<double>(0, (sum, payment) {
-      final amount = payment['amount'] is num
-          ? (payment['amount'] as num).toDouble()
-          : 0.0;
-
-      return sum + amount;
-    });
-
-    if ((appliedTotal - _total).abs() > 0.01) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'No fue posible ajustar correctamente '
-              'el pago y el cambio.',
-            ),
-          ),
-        );
-      }
-
-      return false;
-    }
-
-    final paymentMethods = <String>[];
-
-    for (final payment in adjustedPayments) {
-      final method = payment['method']?.toString().trim() ?? '';
-
-      if (method.isNotEmpty && !paymentMethods.contains(method)) {
-        paymentMethods.add(method);
-      }
-    }
-
-    final paymentMethod = paymentMethods.join(', ');
-
-    var saleId = _pendingSaleId;
-
-    try {
-      if (saleId != null) {
-        final paid = await _db.payPendingSale(
-          saleId,
-          payments: adjustedPayments,
-          paymentMethod: paymentMethod,
-          cashReceived: cashReceived,
-          changeDue: change,
-        );
-
-        if (!paid) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('La venta pendiente ya no está disponible.'),
-              ),
-            );
-          }
-
-          return false;
-        }
-      } else {
-        saleId = await _db.saveSale(
-          uuid: uuid,
-          items: saleItems,
-          payments: adjustedPayments,
+      if (_pendingSaleId == null) {
+        await _db.saveSale(
+          uuid: 'sale_${DateTime.now().millisecondsSinceEpoch}',
+          items: _currentSaleItems(),
+          payments: const [],
           total: _total,
-          status: 'paid',
-          syncStatus: 'pending',
-          paymentMethod: paymentMethod,
-          cashReceived: cashReceived,
-          changeDue: change,
+          status: 'pending',
+          tableId: _selectedTableId,
+          tableName: _selectedTableName,
         );
+      } else {
+        final updated = await _db.updatePendingSale(
+          saleId: _pendingSaleId!,
+          items: _currentSaleItems(),
+          total: _total,
+          tableId: _selectedTableId,
+          tableName: _selectedTableName,
+        );
+
+        if (!updated) {
+          throw StateError('La venta pendiente ya no está disponible.');
+        }
       }
     } on StateError catch (error) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(error.message.toString())));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error.message.toString())));
       }
-
-      return false;
-    } catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('No fue posible guardar la venta: $error')),
-        );
-      }
-
-      return false;
+      return;
     }
 
-    final savedSaleId = saleId;
-
-    if (savedSaleId == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'La venta se guardó, pero no se obtuvo '
-              'su identificador.',
-            ),
-          ),
-        );
-      }
-
-      return false;
-    }
-
-    // ==========================================================
-    // IMPRIMIR DESPUÉS DE GUARDAR
-    // ==========================================================
-
-    final ticketPrinted = await _printSaleAutomatically(
-      saleId: savedSaleId,
-      saleItems: saleItems,
-      payments: adjustedPayments,
-      total: _total,
-      cashReceived: cashReceived,
-      change: change,
-    );
-
-    debugPrint('🖨️ Estado final ticketPrinted=$ticketPrinted');
-    if (ticketPrinted) {
-      await _db.setSalePrintTicket(savedSaleId, true);
-    }
-
-    // ==========================================================
-    // OBTENER VENTA GUARDADA
-    // ==========================================================
-
-    final generatedSale = await _db.getSaleById(savedSaleId);
-
-    if (generatedSale != null && mounted) {
-      final sale = generatedSale;
-
-      await Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (_) => SaleDetailScreen(
-            sale: SaleModel(
-              id: int.tryParse('${sale['id'] ?? savedSaleId}') ?? savedSaleId,
-              uuidLocal: sale['uuid_local']?.toString() ?? uuid,
-              serverId: null,
-              businessDate: DateTime.now().toIso8601String().substring(0, 10),
-              total: sale['total'] is num
-                  ? (sale['total'] as num).toDouble()
-                  : _total,
-              syncStatus: sale['sync_status']?.toString() ?? 'pending',
-              status: sale['status']?.toString() ?? 'paid',
-              items: saleItems
-                  .map(
-                    (item) => SaleItemModel(
-                      id: 0,
-                      saleId: savedSaleId,
-                      productId: int.tryParse('${item['product_id']}') ?? 0,
-                      name: item['name']?.toString() ?? '',
-                      quantity: item['quantity'] is num
-                          ? (item['quantity'] as num).toDouble()
-                          : 0.0,
-                      unitPrice: item['unit_price'] is num
-                          ? (item['unit_price'] as num).toDouble()
-                          : 0.0,
-                      total: item['total'] is num
-                          ? (item['total'] as num).toDouble()
-                          : 0.0,
-                    ),
-                  )
-                  .toList(),
-              payments: adjustedPayments
-                  .map(
-                    (item) => SalePaymentModel(
-                      id: 0,
-                      saleId: savedSaleId,
-                      method: item['method']?.toString() ?? '',
-                      amount: item['amount'] is num
-                          ? (item['amount'] as num).toDouble()
-                          : 0.0,
-                    ),
-                  )
-                  .toList(),
-              createdAt:
-                  sale['created_at']?.toString() ??
-                  DateTime.now().toIso8601String(),
-              updatedAt:
-                  sale['updated_at']?.toString() ??
-                  DateTime.now().toIso8601String(),
-              changeDue: change,
-            ),
-          ),
-        ),
-      );
-    }
-
-    if (!mounted) {
-      return false;
-    }
-
-    _setCart([]);
+    if (!mounted) return;
 
     setState(() {
+      _setCart([]);
       _pendingSaleId = null;
       _selectedTableId = null;
       _selectedTableName = null;
@@ -1136,23 +482,268 @@ class PosScreenState extends State<PosScreen> {
 
     await _loadProducts();
 
-    if (!mounted) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Venta guardada como pendiente.')));
+    }
+  }
+
+  // ============================================================
+  // CONFIRMAR VENTA (CHECKOUT)
+  // ============================================================
+
+  Future<bool> _confirmSale() async {
+    if (_processingSale) return false;
+
+    if (_cartNotifier.value.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Agrega productos al carrito antes de confirmar.')),
+      );
       return false;
     }
+
+    if (!await _canOperateSale()) return false;
+
+    _processingSale = true;
+
+    try {
+      final paymentData = await _showPaymentDialog();
+
+      if (paymentData == null) return false;
+
+    final uuid = 'sale_${DateTime.now().millisecondsSinceEpoch}';
+    final saleItems = _currentSaleItems();
+    final payments = (paymentData['payments'] as List<Map<String, dynamic>>?) ?? const [];
+
+    final breakdown = PaymentBreakdown(
+      total: _total,
+      payments: payments
+          .map(
+            (item) => PaymentEntry(
+              method: (item['method'] ?? 'Efectivo').toString(),
+              amount: (item['amount'] is num) ? (item['amount'] as num).toDouble() : 0.0,
+            ),
+          )
+          .toList(),
+    );
+
+    final cashAmount = breakdown.cashAmount;
+    final change = breakdown.change;
+
+    var saleId = _pendingSaleId;
+
+    try {
+      if (saleId != null) {
+        final paid = await _db.payPendingSale(
+          saleId,
+          payments: payments,
+          paymentMethod: _paymentMethodLabel(payments),
+          cashReceived: cashAmount,
+          changeDue: change,
+        );
+
+        if (!paid) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('La venta pendiente ya no está disponible.')),
+            );
+          }
+          return false;
+        }
+      } else {
+        saleId = await _db.saveSale(
+          uuid: uuid,
+          items: saleItems,
+          payments: payments,
+          total: _total,
+          status: 'paid',
+          syncStatus: 'pending',
+          paymentMethod: _paymentMethodLabel(payments),
+          cashReceived: cashAmount,
+          changeDue: change,
+        );
+      }
+    } on StateError catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error.message.toString())));
+      }
+      return false;
+    }
+
+    if (saleId != null) {
+      final printResult = await _printSaleAutomatically(
+        saleId: saleId,
+        saleItems: saleItems,
+        payments: payments,
+        total: _total,
+        cashAmount: cashAmount,
+        change: change,
+        uuid: uuid,
+      );
+
+      if (mounted && !printResult.success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Venta guardada correctamente, pero no se imprimió el ticket: ${printResult.message}',
+            ),
+          ),
+        );
+      }
+    }
+
+    final generatedSale = saleId == null ? null : await _db.getSaleById(saleId);
+
+    if (generatedSale != null && mounted) {
+      final sale = generatedSale;
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => SaleDetailScreen(
+            sale: SaleModel(
+              id: int.tryParse('${sale['id'] ?? 0}') ?? 0,
+              uuidLocal: sale['uuid_local']?.toString() ?? uuid,
+              serverId: null,
+              businessDate: DateTime.now().toIso8601String().substring(0, 10),
+              total: (sale['total'] is num) ? (sale['total'] as num).toDouble() : _total,
+              syncStatus: sale['sync_status']?.toString() ?? 'pending',
+              status: sale['status']?.toString() ?? 'paid',
+              items: saleItems
+                  .map(
+                    (item) => SaleItemModel(
+                      id: 0,
+                      saleId: 0,
+                      productId: int.tryParse('${item['product_id'] ?? 0}') ?? 0,
+                      name: item['name']?.toString() ?? '',
+                      quantity: (item['quantity'] is num) ? (item['quantity'] as num).toDouble() : 0.0,
+                      unitPrice: (item['unit_price'] is num) ? (item['unit_price'] as num).toDouble() : 0.0,
+                      total: (item['total'] is num) ? (item['total'] as num).toDouble() : 0.0,
+                    ),
+                  )
+                  .toList(),
+              payments: payments
+                  .map(
+                    (item) => SalePaymentModel(
+                      id: 0,
+                      saleId: 0,
+                      method: item['method']?.toString() ?? '',
+                      amount: (item['amount'] is num) ? (item['amount'] as num).toDouble() : 0.0,
+                    ),
+                  )
+                  .toList(),
+              createdAt: DateTime.now().toIso8601String(),
+              updatedAt: DateTime.now().toIso8601String(),
+            ),
+          ),
+        ),
+      );
+    }
+
+    if (!mounted) return false;
+
+    setState(() {
+      _setCart([]);
+      _pendingSaleId = null;
+      _selectedTableId = null;
+      _selectedTableName = null;
+    });
+
+    await _loadProducts();
+
+    if (!mounted) return false;
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          ticketPrinted
-              ? 'Venta pagada, guardada y ticket impreso. '
-                    'Cambio: \$${change.toStringAsFixed(2)}'
-              : 'Venta pagada y guardada sin ticket. '
-                    'Cambio: \$${change.toStringAsFixed(2)}',
+          'Venta pagada y guardada para sincronización. Cambio: \$${change.toStringAsFixed(2)}',
         ),
       ),
     );
 
-    return true;
+      return true;
+    } finally {
+      _processingSale = false;
+    }
+  }
+
+  Future<TicketConfig> _ticketConfigForPrinting() async {
+    final saved = await AppStorage().getTicketConfig();
+    final company = await _db.getCompany();
+    final paper = saved['papel']?.toString().trim() == '80mm'
+        ? PaperSize.mm80
+        : PaperSize.mm58;
+
+    return TicketConfig(
+      empresa: company?['nombre']?.toString() ?? 'Mi Empresa',
+      rfc: company?['rfc']?.toString(),
+      direccion: company?['direccion']?.toString(),
+      telefono: company?['telefono']?.toString(),
+      email: company?['email_contacto']?.toString(),
+      encabezado: saved['cabecera']?.toString(),
+      pie: saved['pie_pagina']?.toString() ?? 'Gracias por su compra',
+      paperSize: paper,
+    );
+  }
+
+  String _paymentMethodLabel(List<Map<String, dynamic>> payments) {
+    final methods = payments
+        .map((item) => item['method']?.toString().trim() ?? '')
+        .where((method) => method.isNotEmpty)
+        .toSet();
+
+    if (methods.length == 1) return methods.first;
+    if (methods.length > 1) return 'Mixto';
+    return 'Efectivo';
+  }
+
+  Future<PrintOperationResult> _printSaleAutomatically({
+    required int saleId,
+    required List<Map<String, dynamic>> saleItems,
+    required List<Map<String, dynamic>> payments,
+    required double total,
+    required double cashAmount,
+    required double change,
+    required String uuid,
+  }) async {
+    try {
+      var connected = await _printerService.bluetoothConnected();
+
+      if (!connected) {
+        connected = await _printerService.reconnectSelectedPrinter();
+      }
+
+      if (!connected) {
+        return PrintOperationResult.error(
+          'No hay una impresora Bluetooth conectada o seleccionada.',
+        );
+      }
+
+      final config = await _ticketConfigForPrinting();
+      final generatedSale = await _db.getSaleById(saleId);
+      final sale = generatedSale ?? <String, dynamic>{};
+
+      final saleMap = <String, dynamic>{
+        'id': sale['id'] ?? saleId,
+        'uuid_local': sale['uuid_local'] ?? uuid,
+        'folio': sale['folio'] ?? sale['numero'] ?? saleId,
+        'fecha': sale['created_at'] ?? sale['createdAt'] ?? DateTime.now().toIso8601String(),
+        'metodoPago': _paymentMethodLabel(payments),
+        'subtotal': total,
+        'total': total,
+        // Aquí se conserva el efectivo REAL entregado.
+        // El cambio se maneja por separado y nunca se descuenta del pago.
+        'recibido': cashAmount,
+        'cambio': change,
+        'items': saleItems,
+      };
+
+      return await _printerService.printSale(
+        saleMap,
+        config: config,
+      );
+    } catch (error) {
+      return PrintOperationResult.error(
+        'No fue posible imprimir el ticket: $error',
+      );
+    }
   }
 
   // ============================================================
@@ -1170,14 +761,100 @@ class PosScreenState extends State<PosScreen> {
       builder: (_) => _PaymentDialog(total: _total),
     );
   }
+
+  // VER PENDIENTES
   // ============================================================
-  // OPERACIÓN
+
+  Future<void> _showPendingSales() async {
+    final sales = (await _db.getTodaySales())
+        .where((sale) => sale['status'] == 'pending')
+        .toList();
+
+    if (!mounted) return;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetContext) {
+        return SafeArea(
+          child: SizedBox(
+            height: MediaQuery.of(sheetContext).size.height * .75,
+            child: ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                const Text(
+                  'Ventas pendientes',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                if (sales.isEmpty)
+                  const ListTile(title: Text('No hay ventas pendientes.')),
+                ...sales.map(
+                  (sale) => ListTile(
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                    title: Text(
+                      'Venta #${sale['id']} — \$${(sale['total'] as num).toStringAsFixed(2)}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    subtitle: Text(
+                      sale['mesa_nombre'] == null ? 'Aún no pagada' : 'Mesa: ${sale['mesa_nombre']}',
+                    ),
+                    trailing: IconButton(
+                      tooltip: 'Eliminar pendiente',
+                      icon: const Icon(Icons.delete_outline),
+                      onPressed: () async {
+                        await _db.deletePendingSale(sale['id'] as int);
+                        if (sheetContext.mounted) Navigator.pop(sheetContext);
+                        await _loadProducts();
+                      },
+                    ),
+                    onTap: () async {
+                      final items = await _db.getSaleItemsBySaleId(sale['id'] as int);
+                      final cart = <CartItem>[];
+
+                      for (final item in items) {
+                        Product? product;
+                        for (final candidate in _products) {
+                          if (candidate.id == item['product_id']) {
+                            product = candidate;
+                            break;
+                          }
+                        }
+                        if (product == null) continue;
+                        cart.add(CartItem(product: product, quantity: (item['quantity'] as num).toInt()));
+                      }
+
+                      if (!mounted) return;
+
+                      _setCart(cart);
+
+                      setState(() {
+                        _pendingSaleId = sale['id'] as int;
+                        _selectedTableId = sale['mesa_id'] as int?;
+                        _selectedTableName = sale['mesa_nombre']?.toString();
+                      });
+
+                      if (sheetContext.mounted) Navigator.pop(sheetContext);
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  // ============================================================
+  // OPERACIÓN (CAJA / MESAS)
   // ============================================================
 
   Future<void> _openOperation() async {
-    await Navigator.of(context)
-        .push(MaterialPageRoute(builder: (_) => const OperationScreen()));
-
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const OperationScreen()),
+    );
     await _loadOperationState();
   }
 
@@ -1195,29 +872,13 @@ class PosScreenState extends State<PosScreen> {
         elevation: 0,
         backgroundColor: colorScheme.surfaceContainerHighest,
         titleSpacing: 12,
-        title: Row(
-          children: [
-            Container(
-              width: 38,
-              height: 38,
-              decoration: BoxDecoration(
-                color: colorScheme.primary,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Icon(Icons.point_of_sale, color: colorScheme.onPrimary),
-            ),
-            const SizedBox(width: 10),
-            Flexible(
-              child: Text(
-                'Caja',
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: colorScheme.onSurface,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-            ),
-          ],
+        title: Text(
+          'Caja',
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            color: colorScheme.onSurface,
+            fontWeight: FontWeight.w800,
+          ),
         ),
         actions: [
           IconButton(
@@ -1243,9 +904,7 @@ class PosScreenState extends State<PosScreen> {
                   clipBehavior: Clip.none,
                   children: [
                     IconButton(
-                      tooltip: items.isEmpty
-                          ? 'Carrito vacío'
-                          : 'Abrir carrito',
+                      tooltip: items.isEmpty ? 'Carrito vacío' : 'Abrir carrito',
                       onPressed: _openCart,
                       icon: const Icon(Icons.shopping_cart_outlined),
                     ),
@@ -1255,10 +914,7 @@ class PosScreenState extends State<PosScreen> {
                         top: 0,
                         child: Container(
                           constraints: const BoxConstraints(minWidth: 18),
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 5,
-                            vertical: 2,
-                          ),
+                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
                           decoration: BoxDecoration(
                             color: colorScheme.error,
                             borderRadius: BorderRadius.circular(999),
@@ -1287,8 +943,7 @@ class PosScreenState extends State<PosScreen> {
               child: LayoutBuilder(
                 builder: (context, constraints) {
                   return CustomScrollView(
-                    keyboardDismissBehavior:
-                        ScrollViewKeyboardDismissBehavior.onDrag,
+                    keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
                     slivers: [
                       SliverPadding(
                         padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
@@ -1299,19 +954,10 @@ class PosScreenState extends State<PosScreen> {
                                 Card(
                                   margin: EdgeInsets.zero,
                                   child: ListTile(
-                                    contentPadding: const EdgeInsets.symmetric(
-                                      horizontal: 12,
-                                      vertical: 4,
-                                    ),
-                                    leading: Icon(
-                                      _cajaAbierta
-                                          ? Icons.lock_open_outlined
-                                          : Icons.lock_outline,
-                                    ),
+                                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                                    leading: Icon(_cajaAbierta ? Icons.lock_open_outlined : Icons.lock_outline),
                                     title: Text(
-                                      _cajaAbierta
-                                          ? 'Caja abierta'
-                                          : 'Caja pendiente de apertura',
+                                      _cajaAbierta ? 'Caja abierta' : 'Caja pendiente de apertura',
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
                                     ),
@@ -1323,9 +969,7 @@ class PosScreenState extends State<PosScreen> {
                                       overflow: TextOverflow.ellipsis,
                                     ),
                                     trailing: _mesasActivas
-                                        ? const Icon(
-                                            Icons.table_restaurant_outlined,
-                                          )
+                                        ? const Icon(Icons.table_restaurant_outlined)
                                         : null,
                                     onTap: _openOperation,
                                   ),
@@ -1351,8 +995,7 @@ class PosScreenState extends State<PosScreen> {
                                           (table) =>
                                               table['activo'] != false &&
                                               (table['estado'] == 'libre' ||
-                                                  table['id'] ==
-                                                      _selectedTableId),
+                                                  table['id'] == _selectedTableId),
                                         )
                                         .map(
                                           (table) => DropdownMenuItem<int?>(
@@ -1368,12 +1011,9 @@ class PosScreenState extends State<PosScreen> {
                                     final table = _tables
                                         .where((item) => item['id'] == tableId)
                                         .firstOrNull;
-
                                     setState(() {
                                       _selectedTableId = tableId;
-
-                                      _selectedTableName = table?['nombre']
-                                          ?.toString();
+                                      _selectedTableName = table?['nombre']?.toString();
                                     });
                                   },
                                 ),
@@ -1416,9 +1056,7 @@ class PosScreenState extends State<PosScreen> {
                                   Text(
                                     'No se encontraron productos.',
                                     textAlign: TextAlign.center,
-                                    style: TextStyle(
-                                      color: colorScheme.onSurfaceVariant,
-                                    ),
+                                    style: TextStyle(color: colorScheme.onSurfaceVariant),
                                   ),
                                 ],
                               ),
@@ -1428,57 +1066,7 @@ class PosScreenState extends State<PosScreen> {
                       else
                         SliverPadding(
                           padding: const EdgeInsets.fromLTRB(12, 0, 12, 24),
-                          sliver: SliverLayoutBuilder(
-                            builder: (context, sliverConstraints) {
-                              final width = sliverConstraints.crossAxisExtent;
-
-                              final columns = width >= 1000
-                                  ? 3
-                                  : width >= 650
-                                  ? 2
-                                  : 1;
-
-                              if (columns == 1) {
-                                return SliverList(
-                                  delegate: SliverChildBuilderDelegate((
-                                    context,
-                                    index,
-                                  ) {
-                                    final product = _filteredProducts[index];
-
-                                    return Padding(
-                                      padding: const EdgeInsets.only(
-                                        bottom: 10,
-                                      ),
-                                      child: _buildProductCard(
-                                        context,
-                                        product,
-                                      ),
-                                    );
-                                  }, childCount: _filteredProducts.length),
-                                );
-                              }
-
-                              return SliverGrid(
-                                delegate: SliverChildBuilderDelegate(
-                                  (context, index) => _buildProductCard(
-                                    context,
-                                    _filteredProducts[index],
-                                  ),
-                                  childCount: _filteredProducts.length,
-                                ),
-                                gridDelegate:
-                                    SliverGridDelegateWithFixedCrossAxisCount(
-                                      crossAxisCount: columns,
-                                      crossAxisSpacing: 12,
-                                      mainAxisSpacing: 12,
-                                      childAspectRatio: columns == 2
-                                          ? 2.1
-                                          : 2.0,
-                                    ),
-                              );
-                            },
-                          ),
+                          sliver: _buildProductSliver(context),
                         ),
                     ],
                   );
@@ -1487,7 +1075,6 @@ class PosScreenState extends State<PosScreen> {
             ),
     );
   }
-
   // ============================================================
   // WIDGETS DE UI
   // ============================================================
@@ -1495,151 +1082,516 @@ class PosScreenState extends State<PosScreen> {
   List<Product> get _filteredProducts {
     final query = _searchController.text.trim().toLowerCase();
 
-    if (query.isEmpty) {
-      return _products;
-    }
-
     return _products.where((product) {
-      return product.name.toLowerCase().contains(query) ||
+      final matchesQuery = query.isEmpty ||
+          product.name.toLowerCase().contains(query) ||
           product.code.toLowerCase().contains(query);
+
+      final matchesCategory = _selectedCategoryId == null ||
+          product.categoryId == _selectedCategoryId;
+
+      return matchesQuery && matchesCategory;
     }).toList();
   }
 
-  Widget _buildSearch(BuildContext context) {
-    return Row(
-      children: [
-        Expanded(
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.surface,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(
-                color: Theme.of(context).colorScheme.primary.withAlpha(45),
-              ),
-            ),
-            child: TextField(
-              controller: _searchController,
-              decoration: InputDecoration(
-                hintText: 'Buscar producto por nombre o código',
-                prefixIcon: Icon(
-                  Icons.search,
-                  color: Theme.of(context).colorScheme.primary,
-                ),
-                border: InputBorder.none,
-                hintStyle: const TextStyle(color: Colors.black54),
-              ),
-              onChanged: (_) => setState(() {}),
-            ),
-          ),
-        ),
-        const SizedBox(width: 8),
-        Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.onSurface,
-            borderRadius: BorderRadius.circular(14),
-          ),
-          child: Icon(
-            Icons.filter_list,
-            color: Theme.of(context).colorScheme.onPrimary,
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildMetrics(BuildContext context, BoxConstraints constraints) {
-    final width = constraints.maxWidth;
-
-    int columns;
-
-    if (width < 500) {
-      columns = 1;
-    } else if (width < 800) {
-      columns = 2;
-    } else {
-      columns = 3;
+  String _categoryLabel(int categoryId) {
+    for (final category in _categories) {
+      if (_parseCategoryId(category['id']) == categoryId) {
+        return _categoryName(category);
+      }
     }
-
-    final metrics = [
-      _MetricCard(
-        label: 'Ventas del día',
-        value: '$_todaySales',
-        color: Theme.of(context).colorScheme.primary,
-      ),
-      _MetricCard(
-        label: 'Pendientes',
-        value: '$_pendingSales',
-        color: Theme.of(context).colorScheme.tertiary,
-      ),
-      _MetricCard(
-        label: 'Canceladas',
-        value: '$_cancelledSales',
-        color: Theme.of(context).colorScheme.secondary,
-      ),
-    ];
-
-    return GridView.count(
-      crossAxisCount: columns,
-      crossAxisSpacing: 10,
-      mainAxisSpacing: 10,
-      childAspectRatio: columns == 1 ? 4.2 : 2.4,
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      children: metrics,
-    );
+    return 'Sin categoría';
   }
 
-  Widget _buildProductCard(BuildContext context, Product product) {
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(
-          color: Theme.of(context).colorScheme.primary.withAlpha(50),
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Theme.of(context).colorScheme.primary.withAlpha(18),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
+  Widget _buildSearch(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          decoration: BoxDecoration(
+            color: colorScheme.surface,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: colorScheme.primary.withAlpha(45)),
           ),
-        ],
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(10),
-        child: LayoutBuilder(
+          child: TextField(
+            controller: _searchController,
+            textInputAction: TextInputAction.search,
+            decoration: InputDecoration(
+              hintText: 'Buscar producto por nombre, código o SKU',
+              prefixIcon: Icon(Icons.search, color: colorScheme.primary),
+              suffixIcon: _searchController.text.trim().isEmpty
+                  ? null
+                  : IconButton(
+                      tooltip: 'Limpiar búsqueda',
+                      onPressed: () {
+                        _searchController.clear();
+                        setState(() {});
+                      },
+                      icon: const Icon(Icons.close),
+                    ),
+              border: InputBorder.none,
+              hintStyle: TextStyle(color: colorScheme.onSurfaceVariant),
+            ),
+            onChanged: (_) => setState(() {}),
+          ),
+        ),
+        const SizedBox(height: 10),
+        LayoutBuilder(
           builder: (context, constraints) {
-            final compact = constraints.maxWidth < 340;
+            final compact = constraints.maxWidth < 560;
+
+            final category = DropdownButtonFormField<int?>(
+              value: _selectedCategoryId,
+              isExpanded: true,
+              decoration: InputDecoration(
+                labelText: 'Categoría',
+                prefixIcon: const Icon(Icons.category_outlined),
+                border: const OutlineInputBorder(),
+                filled: true,
+                fillColor: colorScheme.surface,
+              ),
+              items: [
+                const DropdownMenuItem<int?>(
+                  value: null,
+                  child: Text('Todas las categorías'),
+                ),
+                ..._categories.map((category) {
+                  final id = _parseCategoryId(category['id']);
+                  if (id == null) return null;
+                  return DropdownMenuItem<int?>(
+                    value: id,
+                    child: Text(
+                      _categoryName(category),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  );
+                }).whereType<DropdownMenuItem<int?>>(),
+              ],
+              onChanged: (categoryId) {
+                setState(() {
+                  _selectedCategoryId = categoryId;
+                });
+              },
+            );
+
+            final viewToggle = ToggleButtons(
+              isSelected: [_isCardView == false, _isCardView == true],
+              onPressed: (index) {
+                setState(() {
+                  _isCardView = index == 1;
+                });
+              },
+              borderRadius: BorderRadius.circular(12),
+              constraints: const BoxConstraints(minHeight: 56, minWidth: 54),
+              children: const [
+                Tooltip(
+                  message: 'Vista de lista',
+                  child: Icon(Icons.view_list_outlined),
+                ),
+                Tooltip(
+                  message: 'Vista de tarjetas',
+                  child: Icon(Icons.grid_view_outlined),
+                ),
+              ],
+            );
 
             if (compact) {
               return Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
+                  category,
+                  const SizedBox(height: 10),
                   Row(
                     children: [
-                      _productCode(context, product),
-                      const SizedBox(width: 10),
-                      Expanded(child: _productInformation(context, product)),
+                      Text(
+                        '${_filteredProducts.length} productos',
+                        style: TextStyle(
+                          color: colorScheme.onSurfaceVariant,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const Spacer(),
+                      viewToggle,
                     ],
                   ),
-                  const SizedBox(height: 10),
-                  _productBottomActions(context, product, fullWidth: true),
                 ],
               );
             }
 
             return Row(
               children: [
-                _productCode(context, product),
-                const SizedBox(width: 12),
-                Expanded(child: _productInformation(context, product)),
+                Expanded(child: category),
                 const SizedBox(width: 10),
-                _productBottomActions(context, product),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(
+                      '${_filteredProducts.length} productos',
+                      style: TextStyle(
+                        color: colorScheme.onSurfaceVariant,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    viewToggle,
+                  ],
+                ),
               ],
             );
           },
+        ),
+      ],
+    );
+  }
+
+  Widget _buildProductSliver(BuildContext context) {
+    if (!_isCardView) {
+      return SliverList(
+        delegate: SliverChildBuilderDelegate(
+          (context, index) {
+            final product = _filteredProducts[index];
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: _buildProductListItem(context, product),
+            );
+          },
+          childCount: _filteredProducts.length,
+        ),
+      );
+    }
+
+    return SliverLayoutBuilder(
+      builder: (context, sliverConstraints) {
+        final width = sliverConstraints.crossAxisExtent;
+
+        // La cantidad de columnas se adapta al espacio real disponible.
+        // En pantallas amplias las tarjetas quedan en una sola fila por
+        // registro; en tablet y móvil se reduce progresivamente.
+        final columns = width >= 920
+            ? 3
+            : width >= 560
+                ? 2
+                : 1;
+
+        final cardHeight = width >= 920
+            ? 154.0
+            : width >= 560
+                ? 158.0
+                : 152.0;
+
+        return SliverGrid(
+          delegate: SliverChildBuilderDelegate(
+            (context, index) => _buildProductCard(
+              context,
+              _filteredProducts[index],
+            ),
+            childCount: _filteredProducts.length,
+          ),
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: columns,
+            crossAxisSpacing: 12,
+            mainAxisSpacing: 12,
+            mainAxisExtent: cardHeight,
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildProductListItem(BuildContext context, Product product) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final canAdd = _canAddProduct(product);
+
+    return Card(
+      margin: EdgeInsets.zero,
+      elevation: 0,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        child: Row(
+          children: [
+            _productCode(context, product),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    product.name,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontWeight: FontWeight.w700,
+                      color: colorScheme.onSurface,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          product.categoryId == null
+                              ? 'Sin categoría'
+                              : _categoryLabel(product.categoryId!),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      _stockChip(context, product),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 12),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text(
+                  '\$${product.price.toStringAsFixed(2)}',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                    color: colorScheme.onSurface,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                FilledButton(
+                  onPressed: canAdd ? () => _addToCart(product) : null,
+                  style: FilledButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  child: const Text('Agregar'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+
+  Widget _buildMetrics(BuildContext context, BoxConstraints constraints) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final width = constraints.maxWidth;
+
+    final columns = width >= 700
+        ? 3
+        : width >= 500
+            ? 2
+            : 1;
+
+    final metrics = [
+      _MetricCard(
+        label: 'Ventas del día',
+        value: '$_todaySales',
+        color: colorScheme.primary,
+        icon: Icons.point_of_sale_rounded,
+      ),
+      _MetricCard(
+        label: 'Pendientes',
+        value: '$_pendingSales',
+        color: colorScheme.tertiary,
+        icon: Icons.pending_actions_rounded,
+      ),
+      _MetricCard(
+        label: 'Canceladas',
+        value: '$_cancelledSales',
+        color: colorScheme.error,
+        icon: Icons.cancel_outlined,
+      ),
+    ];
+
+    return GridView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      itemCount: metrics.length,
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: columns,
+        crossAxisSpacing: 10,
+        mainAxisSpacing: 10,
+        mainAxisExtent: columns == 3
+            ? 92
+            : columns == 2
+                ? 94
+                : 88,
+      ),
+      itemBuilder: (context, index) => metrics[index],
+    );
+  }
+
+  Widget _buildProductCard(BuildContext context, Product product) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final canAdd = _canAddProduct(product);
+    final category = product.categoryId == null
+        ? 'Sin categoría'
+        : _categoryLabel(product.categoryId!);
+
+    return Card(
+      margin: EdgeInsets.zero,
+      elevation: 0,
+      color: colorScheme.surface,
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(15),
+        side: BorderSide(
+          color: colorScheme.outlineVariant.withAlpha(115),
+          width: 1,
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 11, 12, 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: colorScheme.primary.withAlpha(20),
+                    borderRadius: BorderRadius.circular(11),
+                  ),
+                  child: Icon(
+                    Icons.inventory_2_outlined,
+                    size: 20,
+                    color: colorScheme.primary,
+                  ),
+                ),
+                const SizedBox(width: 9),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        product.name,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontWeight: FontWeight.w800,
+                          fontSize: 13.5,
+                          height: 1.15,
+                          color: colorScheme.onSurface,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        product.code.isEmpty ? category : product.code,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: colorScheme.onSurfaceVariant,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 7),
+                _stockChip(context, product),
+              ],
+            ),
+            const Spacer(),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        category,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: colorScheme.onSurfaceVariant,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      FittedBox(
+                        fit: BoxFit.scaleDown,
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          '\$${product.price.toStringAsFixed(2)}',
+                          style: TextStyle(
+                            fontSize: 19,
+                            fontWeight: FontWeight.w900,
+                            color: colorScheme.primary,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                FilledButton.icon(
+                  onPressed: canAdd ? () => _addToCart(product) : null,
+                  icon: const Icon(Icons.add_rounded, size: 16),
+                  label: const Text('Agregar'),
+                  style: FilledButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 11,
+                      vertical: 9,
+                    ),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    visualDensity: VisualDensity.compact,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _stockChip(BuildContext context, Product product) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final hasStock = product.stock > 0;
+    final color = !product.isInventoriable
+        ? colorScheme.primary
+        : hasStock
+            ? colorScheme.primary
+            : colorScheme.error;
+    final label = !product.isInventoriable
+        ? 'Sin inventario'
+        : 'Stock: ${product.stock.toStringAsFixed(0)}';
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withAlpha(23),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: 10,
+          color: color,
+          fontWeight: FontWeight.w600,
         ),
       ),
     );
@@ -1660,10 +1612,7 @@ class PosScreenState extends State<PosScreen> {
             fit: BoxFit.scaleDown,
             child: Text(
               product.code,
-              style: TextStyle(
-                fontWeight: FontWeight.bold,
-                color: Theme.of(context).colorScheme.onSurface,
-              ),
+              style: TextStyle(fontWeight: FontWeight.bold, color: Theme.of(context).colorScheme.onSurface),
             ),
           ),
         ),
@@ -1679,28 +1628,20 @@ class PosScreenState extends State<PosScreen> {
           product.name,
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
-          style: TextStyle(
-            fontWeight: FontWeight.w700,
-            fontSize: 15,
-            color: Theme.of(context).colorScheme.onSurface,
-          ),
+          style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15, color: Theme.of(context).colorScheme.onSurface),
         ),
         const SizedBox(height: 6),
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
           decoration: BoxDecoration(
-            color: product.stock > 0
-                ? Theme.of(context).colorScheme.primary.withAlpha(23)
-                : Theme.of(context).colorScheme.error.withAlpha(20),
+            color: product.stock > 0 ? Theme.of(context).colorScheme.primary.withAlpha(23) : Theme.of(context).colorScheme.error.withAlpha(20),
             borderRadius: BorderRadius.circular(999),
           ),
           child: Text(
             'Stock: ${product.stock.toStringAsFixed(0)}',
             style: TextStyle(
               fontSize: 11,
-              color: product.stock > 0
-                  ? Theme.of(context).colorScheme.primary
-                  : Theme.of(context).colorScheme.error,
+              color: product.stock > 0 ? Theme.of(context).colorScheme.primary : Theme.of(context).colorScheme.error,
               fontWeight: FontWeight.w600,
             ),
           ),
@@ -1709,22 +1650,14 @@ class PosScreenState extends State<PosScreen> {
     );
   }
 
-  Widget _productBottomActions(
-    BuildContext context,
-    Product product, {
-    bool fullWidth = false,
-  }) {
+  Widget _productBottomActions(BuildContext context, Product product, {bool fullWidth = false}) {
     if (fullWidth) {
       return Row(
         children: [
           Expanded(
             child: Text(
               '\$${product.price.toStringAsFixed(2)}',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.w800,
-                color: Theme.of(context).colorScheme.onSurface,
-              ),
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Theme.of(context).colorScheme.onSurface),
             ),
           ),
           ElevatedButton(
@@ -1733,9 +1666,7 @@ class PosScreenState extends State<PosScreen> {
               backgroundColor: Theme.of(context).colorScheme.primary,
               foregroundColor: Theme.of(context).colorScheme.onPrimary,
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
-              ),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
             ),
             child: const Text('Agregar'),
           ),
@@ -1749,11 +1680,7 @@ class PosScreenState extends State<PosScreen> {
         FittedBox(
           child: Text(
             '\$${product.price.toStringAsFixed(2)}',
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.w800,
-              color: Theme.of(context).colorScheme.onSurface,
-            ),
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Theme.of(context).colorScheme.onSurface),
           ),
         ),
         const SizedBox(height: 8),
@@ -1763,9 +1690,7 @@ class PosScreenState extends State<PosScreen> {
             backgroundColor: Theme.of(context).colorScheme.primary,
             foregroundColor: Theme.of(context).colorScheme.onPrimary,
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(10),
-            ),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
           ),
           child: const Text('Agregar'),
         ),
@@ -1775,11 +1700,13 @@ class PosScreenState extends State<PosScreen> {
 }
 
 // ============================================================
-// DIÁLOGO DE PAGO
+// DIÁLOGO DE PAGO - ESTADO AISLADO
 // ============================================================
 
 class _PaymentDialog extends StatefulWidget {
-  const _PaymentDialog({required this.total});
+  const _PaymentDialog({
+    required this.total,
+  });
 
   final double total;
 
@@ -1808,7 +1735,6 @@ class _PaymentDialogState extends State<_PaymentDialog> {
   ];
 
   final List<_PaymentRowData> _rows = [];
-
   int _nextRowId = 0;
 
   @override
@@ -1819,7 +1745,10 @@ class _PaymentDialogState extends State<_PaymentDialog> {
 
   void _addInitialCashRow() {
     _rows.add(
-      _createRow(method: 'Efectivo', amount: widget.total.toStringAsFixed(2)),
+      _createRow(
+        method: 'Efectivo',
+        amount: widget.total.toStringAsFixed(2),
+      ),
     );
   }
 
@@ -1827,11 +1756,13 @@ class _PaymentDialogState extends State<_PaymentDialog> {
     String method = 'Efectivo',
     String amount = '0.00',
   }) {
-    return _PaymentRowData(
+    final row = _PaymentRowData(
       id: _nextRowId++,
       method: method,
       controller: TextEditingController(text: amount),
     );
+
+    return row;
   }
 
   @override
@@ -1841,15 +1772,18 @@ class _PaymentDialogState extends State<_PaymentDialog> {
     }
 
     _rows.clear();
-
     super.dispose();
   }
 
   void _addPaymentRow() {
-    if (!mounted) return;
+    if (!mounted) {
+      return;
+    }
 
     setState(() {
-      _rows.add(_createRow());
+      _rows.add(
+        _createRow(),
+      );
     });
   }
 
@@ -1858,7 +1792,9 @@ class _PaymentDialogState extends State<_PaymentDialog> {
       return;
     }
 
-    final index = _rows.indexWhere((row) => row.id == rowId);
+    final index = _rows.indexWhere(
+      (row) => row.id == rowId,
+    );
 
     if (index < 0) {
       return;
@@ -1870,13 +1806,18 @@ class _PaymentDialogState extends State<_PaymentDialog> {
       _rows.removeAt(index);
     });
 
+    // Se elimina después del setState para que el árbol no tenga
+    // una referencia a un controller ya destruido durante el rebuild.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       row.controller.dispose();
     });
   }
 
   double _parseMoney(String value) {
-    final normalized = value.replaceAll(',', '').replaceAll(r'$', '').trim();
+    final normalized = value
+        .replaceAll(',', '')
+        .replaceAll(r'$','')
+        .trim();
 
     if (normalized.isEmpty || normalized == '.') {
       return 0.0;
@@ -1893,31 +1834,44 @@ class _PaymentDialogState extends State<_PaymentDialog> {
             amount: _parseMoney(row.controller.text),
           ),
         )
-        .where((entry) => entry.amount > 0)
+        .where(
+          (entry) => entry.amount > 0,
+        )
         .toList();
   }
 
   void _submit() {
-    if (!mounted) return;
+    if (!mounted) {
+      return;
+    }
 
     final entries = _entries();
 
     if (entries.isEmpty) {
-      _showMessage('Debes indicar al menos un pago.', isError: true);
+      _showMessage(
+        'Debes indicar al menos un pago.',
+        isError: true,
+      );
       return;
     }
 
-    final breakdown = PaymentBreakdown(total: widget.total, payments: entries);
+    final breakdown = PaymentBreakdown(
+      total: widget.total,
+      payments: entries,
+    );
 
     if (breakdown.totalCollected + 0.005 < widget.total) {
       final falta = breakdown.shortfall.toStringAsFixed(2);
 
-      _showMessage('Falta por cobrar: \$$falta', isError: true);
-
+      _showMessage(
+        'Falta por cobrar: \$$falta',
+        isError: true,
+      );
       return;
     }
 
-    final hasNonCashOverage = breakdown.nonCashAmount > widget.total + 0.005;
+    final hasNonCashOverage =
+        breakdown.nonCashAmount > widget.total + 0.005;
 
     if (hasNonCashOverage) {
       _showMessage(
@@ -1939,21 +1893,29 @@ class _PaymentDialogState extends State<_PaymentDialog> {
     });
   }
 
-  void _showMessage(String message, {bool isError = false}) {
-    if (!mounted) return;
+  void _showMessage(
+    String message, {
+    bool isError = false,
+  }) {
+    if (!mounted) {
+      return;
+    }
 
-    final messenger = ScaffoldMessenger.maybeOf(context);
+    final messenger =
+        ScaffoldMessenger.maybeOf(context);
 
     if (messenger == null) {
       return;
     }
 
-    messenger.hideCurrentSnackBar();
+    messenger
+        .hideCurrentSnackBar();
 
     messenger.showSnackBar(
       SnackBar(
         content: Text(message),
-        backgroundColor: isError ? Theme.of(context).colorScheme.error : null,
+        backgroundColor:
+            isError ? Theme.of(context).colorScheme.error : null,
       ),
     );
   }
@@ -1965,25 +1927,34 @@ class _PaymentDialogState extends State<_PaymentDialog> {
       content: SizedBox(
         width: double.maxFinite,
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxHeight: 600),
+          constraints: const BoxConstraints(
+            maxHeight: 600,
+          ),
           child: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
+              crossAxisAlignment:
+                  CrossAxisAlignment.start,
               children: [
                 Container(
                   width: double.infinity,
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.primary.withAlpha(26),
-                    borderRadius: BorderRadius.circular(10),
+                    color: Theme.of(context).colorScheme.primary
+                        .withAlpha(26),
+                    borderRadius:
+                        BorderRadius.circular(10),
                   ),
                   child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                    crossAxisAlignment:
+                        CrossAxisAlignment.start,
                     children: [
                       const Text(
                         'Monto a cobrar',
-                        style: TextStyle(fontSize: 12, color: Colors.black54),
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.black54,
+                        ),
                       ),
                       const SizedBox(height: 2),
                       FittedBox(
@@ -2004,7 +1975,8 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                 ..._rows.map(
                   (row) => Padding(
                     key: ValueKey<int>(row.id),
-                    padding: const EdgeInsets.only(bottom: 10),
+                    padding:
+                        const EdgeInsets.only(bottom: 10),
                     child: _buildPaymentRow(row),
                   ),
                 ),
@@ -2012,8 +1984,12 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                   alignment: Alignment.centerLeft,
                   child: TextButton.icon(
                     onPressed: _addPaymentRow,
-                    icon: const Icon(Icons.add_circle_outline),
-                    label: const Text('Agregar tipo de pago'),
+                    icon: const Icon(
+                      Icons.add_circle_outline,
+                    ),
+                    label: const Text(
+                      'Agregar tipo de pago',
+                    ),
                   ),
                 ),
                 const SizedBox(height: 8),
@@ -2032,79 +2008,46 @@ class _PaymentDialogState extends State<_PaymentDialog> {
         ),
         FilledButton.icon(
           onPressed: _submit,
-          icon: const Icon(Icons.check_circle_outline),
+          icon: const Icon(
+            Icons.check_circle_outline,
+          ),
           label: const Text('Guardar cobro'),
         ),
       ],
     );
   }
 
-  Widget _buildPaymentRow(_PaymentRowData row) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final compact = constraints.maxWidth < 430;
-
-        if (compact) {
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                children: [
-                  Expanded(child: _buildMethodDropdown(row)),
-                  const SizedBox(width: 6),
-                  IconButton(
-                    tooltip: 'Eliminar forma de pago',
-                    onPressed: _rows.length > 1
-                        ? () => _removePaymentRow(row.id)
-                        : null,
-                    icon: const Icon(Icons.delete_outline),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                key: ValueKey<String>('amount-${row.id}'),
-                controller: row.controller,
-                keyboardType: const TextInputType.numberWithOptions(
-                  decimal: true,
-                ),
-                textInputAction: TextInputAction.done,
-                decoration: InputDecoration(
-                  labelText: 'Cantidad',
-                  prefixText: '\$ ',
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                ),
-                onChanged: (_) {
-                  if (mounted) {
-                    setState(() {});
-                  }
-                },
-              ),
-            ],
-          );
-        }
-
-        return Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _buildPaymentRow(
+    _PaymentRowData row,
+  ) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
           children: [
-            Expanded(flex: 2, child: _buildMethodDropdown(row)),
+            Expanded(
+              flex: 2,
+              child: _buildMethodDropdown(row),
+            ),
             const SizedBox(width: 8),
             Expanded(
               flex: 3,
               child: TextField(
-                key: ValueKey<String>('amount-${row.id}'),
+                key: ValueKey<String>(
+                  'amount-${row.id}',
+                ),
                 controller: row.controller,
-                keyboardType: const TextInputType.numberWithOptions(
+                keyboardType:
+                    const TextInputType.numberWithOptions(
                   decimal: true,
                 ),
-                textInputAction: TextInputAction.done,
+                textInputAction:
+                    TextInputAction.done,
                 decoration: InputDecoration(
                   labelText: 'Cantidad',
-                  prefixText: '\$ ',
                   border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
+                    borderRadius:
+                        BorderRadius.circular(8),
                   ),
                 ),
                 onChanged: (_) {
@@ -2120,35 +2063,48 @@ class _PaymentDialogState extends State<_PaymentDialog> {
               onPressed: _rows.length > 1
                   ? () => _removePaymentRow(row.id)
                   : null,
-              icon: const Icon(Icons.delete_outline),
+              icon: const Icon(
+                Icons.delete_outline,
+              ),
             ),
           ],
-        );
-      },
+        ),
+      ],
     );
   }
 
-  Widget _buildMethodDropdown(_PaymentRowData row) {
+  Widget _buildMethodDropdown(
+    _PaymentRowData row,
+  ) {
     return Container(
       height: 56,
       decoration: BoxDecoration(
-        border: Border.all(color: Colors.grey.shade400),
-        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: Colors.grey.shade400,
+        ),
+        borderRadius:
+            BorderRadius.circular(8),
       ),
       child: DropdownButtonHideUnderline(
         child: DropdownButton<String>(
-          key: ValueKey<String>('method-${row.id}'),
-          value: _methods.contains(row.method) ? row.method : _methods.first,
+          key: ValueKey<String>(
+            'method-${row.id}',
+          ),
+          value: _methods.contains(row.method)
+              ? row.method
+              : _methods.first,
           isExpanded: true,
-          padding: const EdgeInsets.symmetric(horizontal: 10),
+          padding: const EdgeInsets.symmetric(
+            horizontal: 12,
+          ),
           items: _methods
               .map(
                 (method) => DropdownMenuItem<String>(
                   value: method,
                   child: Text(
                     method,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+                    overflow:
+                        TextOverflow.ellipsis,
                   ),
                 ),
               )
@@ -2172,33 +2128,50 @@ class _PaymentDialogState extends State<_PaymentDialog> {
         .map(
           (row) => PaymentEntry(
             method: row.method,
-            amount: _parseMoney(row.controller.text),
+            amount: _parseMoney(
+              row.controller.text,
+            ),
           ),
         )
         .toList();
 
-    final breakdown = PaymentBreakdown(total: widget.total, payments: entries);
+    final breakdown = PaymentBreakdown(
+      total: widget.total,
+      payments: entries,
+    );
 
-    final totalCollected = breakdown.totalCollected;
-    final cashAmount = breakdown.cashAmount;
-    final change = breakdown.change;
-    final excess = breakdown.excess;
-    final shortfall = breakdown.shortfall;
+    final totalCollected =
+        breakdown.totalCollected;
+    final cashAmount =
+        breakdown.cashAmount;
+    final change =
+        breakdown.change;
+    final excess =
+        breakdown.excess;
+    final shortfall =
+        breakdown.shortfall;
 
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: Colors.grey.shade100,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: Colors.grey.shade300),
+        borderRadius:
+            BorderRadius.circular(10),
+        border: Border.all(
+          color: Colors.grey.shade300,
+        ),
       ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment:
+            CrossAxisAlignment.start,
         children: [
           const Text(
             'Resumen de cobro',
-            style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
+            style: TextStyle(
+              fontWeight: FontWeight.w700,
+              fontSize: 13,
+            ),
           ),
           const SizedBox(height: 10),
           _summaryRow(
@@ -2222,10 +2195,15 @@ class _PaymentDialogState extends State<_PaymentDialog> {
             const SizedBox(height: 6),
           ],
           ...entries
-              .where((entry) => entry.method != 'Efectivo' && entry.amount > 0)
+              .where(
+                (entry) =>
+                    entry.method != 'Efectivo' &&
+                    entry.amount > 0,
+              )
               .map(
                 (entry) => Padding(
-                  padding: const EdgeInsets.only(bottom: 6),
+                  padding:
+                      const EdgeInsets.only(bottom: 6),
                   child: _summaryRow(
                     '${entry.method}:',
                     '\$${entry.amount.toStringAsFixed(2)}',
@@ -2242,19 +2220,27 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                 '\$${change.toStringAsFixed(2)}',
               )
             else
-              _buildWarningBox('\$${excess.toStringAsFixed(2)}'),
+              _buildWarningBox(
+                '\$${excess.toStringAsFixed(2)}',
+              ),
           ] else if (totalCollected < widget.total - 0.005)
-            _buildErrorBox('\$${shortfall.toStringAsFixed(2)}')
+            _buildErrorBox(
+              '\$${shortfall.toStringAsFixed(2)}',
+            )
           else
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(8),
               decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.primary.withAlpha(20),
-                borderRadius: BorderRadius.circular(6),
+                color:
+                    Theme.of(context).colorScheme.primary
+                        .withAlpha(20),
+                borderRadius:
+                    BorderRadius.circular(6),
               ),
               child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                mainAxisAlignment:
+                    MainAxisAlignment.spaceBetween,
                 children: [
                   Text(
                     'Cobro exacto',
@@ -2277,13 +2263,20 @@ class _PaymentDialogState extends State<_PaymentDialog> {
     );
   }
 
-  Widget _summaryRow(String label, String value, {bool small = false}) {
+  Widget _summaryRow(
+    String label,
+    String value, {
+    bool small = false,
+  }) {
     return Row(
       children: [
         Expanded(
           child: Text(
             label,
-            style: TextStyle(fontSize: small ? 11 : 12, color: Colors.black54),
+            style: TextStyle(
+              fontSize: small ? 11 : 12,
+              color: Colors.black54,
+            ),
           ),
         ),
         const SizedBox(width: 8),
@@ -2298,13 +2291,19 @@ class _PaymentDialogState extends State<_PaymentDialog> {
     );
   }
 
-  Widget _buildSuccessBox(String label, String value) {
+  Widget _buildSuccessBox(
+    String label,
+    String value,
+  ) {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.primary.withAlpha(20),
-        borderRadius: BorderRadius.circular(6),
+        color:
+            Theme.of(context).colorScheme.primary
+                .withAlpha(20),
+        borderRadius:
+            BorderRadius.circular(6),
       ),
       child: Row(
         children: [
@@ -2337,7 +2336,8 @@ class _PaymentDialogState extends State<_PaymentDialog> {
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.tertiary.withAlpha(26),
-        borderRadius: BorderRadius.circular(6),
+        borderRadius:
+            BorderRadius.circular(6),
         border: Border.all(
           color: Theme.of(context).colorScheme.tertiary.withAlpha(100),
         ),
@@ -2374,7 +2374,8 @@ class _PaymentDialogState extends State<_PaymentDialog> {
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.error.withAlpha(20),
-        borderRadius: BorderRadius.circular(6),
+        borderRadius:
+            BorderRadius.circular(6),
       ),
       child: Row(
         children: [
@@ -2402,43 +2403,60 @@ class _PaymentDialogState extends State<_PaymentDialog> {
   }
 }
 
-// ============================================================
-// MÉTRICAS
-// ============================================================
-
 class _MetricCard extends StatelessWidget {
   const _MetricCard({
     required this.label,
     required this.value,
     required this.color,
+    required this.icon,
   });
 
   final String label;
   final String value;
   final Color color;
+  final IconData icon;
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surface,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: color.withAlpha(80)),
+        color: colorScheme.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: color.withAlpha(65),
+          width: 1,
+        ),
         boxShadow: [
           BoxShadow(
-            color: color.withAlpha(22),
+            color: color.withAlpha(18),
             blurRadius: 10,
-            offset: const Offset(0, 4),
+            offset: const Offset(0, 3),
           ),
         ],
       ),
       child: Row(
         children: [
+          Container(
+            width: 42,
+            height: 42,
+            decoration: BoxDecoration(
+              color: color.withAlpha(22),
+              borderRadius: BorderRadius.circular(11),
+            ),
+            child: Icon(
+              icon,
+              color: color,
+              size: 22,
+            ),
+          ),
+          const SizedBox(width: 11),
           Expanded(
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
                   label,
@@ -2446,30 +2464,24 @@ class _MetricCard extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     fontSize: 11,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
                     fontWeight: FontWeight.w600,
+                    color: colorScheme.onSurfaceVariant,
                   ),
                 ),
-                const SizedBox(height: 4),
+                const SizedBox(height: 3),
                 Text(
                   value,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.w800,
+                    fontSize: 24,
+                    height: 1,
+                    fontWeight: FontWeight.w900,
                     color: color,
                   ),
                 ),
               ],
             ),
-          ),
-          Container(
-            width: 36,
-            height: 36,
-            decoration: BoxDecoration(
-              color: color.withAlpha(25),
-              shape: BoxShape.circle,
-            ),
-            child: Icon(Icons.trending_up_rounded, color: color, size: 20),
           ),
         ],
       ),

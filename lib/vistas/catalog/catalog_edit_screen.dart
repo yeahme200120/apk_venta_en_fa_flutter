@@ -42,7 +42,7 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
 
   bool _saving = false;
 
-  bool _esInventariable = false;
+  bool _esInventariable = true;
 
   List<Map<String, dynamic>> _categories = const [];
   int? _selectedCategoryId;
@@ -75,15 +75,40 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
       text: _numberText(item['stock'] ?? item['existencia']),
     );
 
+    /*
+     * IMPORTANTE:
+     *
+     * is_inventariable es una columna real de products.
+     *
+     * No se debe inferir a partir del stock.
+     * Un producto puede tener:
+     *
+     *   inventariable = false
+     *   stock = 0
+     *
+     * o incluso tener existencias históricas sin que actualmente
+     * se controle inventario.
+     *
+     * El valor de esta pantalla debe provenir de la columna
+     * products.is_inventariable.
+     */
     final existingInventory =
-        item['is_inventariable'] ?? item['inventariable'];
+        item['is_inventariable'] ??
+        item['isInventoriable'] ??
+        item['inventariable'];
 
     if (existingInventory != null) {
       _esInventariable = _boolValue(existingInventory);
-    } else if (widget.isProduct && _isEditing) {
-      final stock = _toDouble(item['stock'] ?? item['existencia']);
-
-      _esInventariable = stock > 0;
+    } else {
+      /*
+       * La columna tiene DEFAULT 1 en LocalDb.
+       *
+       * No usamos stock > 0 como indicador de inventario.
+       * Si el registro proviene de la tabla products y por alguna
+       * razón la columna no viene en el Map, conservamos el
+       * comportamiento predeterminado de la base local.
+       */
+      _esInventariable = true;
     }
 
     _emailController = TextEditingController(
@@ -529,16 +554,15 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
     required bool active,
   }) async {
     /*
-     * Se usa un UUID diferente por modificación.
+     * El UUID se mantiene estable por registro.
      *
-     * Esto permite que, mientras todavía usamos
-     * ConflictAlgorithm.ignore en LocalDb, una edición
-     * posterior no sea descartada por tener el mismo UUID.
-     *
-     * Más adelante, al ajustar LocalDb, la cola podrá
-     * consolidar automáticamente el último estado.
+     * LocalDb utiliza uuid_local + entity_type como identidad
+     * de la operación. Esto permite que una nueva edición del
+     * mismo registro actualice/reemplace el estado pendiente
+     * anterior en lugar de generar múltiples operaciones
+     * pendientes para el mismo catálogo.
      */
-    final uuidLocal ='category-$localId';
+    final uuidLocal = 'category-$localId';
 
     await _db.enqueueSyncOperation(
       uuidLocal: uuidLocal,
@@ -567,7 +591,23 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
     required bool inventariable,
     required Map<String, dynamic> data,
   }) async {
-    final uuidLocal ='product-$localId';
+    /*
+     * El UUID se mantiene estable por producto.
+     *
+     * La cola de LocalDb tiene una restricción única por:
+     *
+     *   uuid_local + entity_type
+     *
+     * y enqueueSyncOperation utiliza ConflictAlgorithm.replace.
+     *
+     * Por lo tanto, si el usuario modifica varias veces el mismo
+     * producto mientras todavía está pendiente de sincronización,
+     * el payload más reciente reemplaza al anterior.
+     *
+     * Esto es importante para que is_inventariable conserve el
+     * último estado seleccionado por el usuario.
+     */
+    final uuidLocal = 'product-$localId';
 
     await _db.enqueueSyncOperation(
       uuidLocal: uuidLocal,
@@ -630,14 +670,35 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
           _priceController.text,
         );
 
+        /*
+         * El stock se mantiene independiente de
+         * is_inventariable.
+         *
+         * Si no maneja inventario, el stock operativo se conserva
+         * en 0 como estaba definido originalmente en esta pantalla.
+         */
         final double stock = _esInventariable
             ? _toDouble(_stockController.text)
             : 0.0;
 
+        /*
+         * data_json conserva el resto de información adicional
+         * del producto, pero NO se utiliza como fuente de verdad
+         * para is_inventariable.
+         */
         final data = _existingProductData();
 
         data['categoria_id'] = _selectedCategoryId;
-        data['is_inventariable'] = _esInventariable;
+
+        /*
+         * IMPORTANTE:
+         *
+         * No guardar is_inventariable en data_json.
+         *
+         * La fuente de verdad es:
+         *
+         * products.is_inventariable
+         */
 
         var code = _codeController.text.trim();
 
@@ -671,6 +732,14 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
             price: price,
             stock: stock,
             isActive: true,
+
+            /*
+             * CORRECCIÓN PRINCIPAL:
+             *
+             * is_inventariable es columna real de SQLite.
+             */
+            isInventoriable: _esInventariable,
+
             data: data,
           );
         } else {
@@ -681,6 +750,15 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
             price: price,
             stock: stock,
             isActive: true,
+
+            /*
+             * CORRECCIÓN PRINCIPAL:
+             *
+             * El valor se persiste directamente en
+             * products.is_inventariable.
+             */
+            isInventoriable: _esInventariable,
+
             data: data,
           );
         }
@@ -700,6 +778,10 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
           data: data,
         );
 
+        /*
+         * Notificar después de guardar tanto el producto como
+         * la operación pendiente.
+         */
         LocalDb.notifySalesChanged();
       }
 

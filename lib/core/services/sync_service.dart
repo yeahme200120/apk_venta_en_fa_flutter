@@ -1269,7 +1269,14 @@ class SyncService {
       );
 
       final isInventoriable = _extractInventoriable(item, product);
-
+      print(
+        '🔎 INVENTARIO HISTÓRICO '
+        'local_id=$localProductId '
+        'server_id=$serverProductId '
+        'catalogo=${product?['is_inventariable'] ?? '-'} '
+        'historico=${item['is_inventariable'] ?? '-'} '
+        'enviado=$isInventoriable',
+      );
       print(
         '🔎 PRODUCTO HISTÓRICO '
         'local_id=$localProductId '
@@ -1695,7 +1702,9 @@ class SyncService {
       final activo = _toBool(payload['activo'], defaultValue: true);
 
       final inventariable = _toBool(
-        payload['inventariable'],
+        payload['is_inventariable'] ??
+            payload['isInventoriable'] ??
+            payload['inventariable'],
         defaultValue: true,
       );
 
@@ -2503,19 +2512,26 @@ class SyncService {
   bool _extractInventoriable(dynamic item, Map<String, dynamic>? product) {
     dynamic value;
 
-    if (item is Map) {
-      value =
-          item['is_inventariable'] ??
-          item['isInventoriable'] ??
-          item['inventariable'];
-    }
+    // ==========================================================
+    // 1. PRODUCTO ACTUAL DE LOCALDB
+    //
+    // Para productos existentes, el catálogo actual tiene
+    // prioridad sobre el detalle histórico de la venta.
+    // ==========================================================
 
-    if (value == null && product != null) {
+    if (product != null) {
       value =
           product['is_inventariable'] ??
           product['isInventoriable'] ??
           product['inventariable'];
     }
+
+    // ==========================================================
+    // 2. data_json DEL PRODUCTO
+    //
+    // Respaldo para productos cuyo campo directo todavía no
+    // exista pero que ya tengan la información serializada.
+    // ==========================================================
 
     if (value == null && product != null) {
       final rawDataJson = product['data_json'];
@@ -2534,9 +2550,35 @@ class SyncService {
       }
     }
 
-    return _toBool(value, defaultValue: true);
-  }
+    // ==========================================================
+    // 3. DETALLE HISTÓRICO
+    //
+    // Solamente se utiliza como respaldo cuando no tenemos
+    // información actual del producto.
+    // ==========================================================
 
+    if (value == null && item is Map) {
+      value =
+          item['is_inventariable'] ??
+          item['isInventoriable'] ??
+          item['inventariable'];
+    }
+
+    // ==========================================================
+    // 4. PRODUCTOS NUEVOS / DATOS SIN VALOR
+    // ==========================================================
+
+    final result = _toBool(value, defaultValue: true);
+
+    print(
+      '🔎 INVENTARIO PRODUCTO '
+      'actual=${product?['is_inventariable'] ?? '-'} '
+      'historico=${item is Map ? (item['is_inventariable'] ?? '-') : '-'} '
+      'resultado=$result',
+    );
+
+    return result;
+  }
   // ============================================================
   // BOOLEAN
   // ============================================================

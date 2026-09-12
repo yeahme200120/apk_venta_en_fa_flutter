@@ -40,6 +40,8 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
 
   String _currentSyncStatus = '';
 
+  String _currentFolio = '';
+
   List<Map<String, dynamic>> _cashOperations = const [];
 
   double _cashIncome = 0;
@@ -53,8 +55,94 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
 
     _currentSyncStatus = widget.sale.syncStatus;
 
+    _currentFolio = _resolveInitialSaleNumber();
+
     _loadCurrentSaleStatus();
     _loadCashOperations();
+  }
+
+  // ============================================================
+  // NÚMERO / FOLIO REAL DE LA VENTA
+  // ============================================================
+
+  String _cleanString(dynamic value) {
+    if (value == null) {
+      return '';
+    }
+
+    final result = value.toString().trim();
+
+    if (result.isEmpty || result.toLowerCase() == 'null') {
+      return '';
+    }
+
+    return result;
+  }
+
+  String _resolveInitialSaleNumber() {
+    final folio = _cleanString(widget.sale.folio);
+
+    if (folio.isNotEmpty) {
+      return folio;
+    }
+
+    if (widget.sale.id > 0) {
+      return widget.sale.id.toString();
+    }
+
+    final uuid = _cleanString(widget.sale.uuidLocal);
+
+    if (uuid.isNotEmpty) {
+      return uuid;
+    }
+
+    return '-';
+  }
+
+  String _resolveSaleNumberFromMap(
+    Map<String, dynamic> sale,
+  ) {
+    final candidates = [
+      sale['folio'],
+      sale['server_folio'],
+      sale['serverFolio'],
+      sale['numero_venta'],
+      sale['numeroVenta'],
+      sale['sale_number'],
+      sale['saleNumber'],
+    ];
+
+    for (final candidate in candidates) {
+      final value = _cleanString(candidate);
+
+      if (value.isNotEmpty) {
+        return value;
+      }
+    }
+
+    final localId = int.tryParse('${sale['id'] ?? 0}') ?? 0;
+
+    if (localId > 0) {
+      return localId.toString();
+    }
+
+    final uuid = _cleanString(sale['uuid_local']);
+
+    if (uuid.isNotEmpty) {
+      return uuid;
+    }
+
+    return _resolveInitialSaleNumber();
+  }
+
+  String _saleNumber() {
+    final current = _cleanString(_currentFolio);
+
+    if (current.isNotEmpty) {
+      return current;
+    }
+
+    return _resolveInitialSaleNumber();
   }
 
   // ============================================================
@@ -69,9 +157,13 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
         return;
       }
 
+      final currentFolio = _resolveSaleNumberFromMap(currentSale);
+
       setState(() {
         _currentSyncStatus =
             currentSale['sync_status']?.toString() ?? widget.sale.syncStatus;
+
+        _currentFolio = currentFolio;
       });
     } catch (_) {
       // Mantener el estado original.
@@ -565,7 +657,9 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
                     color: (income ? Colors.green : Colors.red).withAlpha(18),
                     borderRadius: BorderRadius.circular(16),
                     border: Border.all(
-                      color: (income ? Colors.green : Colors.red).withAlpha(45),
+                      color: (income ? Colors.green : Colors.red).withAlpha(
+                        45,
+                      ),
                     ),
                   ),
                   child: Column(
@@ -829,16 +923,16 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
         ticket: ticket,
       );
 
-      final folio = widget.sale.folio?.trim();
+      final folio = _saleNumber();
 
-      final fileName = folio != null && folio.isNotEmpty
+      final fileName = folio.isNotEmpty
           ? 'ticket_$folio.pdf'
           : 'ticket_${widget.sale.uuidLocal}.pdf';
 
       final shared = await WhatsAppService.sharePdf(
         bytes: pdfBytes,
         fileName: fileName,
-        text: 'Ticket de venta ${folio ?? widget.sale.uuidLocal}',
+        text: 'Ticket de venta $folio',
       );
 
       if (!mounted) {
@@ -925,7 +1019,7 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
 
       final saleForPrint = <String, dynamic>{
         'id': widget.sale.id,
-        'folio': widget.sale.folio ?? widget.sale.uuidLocal,
+        'folio': _saleNumber(),
         'fecha': widget.sale.createdAt.isNotEmpty
             ? widget.sale.createdAt
             : widget.sale.businessDate,
@@ -1044,11 +1138,7 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
 
     final statusColor = _statusColor(displayedStatus);
 
-    final title =
-        widget.sale.folio ??
-        (widget.sale.uuidLocal.length >= 8
-            ? widget.sale.uuidLocal.substring(0, 8)
-            : widget.sale.uuidLocal);
+    final title = _saleNumber();
 
     final busy = _printing || _syncing;
 
@@ -1057,20 +1147,6 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
         title: Text('Venta $title'),
 
         actions: [
-          IconButton(
-            tooltip: 'Actualizar caja',
-            onPressed: busy || _loadingCashOperations
-                ? null
-                : _loadCashOperations,
-            icon: _loadingCashOperations
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.account_balance_wallet_outlined),
-          ),
-
           IconButton(
             tooltip: 'Sincronizar ventas y catálogo',
             onPressed: busy ? null : _syncPendingSalesAndCatalog,
@@ -1349,7 +1425,6 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
 
               const Text(
                 'Ingresos y egresos registrados en caja.',
-
                 style: TextStyle(fontSize: 13, color: Colors.black54),
               ),
 
@@ -1622,7 +1697,6 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
               // ==================================================
               const Text(
                 'Pagos de esta venta',
-
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
               ),
 
@@ -1683,7 +1757,6 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
               // ==================================================
               const Text(
                 'Productos',
-
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
               ),
 
@@ -1784,7 +1857,6 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
   Widget _infoRow(String label, String value, {bool valueBold = false}) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
-
       children: [
         Expanded(
           child: Text(
