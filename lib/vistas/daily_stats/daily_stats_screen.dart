@@ -8,6 +8,7 @@ import '../../core/models/sale_model.dart';
 import '../../core/services/sync_service.dart';
 import '../../core/storage/app_storage.dart';
 import '../ventas/sale_detail_screen.dart';
+import '../widgets/app_scaffold.dart';
 
 // ============================================================
 // PANTALLA PRINCIPAL
@@ -34,14 +35,44 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   bool _syncing = false;
 
   List<Map<String, dynamic>> _sales = const [];
+  List<Map<String, dynamic>> _formasPagoDetalle = const [];
 
   late TabController _tabController;
+
+  // ============================================================
+  // COLORES SEMÁNTICOS DE ESTADO
+  // ============================================================
+
+  static const Color _colorPaid = Color(0xFF4CAF50);
+  static const Color _colorPending = Color(0xFFFF9800);
+  static const Color _colorCancelled = Color(0xFFE53935);
 
   // ============================================================
   // ESTADO DEL DÍA
   // ============================================================
 
   String _companyName = '';
+
+  /// Fecha comercial AUTORIZADA POR EL SERVIDOR ("YYYY-MM-DD").
+  /// Es la fuente de verdad para caja, ventas y filtros.
+  String? _businessDateKey;
+
+  /// Fecha comercial como DateTime a medianoche.
+  DateTime get _businessDate {
+    final key = _businessDateKey;
+
+    if (key != null && key.isNotEmpty) {
+      final parsed = DateTime.tryParse(key);
+
+      if (parsed != null) {
+        return DateTime(parsed.year, parsed.month, parsed.day);
+      }
+    }
+
+    // Fallback seguro si aún no se cargó la fecha del servidor.
+    final now = DateTime.now();
+    return DateTime(now.year, now.month, now.day);
+  }
 
   DateTime _fechaInicio = DateTime(
     DateTime.now().year,
@@ -127,10 +158,39 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   // ============================================================
 
   Future<void> _initialize() async {
-    final name = await AppStorage().getCompanyName();
+    final storage = AppStorage();
 
-    if (mounted) {
-      setState(() => _companyName = name ?? '');
+    final name = await storage.getCompanyName();
+    final businessDateKey = await storage.getServerBusinessDateKey();
+
+    if (!mounted) return;
+
+    // Sincronizar _fechaInicio / _fechaFin con la fecha comercial
+    // autorizada por el servidor.
+    if (businessDateKey != null && businessDateKey.isNotEmpty) {
+      final parsed = DateTime.tryParse(businessDateKey);
+
+      if (parsed != null) {
+        final start = DateTime(parsed.year, parsed.month, parsed.day);
+        final end = DateTime(parsed.year, parsed.month, parsed.day, 23, 59, 59);
+
+        setState(() {
+          _businessDateKey = businessDateKey;
+          _companyName = name ?? '';
+          _fechaInicio = start;
+          _fechaFin = end;
+        });
+      } else {
+        setState(() {
+          _businessDateKey = businessDateKey;
+          _companyName = name ?? '';
+        });
+      }
+    } else {
+      setState(() {
+        _businessDateKey = null;
+        _companyName = name ?? '';
+      });
     }
 
     await _loadStats();
@@ -138,7 +198,7 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
     if (!mounted) return;
 
     try {
-      final offline = await AppStorage().isOfflineSession();
+      final offline = await storage.isOfflineSession();
 
       if (!offline) {
         await _syncUploadThenPull();
@@ -153,11 +213,33 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   }
 
   Future<void> _syncAndRefreshOnResume() async {
+    final storage = AppStorage();
+
     try {
-      final offline = await AppStorage().isOfflineSession();
+      final offline = await storage.isOfflineSession();
 
       if (!offline) {
         await _syncUploadThenPull();
+      }
+
+      // Puede que el servidor haya cambiado la fecha comercial.
+      final businessDateKey = await storage.getServerBusinessDateKey();
+
+      if (businessDateKey != null && businessDateKey.isNotEmpty) {
+        final parsed = DateTime.tryParse(businessDateKey);
+
+        if (parsed != null && businessDateKey != _businessDateKey) {
+          final start = DateTime(parsed.year, parsed.month, parsed.day);
+          final end = DateTime(parsed.year, parsed.month, parsed.day, 23, 59, 59);
+
+          if (mounted) {
+            setState(() {
+              _businessDateKey = businessDateKey;
+              _fechaInicio = start;
+              _fechaFin = end;
+            });
+          }
+        }
       }
     } catch (_) {}
 
@@ -180,6 +262,7 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
 
       final top = await _loadTopProductos();
       final topPorDia = await _loadTopProductosPorDia();
+      final formasPagoDetalle = await _loadFormasPagoDetalle();
 
       if (!mounted) return;
 
@@ -187,6 +270,7 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
         _sales = List<Map<String, dynamic>>.from(sales);
         _topProductos = top;
         _topPorDia = topPorDia;
+        _formasPagoDetalle = formasPagoDetalle;
         _loading = false;
       });
     } catch (error) {
@@ -211,6 +295,7 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
 
       final top = await _loadTopProductos();
       final topPorDia = await _loadTopProductosPorDia();
+      final formasPagoDetalle = await _loadFormasPagoDetalle();
 
       if (!mounted) return;
 
@@ -218,6 +303,7 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
         _sales = List<Map<String, dynamic>>.from(sales);
         _topProductos = top;
         _topPorDia = topPorDia;
+        _formasPagoDetalle = formasPagoDetalle;
       });
     } catch (_) {
     } finally {
@@ -245,41 +331,52 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   Future<List<Map<String, dynamic>>> _loadSalesInRange() async {
     final inicioClave = _dayDb.dateKey(_fechaInicio);
     final finClave = _dayDb.dateKey(_fechaFin);
-    final esHoy = inicioClave == _dayDb.dateKey(DateTime.now());
+
+    // ⚠️ La fecha comercial la manda el servidor, NO DateTime.now().
+    final businessKey = _businessDateKey ?? _dayDb.dateKey(DateTime.now());
+    final esDiaComercialActual = inicioClave == businessKey;
 
     final companyId = await AppStorage().getEmpresaId() ?? 0;
     final userId = await AppStorage().getUserId() ?? 0;
 
+    // ------------------------------------------------------------
+    // HISTÓRICO
+    // ------------------------------------------------------------
+    // Siempre cargamos TODAS las ventas y dejamos que el filtro
+    // de abajo recorte por rango. NO usar getSales(businessDate:)
+    // porque descarta datos cuando el rango es multidía.
     List<Map<String, dynamic>> historySales;
 
     try {
-      if (esHoy) {
-        historySales = await _historyDb.getTodaySales();
-      } else {
-        historySales = await _historyDb.getSales(businessDate: inicioClave);
-
-        if (inicioClave != finClave) {
-          historySales = await _historyDb.getSales();
-        }
-      }
+      historySales = await _historyDb.getSales();
     } catch (_) {
       historySales = [];
     }
 
+    // ------------------------------------------------------------
+    // BASE DIARIA
+    // ------------------------------------------------------------
+    // Solo tiene HOY. Solo se consulta si el rango es el día
+    // comercial actual.
     List<Map<String, dynamic>> daySales = [];
 
-    if (companyId > 0 && userId > 0 && esHoy) {
+    if (companyId > 0 && userId > 0 && esDiaComercialActual) {
       try {
+        // ⚠️ businessDate = fecha comercial del servidor.
+        final businessDateParsed =
+            DateTime.tryParse(businessKey) ?? DateTime.now();
+
         daySales = await _dayDb.getTodaySales(
           companyId: companyId,
           userId: userId,
-          businessDate: DateTime.now(),
+          businessDate: businessDateParsed,
         );
       } catch (_) {}
     }
 
     final unique = <String, Map<String, dynamic>>{};
 
+    // Day primero (fuente más fresca del día comercial).
     for (final raw in daySales) {
       final sale = Map<String, dynamic>.from(raw);
       final uuid = sale['uuid_local']?.toString().trim() ?? '';
@@ -328,6 +425,11 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
       }
     }
 
+    // ------------------------------------------------------------
+    // FILTRO POR RANGO
+    // ------------------------------------------------------------
+    // Si una venta no tiene fecha parseable, se DESCARTA.
+    // (Antes se incluía por defecto y colaba ventas viejas).
     final result = unique.values.where((s) {
       DateTime? dt = _dateValue(s['created_at']);
       dt ??= _dateValue(s['paid_at']);
@@ -339,7 +441,7 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
         }
       }
 
-      if (dt == null) return true;
+      if (dt == null) return false;
 
       return !dt.isBefore(_fechaInicio) && !dt.isAfter(_fechaFin);
     }).toList();
@@ -362,6 +464,21 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   }
 
   // ============================================================
+  // FORMAS DE PAGO (DESGLOSE REAL)
+  // ============================================================
+
+  Future<List<Map<String, dynamic>>> _loadFormasPagoDetalle() async {
+    try {
+      return await _historyDb.getSalesByPaymentMethodInRangeLocal(
+        desde: _fechaInicio,
+        hasta: _fechaFin,
+      );
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  // ============================================================
   // TOP PRODUCTOS (LOCAL)
   // ============================================================
 
@@ -378,7 +495,7 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   }
 
   Future<Map<String, List<Map<String, dynamic>>>>
-  _loadTopProductosPorDia() async {
+      _loadTopProductosPorDia() async {
     try {
       return await _historyDb.getTopProductsByDayLocal(
         desde: _fechaInicio,
@@ -395,13 +512,15 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   // ============================================================
 
   Future<void> _loadMonthStats() async {
-    final ahora = DateTime.now();
+    // ⚠️ El mes se calcula sobre la fecha comercial, no sobre
+    // DateTime.now(), para que coincida con el día operativo.
+    final base = _businessDate;
 
-    final inicio = DateTime(ahora.year, ahora.month, 1);
+    final inicio = DateTime(base.year, base.month, 1);
     final fin = DateTime(
-      ahora.year,
-      ahora.month,
-      DateTime(ahora.year, ahora.month + 1, 0).day,
+      base.year,
+      base.month,
+      DateTime(base.year, base.month + 1, 0).day,
       23,
       59,
       59,
@@ -434,12 +553,17 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
       final ventasPorDia = <Map<String, dynamic>>[];
 
       for (final s in activas) {
-        final createdAt =
-            s['created_at']?.toString() ?? s['paid_at']?.toString() ?? '';
+        // ⚠️ Usar la fecha LOCAL del created_at/paid_at para
+        // agrupar por día, no substring(0, 10) sobre UTC.
+        final dt =
+            _dateValue(s['created_at']) ?? _dateValue(s['paid_at']);
 
-        if (createdAt.isEmpty) continue;
+        if (dt == null) continue;
 
-        final fecha = createdAt.substring(0, 10);
+        final fecha =
+            '${dt.year.toString().padLeft(4, '0')}-'
+            '${dt.month.toString().padLeft(2, '0')}-'
+            '${dt.day.toString().padLeft(2, '0')}';
 
         final index = ventasPorDia.indexWhere((v) => v['fecha'] == fecha);
 
@@ -538,10 +662,13 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
       throw Exception('No existe una sesión válida para sincronizar.');
     }
 
+    // ⚠️ Sincronizamos con la fecha comercial del servidor.
+    final businessDate = _businessDate;
+
     final result = await _syncService.syncManual(
       companyId: companyId,
       userId: userId,
-      businessDate: DateTime.now(),
+      businessDate: businessDate,
     );
 
     if (result.failed > 0) {
@@ -605,10 +732,11 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
           throw Exception('No existe una sesión válida.');
         }
 
+        // ⚠️ La base diaria usa la fecha comercial del servidor.
         final db = await _dayDb.open(
           companyId: companyId,
           userId: userId,
-          businessDate: DateTime.now(),
+          businessDate: _businessDate,
         );
 
         items = await _dayDb.getSaleItems(db, saleId);
@@ -642,15 +770,15 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   // ============================================================
 
   Iterable<Map<String, dynamic>> get _activeSales => _sales.where((s) {
-    final raw = (s['status'] ?? '').toString().trim().toLowerCase();
+        final raw = (s['status'] ?? '').toString().trim().toLowerCase();
 
-    return raw != 'cancelled' &&
-        raw != 'canceled' &&
-        raw != 'cancelado' &&
-        raw != 'cancelada' &&
-        raw != 'anulado' &&
-        raw != 'anulada';
-  });
+        return raw != 'cancelled' &&
+            raw != 'canceled' &&
+            raw != 'cancelado' &&
+            raw != 'cancelada' &&
+            raw != 'anulado' &&
+            raw != 'anulada';
+      });
 
   double get _totalVentas =>
       _activeSales.fold(0.0, (sum, s) => sum + _toDouble(s['total']));
@@ -680,19 +808,6 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
 
       entry['cantidad'] = (entry['cantidad'] ?? 0) + 1;
       entry['total'] = (entry['total'] ?? 0) + _toDouble(s['total']);
-    }
-
-    return map;
-  }
-
-  Map<String, double> get _formasPago {
-    final map = <String, double>{};
-
-    for (final s in _activeSales) {
-      final method = _metodoVenta(s);
-      final total = _toDouble(s['total']);
-
-      map[method] = (map[method] ?? 0) + total;
     }
 
     return map;
@@ -784,6 +899,7 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   void _showMessage(String message, {bool isError = false}) {
     if (!mounted) return;
 
+    final cs = Theme.of(context).colorScheme;
     final messenger = ScaffoldMessenger.maybeOf(context);
 
     messenger
@@ -791,7 +907,7 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
       ..showSnackBar(
         SnackBar(
           content: Text(message),
-          backgroundColor: isError ? Colors.red.shade700 : null,
+          backgroundColor: isError ? cs.error : null,
           duration: const Duration(seconds: 3),
         ),
       );
@@ -841,53 +957,37 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-
-    return Scaffold(
-      backgroundColor: cs.surface,
-
-      appBar: AppBar(
-        title: Text(
-          _companyName.isNotEmpty ? _companyName.toUpperCase() : 'ESTADÍSTICAS',
-          style: const TextStyle(
-            fontWeight: FontWeight.w800,
-            fontSize: 15,
-            letterSpacing: 0.5,
-          ),
+    return AppScaffold(
+      title: _companyName.isNotEmpty
+          ? _companyName.toUpperCase()
+          : 'ESTADÍSTICAS',
+      actions: [
+        IconButton(
+          tooltip: 'Sincronizar',
+          onPressed: _syncing ? null : _syncNow,
+          icon: _syncing
+              ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white,
+                  ),
+                )
+              : const Icon(Icons.sync),
         ),
-        actions: [
-          IconButton(
-            tooltip: 'Sincronizar',
-            onPressed: _syncing ? null : _syncNow,
-            icon: _syncing
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: Colors.white,
-                    ),
-                  )
-                : const Icon(Icons.sync),
-          ),
-        ],
-        bottom: TabBar(
-          controller: _tabController,
-          labelColor: Colors.white,
-          unselectedLabelColor: Colors.white70,
-          indicatorColor: Colors.white,
-          tabs: const [
-            Tab(icon: Icon(Icons.today_outlined, size: 18), text: 'Día'),
-            Tab(
-              icon: Icon(Icons.calendar_month_outlined, size: 18),
-              text: 'Mes',
-            ),
-          ],
-        ),
-      ),
-      body: TabBarView(
+      ],
+      tabs: const [
+        AppTabData(label: 'Día', icon: Icons.today_outlined),
+        AppTabData(label: 'Mes', icon: Icons.calendar_month_outlined),
+      ],
+      tabController: _tabController,
+      tabView: TabBarView(
         controller: _tabController,
-        children: [_buildDayTab(cs), _buildMonthTab(cs)],
+        children: [
+          _buildDayTab(Theme.of(context).colorScheme),
+          _buildMonthTab(Theme.of(context).colorScheme),
+        ],
       ),
     );
   }
@@ -944,7 +1044,7 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
             ),
           ),
 
-          if (_formasPago.isNotEmpty)
+          if (_formasPagoDetalle.isNotEmpty)
             SliverToBoxAdapter(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
@@ -969,7 +1069,7 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-              child: _buildTopProductos(_topProductos),
+              child: _buildTopProductos(_topProductos, cs),
             ),
           ),
 
@@ -991,7 +1091,7 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
             SliverToBoxAdapter(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
-                child: _buildTopPorDia(_topPorDia),
+                child: _buildTopPorDia(_topPorDia, cs),
               ),
             ),
           ] else
@@ -1018,6 +1118,7 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
                 child: _buildEmptyState(
                   'Sin ventas',
                   'No existen ventas registradas en el rango seleccionado.',
+                  cs,
                 ),
               ),
             )
@@ -1028,7 +1129,7 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
                 delegate: SliverChildBuilderDelegate(
                   (context, i) => Padding(
                     padding: const EdgeInsets.only(bottom: 8),
-                    child: _buildSaleTile(_sales[i]),
+                    child: _buildSaleTile(_sales[i], cs),
                   ),
                   childCount: _sales.length,
                 ),
@@ -1060,8 +1161,9 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
       );
     }
 
-    final hoy = DateTime.now();
-    final mesNombre = _mesNombre(hoy.month);
+    // ⚠️ El mes se muestra en base a la fecha comercial.
+    final base = _businessDate;
+    final mesNombre = _mesNombre(base.month);
 
     return RefreshIndicator(
       onRefresh: () async {
@@ -1083,7 +1185,7 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
                   ),
                   const SizedBox(width: 8),
                   Text(
-                    '$mesNombre ${hoy.year}',
+                    '$mesNombre ${base.year}',
                     style: TextStyle(
                       fontSize: 14,
                       fontWeight: FontWeight.w700,
@@ -1190,7 +1292,7 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-              child: _buildTopProductos(_mesTopProductos),
+              child: _buildTopProductos(_mesTopProductos, cs),
             ),
           ),
 
@@ -1212,7 +1314,7 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
             SliverToBoxAdapter(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
-                child: _buildTopPorDia(_mesTopPorDia),
+                child: _buildTopPorDia(_mesTopPorDia, cs),
               ),
             ),
           ] else
@@ -1322,6 +1424,7 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
       return _buildEmptyState(
         'Sin ventas por hora',
         'No existen ventas en el rango seleccionado.',
+        cs,
       );
     }
 
@@ -1407,8 +1510,9 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   }
 
   Widget _buildFormasPago(ColorScheme cs) {
-    final entries = _formasPago.entries.toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
+    if (_formasPagoDetalle.isEmpty) {
+      return const SizedBox.shrink();
+    }
 
     return Material(
       color: cs.surfaceContainerHighest,
@@ -1428,24 +1532,37 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
               ),
             ),
             const SizedBox(height: 8),
-            ...entries.map(
+            ..._formasPagoDetalle.map(
               (e) => Padding(
                 padding: const EdgeInsets.only(bottom: 5),
                 child: Row(
                   children: [
-                    Icon(_iconMetodo(e.key), size: 16, color: cs.primary),
+                    Icon(
+                      _iconMetodo(e['method_label']?.toString() ?? ''),
+                      size: 16,
+                      color: cs.primary,
+                    ),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        e.key,
-                        style: const TextStyle(
+                        e['method_label']?.toString() ?? '—',
+                        style: TextStyle(
                           fontSize: 13,
                           fontWeight: FontWeight.w500,
+                          color: cs.onSurface,
                         ),
                       ),
                     ),
                     Text(
-                      '\$${e.value.toStringAsFixed(2)}',
+                      '${_toInt(e['tickets'])} ticket(s)',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: cs.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      '\$${_toDouble(e['total']).toStringAsFixed(2)}',
                       style: TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.w700,
@@ -1462,19 +1579,21 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
     );
   }
 
-  Widget _buildTopProductos(List<Map<String, dynamic>> productos) {
+  Widget _buildTopProductos(
+    List<Map<String, dynamic>> productos,
+    ColorScheme cs,
+  ) {
     if (productos.isEmpty) {
       return _buildEmptyState(
         'Sin productos vendidos',
         'No existen ventas de productos en este periodo.',
+        cs,
       );
     }
 
     final maxVendido = productos
         .map((p) => _toDouble(p['total_vendido']))
         .fold(0.0, (a, b) => a > b ? a : b);
-
-    final cs = Theme.of(context).colorScheme;
 
     return Material(
       color: cs.surfaceContainerHighest,
@@ -1501,9 +1620,10 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
                           name,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 13,
                             fontWeight: FontWeight.w600,
+                            color: cs.onSurface,
                           ),
                         ),
                       ),
@@ -1538,15 +1658,17 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
     );
   }
 
-  Widget _buildTopPorDia(Map<String, List<Map<String, dynamic>>> data) {
+  Widget _buildTopPorDia(
+    Map<String, List<Map<String, dynamic>>> data,
+    ColorScheme cs,
+  ) {
     if (data.isEmpty) {
       return _buildEmptyState(
         'Sin datos por día',
         'No existen productos vendidos en el periodo.',
+        cs,
       );
     }
-
-    final cs = Theme.of(context).colorScheme;
 
     final fechas = data.keys.toList()..sort();
 
@@ -1594,15 +1716,19 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
                                 p['name']?.toString() ?? 'Producto',
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(fontSize: 12),
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: cs.onSurface,
+                                ),
                               ),
                             ),
                             const SizedBox(width: 8),
                             Text(
                               '${_toDouble(p['total_vendido']).toStringAsFixed(0)} u',
-                              style: const TextStyle(
+                              style: TextStyle(
                                 fontSize: 12,
                                 fontWeight: FontWeight.w700,
+                                color: cs.onSurface,
                               ),
                             ),
                             const SizedBox(width: 8),
@@ -1611,7 +1737,10 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
                               child: Text(
                                 '\$${_toDouble(p['total_monto']).toStringAsFixed(2)}',
                                 textAlign: TextAlign.right,
-                                style: const TextStyle(fontSize: 12),
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: cs.onSurface,
+                                ),
                               ),
                             ),
                           ],
@@ -1707,7 +1836,7 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
     );
   }
 
-  Widget _buildSaleTile(Map<String, dynamic> sale) {
+  Widget _buildSaleTile(Map<String, dynamic> sale, ColorScheme cs) {
     final folio = sale['folio']?.toString().trim() ?? '';
     final saleId = sale['id']?.toString() ?? '-';
 
@@ -1752,29 +1881,34 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
                       title,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.w600,
+                        color: cs.onSurface,
                       ),
                     ),
                     const SizedBox(height: 2),
                     Row(
                       children: [
-                        Icon(_iconMetodo(method), size: 12, color: Colors.grey),
+                        Icon(
+                          _iconMetodo(method),
+                          size: 12,
+                          color: cs.onSurfaceVariant,
+                        ),
                         const SizedBox(width: 4),
                         Text(
                           method,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 11,
-                            color: Colors.grey,
+                            color: cs.onSurfaceVariant,
                           ),
                         ),
                         const SizedBox(width: 8),
                         Text(
                           fechaHora,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 11,
-                            color: Colors.grey,
+                            color: cs.onSurfaceVariant,
                           ),
                         ),
                       ],
@@ -1824,31 +1958,35 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
     );
   }
 
-  Widget _buildEmptyState(String title, String subtitle) {
+  Widget _buildEmptyState(String title, String subtitle, ColorScheme cs) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 40),
       decoration: BoxDecoration(
-        color: Colors.grey.withValues(alpha: 0.08),
+        color: cs.surfaceContainerHighest.withValues(alpha: 0.5),
         borderRadius: BorderRadius.circular(16),
       ),
       child: Column(
         children: [
-          const Icon(
+          Icon(
             Icons.receipt_long_outlined,
             size: 48,
-            color: Colors.black26,
+            color: cs.onSurfaceVariant.withValues(alpha: 0.4),
           ),
           const SizedBox(height: 12),
           Text(
             title,
             textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+            style: TextStyle(
+              fontSize: 15,
+              fontWeight: FontWeight.w600,
+              color: cs.onSurface,
+            ),
           ),
           const SizedBox(height: 6),
           Text(
             subtitle,
             textAlign: TextAlign.center,
-            style: const TextStyle(color: Colors.black54, fontSize: 13),
+            style: TextStyle(color: cs.onSurfaceVariant, fontSize: 13),
           ),
         ],
       ),
@@ -1880,11 +2018,11 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
     final raw = (sale['status'] ?? '').toString().trim().toLowerCase();
 
     if (raw == 'paid' || raw == 'pagado' || raw == 'pagada') {
-      return const Color(0xFF4CAF50);
+      return _colorPaid;
     }
 
     if (raw == 'pending' || raw == 'pendiente') {
-      return Colors.orange;
+      return _colorPending;
     }
 
     if (raw == 'cancelled' ||
@@ -1893,10 +2031,10 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
         raw == 'cancelada' ||
         raw == 'anulado' ||
         raw == 'anulada') {
-      return Colors.red;
+      return _colorCancelled;
     }
 
-    return Colors.grey;
+    return Theme.of(context).colorScheme.onSurfaceVariant;
   }
 
   IconData _iconMetodo(String method) {
@@ -1974,9 +2112,10 @@ class _DateButton extends StatelessWidget {
                   ),
                   Text(
                     '$day/$month/$year',
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w700,
+                      color: cs.onSurface,
                     ),
                   ),
                 ],

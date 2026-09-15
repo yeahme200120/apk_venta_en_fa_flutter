@@ -51,6 +51,15 @@ class AppStorage {
   static const String _offlineDayValidKey =
       'offline_day_valid';
 
+  // Marca que el catálogo local debe purgarse antes
+  // de aplicar el próximo sync de catálogos.
+  //
+  // Se activa en cada login online para garantizar que un
+  // dispositivo que antes estaba vinculado a otra empresa
+  // no conserve productos/categorías ajenos.
+  static const String _catalogPurgePendingKey =
+      'catalog_purge_pending';
+
   // ============================================================
   // LIMPIAR STORAGE
   // ============================================================
@@ -520,6 +529,88 @@ class AppStorage {
     await saveServerBusinessDate(
       value,
     );
+  }
+
+  // ============================================================
+  // FECHA COMERCIAL NORMALIZADA
+  // ============================================================
+
+  Future<String?> getServerBusinessDateKey() async {
+    final raw = await getServerBusinessDate();
+
+    if (raw == null || raw.trim().isEmpty) {
+      return null;
+    }
+
+    final parsed = DateTime.tryParse(raw.trim());
+
+    if (parsed != null) {
+      return parsed.toIso8601String().substring(0, 10);
+    }
+
+    if (raw.trim().length >= 10) {
+      return raw.trim().substring(0, 10);
+    }
+
+    return raw.trim();
+  }
+
+  /// Compara la fecha comercial guardada contra la que acaba
+  /// de enviar el servidor.
+  ///
+  /// Devuelve true SOLO si ambas existen y son distintas.
+  Future<bool> businessDateChanged(String newServerDate) async {
+    final localKey = await getServerBusinessDateKey();
+
+    if (localKey == null || localKey.isEmpty) {
+      return false;
+    }
+
+    final newParsed = DateTime.tryParse(newServerDate.trim());
+
+    final newKey = newParsed != null
+        ? newParsed.toIso8601String().substring(0, 10)
+        : newServerDate.trim().substring(0, 10);
+
+    return localKey != newKey;
+  }
+
+  // ============================================================
+  // PURGA DE CATÁLOGO
+  // ============================================================
+  //
+  // Un dispositivo POS se usa con UNA SOLA empresa.
+  //
+  // Al iniciar sesión online, marcamos "purga pendiente" para que
+  // el próximo sync de catálogos elimine los productos/categorías/
+  // clientes/etc. que pudieran pertenecer a una empresa anterior.
+  //
+  // El flag se consume (se pone en false) en la primera
+  // sincronización de catálogos, para que solo purgue una vez
+  // por login.
+
+  Future<void> markCatalogPurgePending() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_catalogPurgePendingKey, true);
+  }
+
+  Future<bool> isCatalogPurgePending() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_catalogPurgePendingKey) ?? false;
+  }
+
+  /// Devuelve true si la purga estaba pendiente y la consume.
+  Future<bool> consumeCatalogPurgePending() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    final wasPending =
+        prefs.getBool(_catalogPurgePendingKey) ?? false;
+
+    if (wasPending) {
+      await prefs.setBool(_catalogPurgePendingKey, false);
+    }
+
+    return wasPending;
   }
 
   // ============================================================

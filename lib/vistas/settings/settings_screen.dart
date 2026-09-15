@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flex_color_picker/flex_color_picker.dart';
@@ -15,6 +16,7 @@ import '../auth/login_screen.dart';
 import '../catalog/catalog_admin_screen.dart';
 import 'printer_settings_screen.dart';
 import 'company_logo_screen.dart';
+import '../widgets/app_scaffold.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
@@ -86,11 +88,18 @@ class SettingsScreen extends StatelessWidget {
       return;
     }
 
+    // ⚠️ Usamos la fecha comercial del servidor, no DateTime.now().
+    final rawBusinessDate =
+        await AppStorage().getServerBusinessDate();
+
+    final businessDate =
+        DateTime.tryParse(rawBusinessDate ?? '') ?? DateTime.now();
+
     try {
       await CatalogService().downloadCatalogForToday(
         companyId: companyId,
         userId: userId,
-        businessDate: DateTime.now(),
+        businessDate: businessDate,
       );
 
       if (!context.mounted) return;
@@ -129,7 +138,8 @@ class SettingsScreen extends StatelessWidget {
       return;
     }
 
-    final String? rawBusinessDate = await AppStorage().getBusinessDate();
+    final String? rawBusinessDate =
+        await AppStorage().getServerBusinessDate();
 
     final DateTime businessDate =
         DateTime.tryParse(rawBusinessDate ?? '') ?? DateTime.now();
@@ -228,27 +238,46 @@ class SettingsScreen extends StatelessWidget {
       return;
     }
 
-    final progressDialog = showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => const AlertDialog(
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 16),
-            Text('Sincronizando ventas pendientes...'),
-          ],
-        ),
+    // ============================================================
+    // DIÁLOGO DE PROGRESO
+    // ============================================================
+    //
+    // Guardamos el Navigator del diálogo para cerrarlo después.
+    // NUNCA pasamos el Future que devuelve showDialog() a pop().
+    //
+    NavigatorState? progressNavigator;
+
+    unawaited(
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) {
+          progressNavigator = Navigator.of(ctx, rootNavigator: true);
+
+          return const AlertDialog(
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 16),
+                Text('Sincronizando ventas pendientes...'),
+              ],
+            ),
+          );
+        },
       ),
     );
 
+    // Pequeño delay para que el diálogo se monte antes de cerrarlo.
+    await Future.delayed(const Duration(milliseconds: 120));
+
     try {
       final companyId = await AppStorage().getEmpresaId() ?? 0;
-
       final userId = await AppStorage().getUserId() ?? 0;
 
-      final String? rawBusinessDate = await AppStorage().getBusinessDate();
+      // ⚠️ Usamos la fecha comercial del servidor, no DateTime.now().
+      final String? rawBusinessDate =
+          await AppStorage().getServerBusinessDate();
 
       final DateTime businessDate =
           DateTime.tryParse(rawBusinessDate ?? '') ?? DateTime.now();
@@ -263,6 +292,7 @@ class SettingsScreen extends StatelessWidget {
         businessDate: businessDate,
       );
 
+      // Si algo falló, avisamos pero seguimos con la limpieza.
       if (syncResult.failed > 0 && context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -275,23 +305,22 @@ class SettingsScreen extends StatelessWidget {
         );
       }
 
+      // Borrar base diaria.
       await PosDatabaseService().deleteDatabaseFile(
         companyId: companyId,
         userId: userId,
         businessDate: businessDate,
       );
 
-      final now = DateTime.now();
-      final nowIso = now.toIso8601String();
-
-      await AppStorage().saveBusinessDate(nowIso);
-
-      await AppStorage().saveServerBusinessDate(nowIso);
-
+      // ❌ NO hacemos saveBusinessDate(nowIso) ni
+      //    saveServerBusinessDate(nowIso).
+      //
+      // La fecha comercial la manda el servidor.
       await AppStorage().saveOperationState({});
 
-      if (context.mounted) {
-        Navigator.of(context).pop(progressDialog);
+      // Cerrar el diálogo de progreso.
+      if (progressNavigator != null && progressNavigator!.canPop()) {
+        progressNavigator!.pop();
       }
 
       if (!context.mounted) return;
@@ -313,8 +342,9 @@ class SettingsScreen extends StatelessWidget {
         ),
       );
     } catch (error) {
-      if (context.mounted) {
-        Navigator.of(context).pop(progressDialog);
+      // Cerrar el diálogo de progreso aunque haya error.
+      if (progressNavigator != null && progressNavigator!.canPop()) {
+        progressNavigator!.pop();
       }
 
       if (!context.mounted) return;
@@ -1025,8 +1055,8 @@ class SettingsScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Administración y configuración')),
+    return AppScaffold(
+      title: 'Administración y configuración',
       body: ListView(
         keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
         padding: const EdgeInsets.all(16),
@@ -1677,10 +1707,7 @@ class _TicketConfigDialogState extends State<_TicketConfigDialog> {
     );
 
     _qrContent = TextEditingController(
-      text: _readString(const [
-        'qr_contenido',
-        'qrContenido',
-      ]),
+      text: _readString(const ['qr_contenido', 'qrContenido']),
     );
 
     final configuredPaper = _readString(const ['papel'], fallback: '58mm');
@@ -1755,13 +1782,7 @@ class _TicketConfigDialogState extends State<_TicketConfigDialog> {
       'mostrar_total',
     ], fallback: _fieldVisible('total', fallback: true));
 
-    _showQr = _readBool(
-      const [
-        'mostrar_qr',
-        'mostrarQr',
-      ],
-      fallback: false,
-    );
+    _showQr = _readBool(const ['mostrar_qr', 'mostrarQr'], fallback: false);
   }
 
   @override
@@ -1790,16 +1811,12 @@ class _TicketConfigDialogState extends State<_TicketConfigDialog> {
     }
 
     if (_showQr && qrContent.isEmpty) {
-      _showMessage(
-        'Ingresa el contenido del QR o desactiva el código QR.',
-      );
+      _showMessage('Ingresa el contenido del QR o desactiva el código QR.');
       return;
     }
 
     if (qrContent.length > 2000) {
-      _showMessage(
-        'El contenido del QR no puede superar 2000 caracteres.',
-      );
+      _showMessage('El contenido del QR no puede superar 2000 caracteres.');
       return;
     }
 
@@ -1973,27 +1990,18 @@ class _TicketConfigDialogState extends State<_TicketConfigDialog> {
         decoration: BoxDecoration(
           color: Colors.blueGrey.withAlpha(12),
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: Colors.blueGrey.withAlpha(30),
-          ),
+          border: Border.all(color: Colors.blueGrey.withAlpha(30)),
         ),
         child: const Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(
-              Icons.info_outline,
-              size: 18,
-              color: Colors.blueGrey,
-            ),
+            Icon(Icons.info_outline, size: 18, color: Colors.blueGrey),
             SizedBox(width: 8),
             Expanded(
               child: Text(
                 'Activa el QR e ingresa su contenido para '
                 'ver la previsualización.',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Colors.black54,
-                ),
+                style: TextStyle(fontSize: 12, color: Colors.black54),
               ),
             ),
           ],
@@ -2006,18 +2014,13 @@ class _TicketConfigDialogState extends State<_TicketConfigDialog> {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: Theme.of(context).colorScheme.outlineVariant,
-        ),
+        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
       ),
       child: Column(
         children: [
           const Text(
             'Vista previa del QR',
-            style: TextStyle(
-              fontWeight: FontWeight.w800,
-              fontSize: 14,
-            ),
+            style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14),
           ),
           const SizedBox(height: 12),
           QrImageView(
@@ -2591,34 +2594,34 @@ class _SettingTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      decoration: BoxDecoration(
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Material(
         color: cs.surface,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: cs.primary.withValues(alpha: 0.25)),
-        boxShadow: [
-          BoxShadow(
-            color: cs.primary.withValues(alpha: 0.07),
-            blurRadius: 8,
-            offset: const Offset(0, 3),
-          ),
-        ],
-      ),
-      child: ListTile(
-        leading: Container(
-          width: 42,
-          height: 42,
-          decoration: BoxDecoration(
-            color: cs.primaryContainer,
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: Icon(icon, color: cs.onPrimaryContainer),
+        elevation: 0,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(color: cs.primary.withValues(alpha: 0.25)),
         ),
-        title: Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
-        subtitle: Text(subtitle),
-        trailing: Icon(Icons.chevron_right, color: cs.primary),
-        onTap: onTap,
+        clipBehavior: Clip.antiAlias,
+        child: ListTile(
+          leading: Container(
+            width: 42,
+            height: 42,
+            decoration: BoxDecoration(
+              color: cs.primaryContainer,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(icon, color: cs.onPrimaryContainer),
+          ),
+          title: Text(
+            title,
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
+          subtitle: Text(subtitle),
+          trailing: Icon(Icons.chevron_right, color: cs.primary),
+          onTap: onTap,
+        ),
       ),
     );
   }

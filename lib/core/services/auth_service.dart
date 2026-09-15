@@ -1,12 +1,14 @@
+import 'package:flutter/foundation.dart';
+
 import '../network/api_client.dart';
+import '../services/daily_cleanup_service.dart';
+import '../services/sync_service.dart';
 import '../storage/app_storage.dart';
 
 class AuthService {
   final ApiClient _apiClient;
 
-  AuthService({
-    ApiClient? apiClient,
-  }) : _apiClient = apiClient ?? ApiClient();
+  AuthService({ApiClient? apiClient}) : _apiClient = apiClient ?? ApiClient();
 
   // ============================================================
   // LOGIN
@@ -16,33 +18,23 @@ class AuthService {
     required String identifier,
     required String password,
   }) async {
-    final cleanIdentifier =
-        identifier.trim();
+    final cleanIdentifier = identifier.trim();
 
     if (cleanIdentifier.isEmpty) {
-      throw Exception(
-        'Ingresa tu usuario o número de usuario.',
-      );
+      throw Exception('Ingresa tu usuario o número de usuario.');
     }
 
     if (password.isEmpty) {
-      throw Exception(
-        'Ingresa tu contraseña.',
-      );
+      throw Exception('Ingresa tu contraseña.');
     }
 
     try {
-      final payload =
-          await _apiClient.login(
+      final payload = await _apiClient.login(
         identifier: cleanIdentifier,
         password: password,
       );
 
-      await _saveOnlineSession(
-        payload,
-        cleanIdentifier,
-        password,
-      );
+      await _saveOnlineSession(payload, cleanIdentifier, password);
 
       return payload;
     } catch (error) {
@@ -60,8 +52,7 @@ class AuthService {
         rethrow;
       }
 
-      final offline =
-          await loginOffline(
+      final offline = await loginOffline(
         identifier: cleanIdentifier,
         password: password,
       );
@@ -74,23 +65,13 @@ class AuthService {
         'offline': true,
         'token': null,
         'user': {
-          'id':
-              await AppStorage().getUserId(),
-          'name':
-              await AppStorage()
-                      .getUserName() ??
-                  'Usuario',
-          'numero_usuario':
-              cleanIdentifier,
+          'id': await AppStorage().getUserId(),
+          'name': await AppStorage().getUserName() ?? 'Usuario',
+          'numero_usuario': cleanIdentifier,
         },
         'empresa': {
-          'id':
-              await AppStorage()
-                  .getEmpresaId(),
-          'nombre':
-              await AppStorage()
-                      .getCompanyName() ??
-                  '',
+          'id': await AppStorage().getEmpresaId(),
+          'nombre': await AppStorage().getCompanyName() ?? '',
         },
       };
     }
@@ -105,177 +86,209 @@ class AuthService {
     String identifier,
     String password,
   ) async {
-    final token = (
-      payload['access_token'] ??
-      payload['token'] ??
-      ''
-    ).toString().trim();
+    final token = (payload['access_token'] ?? payload['token'] ?? '')
+        .toString()
+        .trim();
 
     if (token.isEmpty) {
-      throw Exception(
-        'El servidor no devolvió un token de acceso.',
-      );
+      throw Exception('El servidor no devolvió un token de acceso.');
     }
 
     final user = payload['user'] is Map
-        ? Map<String, dynamic>.from(
-            payload['user'] as Map,
-          )
+        ? Map<String, dynamic>.from(payload['user'] as Map)
         : <String, dynamic>{};
 
-    final empresa =
-        payload['empresa'] is Map
-            ? Map<String, dynamic>.from(
-                payload['empresa'] as Map,
-              )
-            : <String, dynamic>{};
+    final empresa = payload['empresa'] is Map
+        ? Map<String, dynamic>.from(payload['empresa'] as Map)
+        : <String, dynamic>{};
 
-    final userId =
-        _toInt(
-      user['id'] ??
-          user['user_id'],
-    );
+    final userId = _toInt(user['id'] ?? user['user_id']);
 
-    final companyId =
-        _toInt(
-      empresa['id'] ??
-          empresa['empresa_id'],
-    );
+    final companyId = _toInt(empresa['id'] ?? empresa['empresa_id']);
 
-    if (userId <= 0 ||
-        companyId <= 0) {
-      throw Exception(
-        'El servidor devolvió una sesión incompleta.',
-      );
+    if (userId <= 0 || companyId <= 0) {
+      throw Exception('El servidor devolvió una sesión incompleta.');
     }
 
-    final serverIdentifier = (
-      user['numero_usuario'] ??
-      user['numero_empleado'] ??
-      user['numero_socio'] ??
-      user['employee_number'] ??
-      user['username'] ??
-      identifier
-    ).toString().trim();
+    final serverIdentifier =
+        (user['numero_usuario'] ??
+                user['numero_empleado'] ??
+                user['numero_socio'] ??
+                user['employee_number'] ??
+                user['username'] ??
+                identifier)
+            .toString()
+            .trim();
 
     if (serverIdentifier.isEmpty) {
-      throw Exception(
-        'El usuario recibido por el servidor no es válido.',
-      );
+      throw Exception('El usuario recibido por el servidor no es válido.');
     }
 
-    final serverBusinessDate =
-        _extractBusinessDate(
-      payload,
-      empresa,
-    );
+    final serverBusinessDate = _extractBusinessDate(payload, empresa);
 
-    if (serverBusinessDate == null ||
-        serverBusinessDate.trim().isEmpty) {
-      throw Exception(
-        'El servidor no devolvió la fecha comercial.',
-      );
+    if (serverBusinessDate == null || serverBusinessDate.trim().isEmpty) {
+      throw Exception('El servidor no devolvió la fecha comercial.');
     }
 
-    final userName = (
-      user['name'] ??
-      user['username'] ??
-      'Usuario'
-    ).toString().trim();
+    // ==========================================================
+    // 🔴 CAMBIO DE DÍA COMERCIAL
+    // ==========================================================
+    final storage = AppStorage();
 
-    final companyName = (
-      empresa['nombre'] ??
-      empresa['name'] ??
-      ''
-    ).toString().trim();
+    final dayChanged = await storage.businessDateChanged(serverBusinessDate);
 
-    final role = (
-      user['rol'] ??
-      user['role'] ??
-      user['tipo_usuario'] ??
-      ''
-    ).toString().trim().toLowerCase();
+    if (dayChanged) {
+      final previousDate = await storage.getServerBusinessDateKey();
 
-    await AppStorage().saveSession(
+      debugPrint(
+        '🔄 Cambio de día comercial: '
+        '$previousDate → $serverBusinessDate',
+      );
+
+      try {
+        await _cleanupPreviousBusinessDay(
+          companyId: companyId,
+          userId: userId,
+          previousDate: previousDate,
+        );
+      } catch (e) {
+        debugPrint(
+          '⚠️ Cleanup de día anterior falló: $e. '
+          'Los pendientes quedan en LocalDb.',
+        );
+      }
+    }
+
+    final userName = (user['name'] ?? user['username'] ?? 'Usuario')
+        .toString()
+        .trim();
+
+    final companyName = (empresa['nombre'] ?? empresa['name'] ?? '')
+        .toString()
+        .trim();
+
+    final role = (user['rol'] ?? user['role'] ?? user['tipo_usuario'] ?? '')
+        .toString()
+        .trim()
+        .toLowerCase();
+
+    await storage.saveSession(
       token: token,
       userId: userId,
       empresaId: companyId,
       userName: userName,
       isLoggedIn: true,
-      offlineIdentifier:
-          serverIdentifier,
+      offlineIdentifier: serverIdentifier,
       offlinePassword: password,
-      serverBusinessDate:
-          serverBusinessDate,
+      serverBusinessDate: serverBusinessDate,
     );
 
     if (companyName.isNotEmpty) {
-      await AppStorage().saveCompanyName(
-        companyName,
-      );
+      await storage.saveCompanyName(companyName);
     }
 
     if (role.isNotEmpty) {
-      await AppStorage().saveRol(
-        role,
-      );
+      await storage.saveRol(role);
     }
 
-    final configuration =
-        empresa['configuracion'];
+    final configuration = empresa['configuracion'];
 
     if (configuration is Map) {
-      final settings =
-          Map<String, dynamic>.from(
-        configuration,
-      );
+      final settings = Map<String, dynamic>.from(configuration);
 
-      await AppStorage()
-          .saveOperationState({
-        'cajas_activas':
-            settings['cajas_activas'] ==
-                true,
-        'mesas_activas':
-            settings['mesas_activas'] ==
-                true,
+      await storage.saveOperationState({
+        'cajas_activas': settings['cajas_activas'] == true,
+        'mesas_activas': settings['mesas_activas'] == true,
         'caja_abierta': null,
       });
     }
 
-    final savedToken =
-        await AppStorage().getToken();
+    // ==========================================================
+    // 🔴 MARCAR PURGA DE CATÁLOGO
+    // ==========================================================
+    //
+    // Un dispositivo POS se usa con UNA SOLA empresa.
+    //
+    // Al iniciar sesión online, forzamos que el próximo sync de
+    // catálogos purgue productos/categorías/clientes/etc. que
+    // pudieran ser de una empresa anterior.
+    //
+    await storage.markCatalogPurgePending();
 
-    if (savedToken == null ||
-        savedToken.trim().isEmpty) {
-      throw Exception(
-        'El token no pudo guardarse correctamente.',
-      );
+    final savedToken = await storage.getToken();
+
+    if (savedToken == null || savedToken.trim().isEmpty) {
+      throw Exception('El token no pudo guardarse correctamente.');
     }
 
     if (savedToken.trim() != token) {
-      throw Exception(
-        'El token guardado no coincide con el token recibido.',
+      throw Exception('El token guardado no coincide con el token recibido.');
+    }
+
+    final savedUserId = await storage.getUserId();
+
+    final savedCompanyId = await storage.getEmpresaId();
+
+    if (savedUserId != userId || savedCompanyId != companyId) {
+      throw Exception('La sesión local no pudo guardarse correctamente.');
+    }
+
+    if (!await storage.isOfflineDayValid()) {
+      throw Exception('La sesión offline no quedó habilitada correctamente.');
+    }
+  }
+
+  /// Sincroniza lo pendiente del día anterior, archiva los
+  /// pendientes en LocalDb y borra la base diaria vieja.
+  ///
+  /// Los pendientes que no se pudieron sincronizar quedan en
+  /// LocalDb y se reintentarán en cada ciclo de sincronización.
+  Future<void> _cleanupPreviousBusinessDay({
+    required int companyId,
+    required int userId,
+    required String? previousDate,
+  }) async {
+    if (previousDate == null || previousDate.trim().isEmpty) {
+      return;
+    }
+
+    final previousDateParsed =
+        DateTime.tryParse(previousDate) ?? DateTime.now();
+
+    // 1. Intentar sincronizar lo pendiente.
+    try {
+      await SyncService().syncManual(
+        companyId: companyId,
+        userId: userId,
+        businessDate: previousDateParsed,
+      );
+    } catch (e) {
+      debugPrint(
+        '⚠️ Sync del día anterior falló: $e. '
+        'Los pendientes quedan en LocalDb.',
       );
     }
 
-    final savedUserId =
-        await AppStorage().getUserId();
-
-    final savedCompanyId =
-        await AppStorage().getEmpresaId();
-
-    if (savedUserId != userId ||
-        savedCompanyId != companyId) {
-      throw Exception(
-        'La sesión local no pudo guardarse correctamente.',
+    // 2. Archivar pendientes del día a LocalDb (histórico).
+    try {
+      await SyncService().archivePendingSalesFromDay(
+        companyId: companyId,
+        userId: userId,
+        businessDate: previousDateParsed,
       );
+    } catch (e) {
+      debugPrint('⚠️ Archivar pendientes falló: $e');
     }
 
-    if (!await AppStorage()
-        .isOfflineDayValid()) {
-      throw Exception(
-        'La sesión offline no quedó habilitada correctamente.',
+    // 3. Borrar la base diaria vieja.
+    try {
+      await DailyCleanupService().archiveAndClearDailyDatabase(
+        companyId: companyId,
+        userId: userId,
+        businessDate: previousDateParsed,
       );
+    } catch (e) {
+      debugPrint('⚠️ Borrar base diaria vieja falló: $e');
     }
   }
 
@@ -287,85 +300,58 @@ class AuthService {
     required String identifier,
     required String password,
   }) async {
-    final cleanIdentifier =
-        identifier.trim();
+    final cleanIdentifier = identifier.trim();
 
-    if (cleanIdentifier.isEmpty ||
-        password.isEmpty) {
+    if (cleanIdentifier.isEmpty || password.isEmpty) {
       return false;
     }
 
-    final storage =
-        AppStorage();
+    final storage = AppStorage();
 
-    final available =
-        await storage
-            .isOfflineLoginAvailable();
+    final available = await storage.isOfflineLoginAvailable();
 
     if (!available) {
       return false;
     }
 
-    final savedIdentifier =
-        await storage
-            .getOfflineIdentifier();
+    final savedIdentifier = await storage.getOfflineIdentifier();
 
-    final savedPassword =
-        await storage
-            .getOfflinePassword();
+    final savedPassword = await storage.getOfflinePassword();
 
-    if (savedIdentifier == null ||
-        savedPassword == null) {
+    if (savedIdentifier == null || savedPassword == null) {
       return false;
     }
 
-    if (savedIdentifier.trim() !=
-            cleanIdentifier ||
+    if (savedIdentifier.trim() != cleanIdentifier ||
         savedPassword != password) {
       return false;
     }
 
-    final userId =
-        await storage
-            .getLastOnlineUserId();
+    final userId = await storage.getLastOnlineUserId();
 
-    final companyId =
-        await storage
-            .getLastOnlineEmpresaId();
+    final companyId = await storage.getLastOnlineEmpresaId();
 
-    if (userId == null ||
-        companyId == null ||
-        userId <= 0 ||
-        companyId <= 0) {
+    if (userId == null || companyId == null || userId <= 0 || companyId <= 0) {
       return false;
     }
 
-    final businessDate =
-        await storage
-            .getServerBusinessDate();
+    final businessDate = await storage.getServerBusinessDate();
 
-    if (businessDate == null ||
-        businessDate.trim().isEmpty) {
+    if (businessDate == null || businessDate.trim().isEmpty) {
       return false;
     }
 
     await storage.saveOfflineSession(
       userId: userId,
       empresaId: companyId,
-      userName:
-          await storage.getUserName() ??
-              'Usuario',
-      companyName:
-          await storage.getCompanyName(),
-      role:
-          await storage.getRole(),
+      userName: await storage.getUserName() ?? 'Usuario',
+      companyName: await storage.getCompanyName(),
+      role: await storage.getRole(),
     );
 
-    final token =
-        await storage.getToken();
+    final token = await storage.getToken();
 
-    return token == null ||
-        token.trim().isEmpty;
+    return token == null || token.trim().isEmpty;
   }
 
   // ============================================================
@@ -377,59 +363,39 @@ class AuthService {
   }
 
   Future<bool> hasSession() async {
-    final storage =
-        AppStorage();
+    final storage = AppStorage();
 
     if (!await storage.isLoggedIn()) {
       return false;
     }
 
-    final userId =
-        await storage.getUserId();
+    final userId = await storage.getUserId();
 
-    final companyId =
-        await storage.getEmpresaId();
+    final companyId = await storage.getEmpresaId();
 
-    if (userId == null ||
-        companyId == null ||
-        userId <= 0 ||
-        companyId <= 0) {
+    if (userId == null || companyId == null || userId <= 0 || companyId <= 0) {
       await storage.logOut();
       return false;
     }
 
-    final token =
-        await storage.getToken();
+    final token = await storage.getToken();
 
     // ----------------------------------------------------------
     // SESIÓN ONLINE
     // ----------------------------------------------------------
 
-    if (token != null &&
-        token.trim().isNotEmpty) {
+    if (token != null && token.trim().isNotEmpty) {
       try {
-        final currentUser =
-            await _apiClient
-                .getCurrentUser();
+        final currentUser = await _apiClient.getCurrentUser();
 
-        final serverDate =
-            _extractBusinessDateFromUser(
-          currentUser,
-        );
+        final serverDate = _extractBusinessDateFromUser(currentUser);
 
-        if (serverDate != null &&
-            serverDate.trim().isNotEmpty) {
-          final localDate =
-              await storage
-                  .getServerBusinessDate();
+        if (serverDate != null && serverDate.trim().isNotEmpty) {
+          final localDate = await storage.getServerBusinessDate();
 
           if (localDate != null &&
-              _normalizeBusinessDate(
-                    localDate,
-                  ) !=
-                  _normalizeBusinessDate(
-                    serverDate,
-                  )) {
+              _normalizeBusinessDate(localDate) !=
+                  _normalizeBusinessDate(serverDate)) {
             // La sesión existe, pero pertenece
             // a un día comercial anterior.
             //
@@ -469,44 +435,29 @@ class AuthService {
   // ============================================================
 
   Future<bool> hasOnlineSession() async {
-    final storage =
-        AppStorage();
+    final storage = AppStorage();
 
     if (!await storage.isLoggedIn()) {
       return false;
     }
 
-    final token =
-        await storage.getToken();
+    final token = await storage.getToken();
 
-    if (token == null ||
-        token.trim().isEmpty) {
+    if (token == null || token.trim().isEmpty) {
       return false;
     }
 
     try {
-      final currentUser =
-          await _apiClient
-              .getCurrentUser();
+      final currentUser = await _apiClient.getCurrentUser();
 
-      final serverDate =
-          _extractBusinessDateFromUser(
-        currentUser,
-      );
+      final serverDate = _extractBusinessDateFromUser(currentUser);
 
-      if (serverDate != null &&
-          serverDate.trim().isNotEmpty) {
-        final localDate =
-            await storage
-                .getServerBusinessDate();
+      if (serverDate != null && serverDate.trim().isNotEmpty) {
+        final localDate = await storage.getServerBusinessDate();
 
         if (localDate != null &&
-            _normalizeBusinessDate(
-                  localDate,
-                ) !=
-                _normalizeBusinessDate(
-                  serverDate,
-                )) {
+            _normalizeBusinessDate(localDate) !=
+                _normalizeBusinessDate(serverDate)) {
           return false;
         }
       }
@@ -528,47 +479,31 @@ class AuthService {
   // ============================================================
 
   Future<bool> hasBusinessDateChanged() async {
-    final storage =
-        AppStorage();
+    final storage = AppStorage();
 
-    final token =
-        await storage.getToken();
+    final token = await storage.getToken();
 
-    if (token == null ||
-        token.trim().isEmpty) {
+    if (token == null || token.trim().isEmpty) {
       return false;
     }
 
     try {
-      final currentUser =
-          await _apiClient
-              .getCurrentUser();
+      final currentUser = await _apiClient.getCurrentUser();
 
-      final serverDate =
-          _extractBusinessDateFromUser(
-        currentUser,
-      );
+      final serverDate = _extractBusinessDateFromUser(currentUser);
 
-      if (serverDate == null ||
-          serverDate.trim().isEmpty) {
+      if (serverDate == null || serverDate.trim().isEmpty) {
         return false;
       }
 
-      final localDate =
-          await storage
-              .getServerBusinessDate();
+      final localDate = await storage.getServerBusinessDate();
 
-      if (localDate == null ||
-          localDate.trim().isEmpty) {
+      if (localDate == null || localDate.trim().isEmpty) {
         return false;
       }
 
-      return _normalizeBusinessDate(
-            localDate,
-          ) !=
-          _normalizeBusinessDate(
-            serverDate,
-          );
+      return _normalizeBusinessDate(localDate) !=
+          _normalizeBusinessDate(serverDate);
     } catch (error) {
       // Sin conexión no se debe asumir cambio de día.
       if (_isNetworkError(error)) {
@@ -583,16 +518,11 @@ class AuthService {
   // INFORMACIÓN DE FECHA COMERCIAL
   // ============================================================
 
-  Future<String?> getCurrentServerBusinessDate()
-      async {
+  Future<String?> getCurrentServerBusinessDate() async {
     try {
-      final currentUser =
-          await _apiClient
-              .getCurrentUser();
+      final currentUser = await _apiClient.getCurrentUser();
 
-      return _extractBusinessDateFromUser(
-        currentUser,
-      );
+      return _extractBusinessDateFromUser(currentUser);
     } catch (_) {
       return null;
     }
@@ -603,11 +533,9 @@ class AuthService {
   // ============================================================
 
   Future<String?> getToken() async {
-    final token =
-        await AppStorage().getToken();
+    final token = await AppStorage().getToken();
 
-    if (token == null ||
-        token.trim().isEmpty) {
+    if (token == null || token.trim().isEmpty) {
       return null;
     }
 
@@ -632,20 +560,13 @@ class AuthService {
         empresa['fecha_operacion'] ??
         empresa['fecha_comercial'];
 
-    return _normalizeBusinessDateValue(
-      rawDate,
-    );
+    return _normalizeBusinessDateValue(rawDate);
   }
 
-  String? _extractBusinessDateFromUser(
-    Map<String, dynamic> payload,
-  ) {
-    final empresa =
-        payload['empresa'] is Map
-            ? Map<String, dynamic>.from(
-                payload['empresa'] as Map,
-              )
-            : <String, dynamic>{};
+  String? _extractBusinessDateFromUser(Map<String, dynamic> payload) {
+    final empresa = payload['empresa'] is Map
+        ? Map<String, dynamic>.from(payload['empresa'] as Map)
+        : <String, dynamic>{};
 
     final rawDate =
         payload['business_date'] ??
@@ -657,14 +578,10 @@ class AuthService {
         empresa['fecha_operacion'] ??
         empresa['fecha_comercial'];
 
-    return _normalizeBusinessDateValue(
-      rawDate,
-    );
+    return _normalizeBusinessDateValue(rawDate);
   }
 
-  String? _normalizeBusinessDateValue(
-    dynamic value,
-  ) {
+  String? _normalizeBusinessDateValue(dynamic value) {
     if (value == null) {
       return null;
     }
@@ -673,33 +590,24 @@ class AuthService {
       return value.toIso8601String();
     }
 
-    final text =
-        value.toString().trim();
+    final text = value.toString().trim();
 
     if (text.isEmpty) {
       return null;
     }
 
-    final parsed =
-        DateTime.tryParse(text);
+    final parsed = DateTime.tryParse(text);
 
-    return parsed?.toIso8601String() ??
-        text;
+    return parsed?.toIso8601String() ?? text;
   }
 
-  String _normalizeBusinessDate(
-    String value,
-  ) {
-    final clean =
-        value.trim();
+  String _normalizeBusinessDate(String value) {
+    final clean = value.trim();
 
-    final parsed =
-        DateTime.tryParse(clean);
+    final parsed = DateTime.tryParse(clean);
 
     if (parsed != null) {
-      return parsed
-          .toIso8601String()
-          .substring(0, 10);
+      return parsed.toIso8601String().substring(0, 10);
     }
 
     // Si el backend ya entrega YYYY-MM-DD.
@@ -710,11 +618,8 @@ class AuthService {
     return clean;
   }
 
-  bool _isNetworkError(
-    Object error,
-  ) {
-    final message =
-        error.toString().toLowerCase();
+  bool _isNetworkError(Object error) {
+    final message = error.toString().toLowerCase();
 
     const networkTerms = [
       'connection',
@@ -743,16 +648,11 @@ class AuthService {
     return false;
   }
 
-  int _toInt(
-    dynamic value,
-  ) {
+  int _toInt(dynamic value) {
     if (value is num) {
       return value.toInt();
     }
 
-    return int.tryParse(
-          '${value ?? ''}',
-        ) ??
-        0;
+    return int.tryParse('${value ?? ''}') ?? 0;
   }
 }

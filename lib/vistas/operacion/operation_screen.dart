@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../core/database/local_db.dart';
@@ -29,13 +31,55 @@ class _OperationScreenState extends State<OperationScreen> {
   List<Map<String, dynamic>> _tables = const [];
   Map<int, int> _pendingByTable = const {};
 
+  // ============================================================
+  // TIEMPO REAL
+  // ============================================================
+
+  StreamSubscription<void>? _cashSub;
+  StreamSubscription<void>? _operationSub;
+
+  /// Evita que un stream dispare una recarga mientras ya hay una
+  /// recarga en curso.
+  bool _isReloading = false;
+
   @override
   void initState() {
     super.initState();
+
+    _cashSub = LocalDb.cashChanges.listen((_) => _reloadFromStream());
+    _operationSub = LocalDb.operationChanges.listen((_) => _reloadFromStream());
+
     _load();
   }
 
-  Future<void> _load() async {
+  @override
+  void dispose() {
+    _cashSub?.cancel();
+    _cashSub = null;
+
+    _operationSub?.cancel();
+    _operationSub = null;
+
+    super.dispose();
+  }
+
+  void _reloadFromStream() {
+    if (!mounted) return;
+    if (_isReloading) return;
+
+    _load(silent: true);
+  }
+
+  Future<void> _load({bool silent = false}) async {
+    if (!mounted) return;
+    if (_isReloading) return;
+
+    _isReloading = true;
+
+    if (!silent) {
+      setState(() => _loading = true);
+    }
+
     try {
       final localCash = await _cash.getCurrentCash();
 
@@ -81,6 +125,8 @@ class _OperationScreenState extends State<OperationScreen> {
       setState(() => _loading = false);
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text(error.toString())));
+    } finally {
+      _isReloading = false;
     }
   }
 
@@ -98,7 +144,8 @@ class _OperationScreenState extends State<OperationScreen> {
 
     try {
       final result = await _cash.openCash(montoApertura: amount);
-      await _load();
+
+      await _load(silent: true);
 
       final reapertura = result['reapertura'] == true;
 
@@ -128,7 +175,7 @@ class _OperationScreenState extends State<OperationScreen> {
         cashRegisterId: cashRegister['id'] as int,
         montoDeclarado: amount,
       );
-      await _load();
+      await _load(silent: true);
       _snack('Caja cerrada correctamente.');
     } catch (error) {
       _snack('Error al cerrar caja: $error', error: true);
@@ -194,26 +241,30 @@ class _OperationScreenState extends State<OperationScreen> {
       return const Center(child: CircularProgressIndicator());
     }
 
-    return RefreshIndicator(
-      onRefresh: _load,
-      child: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 100),
-        children: [
-          _buildCashCard(cs),
-          if (_tablesEnabled) ...[
-            const SizedBox(height: 20),
-            _buildTablesHeader(),
-            if (_tables.isEmpty)
-              const Padding(
-                padding: EdgeInsets.only(top: 12),
-                child: Text('No hay mesas configuradas.'),
-              ),
-            ..._tables.map(_buildTableCard),
+    return Container(
+      color: cs.surface,
+      child: RefreshIndicator(
+        onRefresh: _load,
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 100),
+          children: [
+            _buildCashCard(cs),
+            if (_tablesEnabled) ...[
+              const SizedBox(height: 20),
+              _buildTablesHeader(),
+              if (_tables.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.only(top: 12),
+                  child: Text('No hay mesas configuradas.'),
+                ),
+              ..._tables.map(_buildTableCard),
+            ],
           ],
-        ],
+        ),
       ),
     );
   }
+
   // ============================================================
   // CARD DE CAJA
   // ============================================================
@@ -323,15 +374,24 @@ class _OperationScreenState extends State<OperationScreen> {
   // ============================================================
 
   Widget _buildTablesHeader() {
+    final cs = Theme.of(context).colorScheme;
+
     return Row(
       children: [
-        const Expanded(
+        Expanded(
           child: Text(
             'Mesas',
-            style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            style: TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+              color: cs.onSurface,
+            ),
           ),
         ),
-        IconButton(onPressed: () => _editTable(), icon: const Icon(Icons.add)),
+        IconButton(
+          onPressed: () => _editTable(),
+          icon: Icon(Icons.add, color: cs.onSurface),
+        ),
       ],
     );
   }

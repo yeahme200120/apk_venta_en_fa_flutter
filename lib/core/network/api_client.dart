@@ -630,10 +630,6 @@ class ApiClient {
     return _putOperation('/api/v1/productos/$serverId', payload);
   }
 
-  // ============================================================
-  // CATÁLOGO
-  // ============================================================
-
   Future<Map<String, dynamic>> getCatalog({String? desde}) async {
     try {
       final response = await _dio.get(

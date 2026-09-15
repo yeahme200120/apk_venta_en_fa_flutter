@@ -14,12 +14,10 @@ import '../../core/services/printer_service.dart';
 import '../operacion/operation_screen.dart';
 import 'cart_screen.dart';
 import '../ventas/sale_detail_screen.dart';
+import '../widgets/app_scaffold.dart';
 
 class PosScreen extends StatefulWidget {
-  const PosScreen({
-    super.key,
-    this.onCartChanged,
-  });
+  const PosScreen({super.key, this.onCartChanged});
 
   final ValueChanged<int>? onCartChanged;
 
@@ -33,7 +31,14 @@ class PosScreenState extends State<PosScreen> {
   final ValueNotifier<List<CartItem>> _cartNotifier = ValueNotifier([]);
   final PrinterService _printerService = PrinterService();
 
+  // ============================================================
+  // SUSCRIPCIONES A SQLITE (TIEMPO REAL)
+  // ============================================================
+
   StreamSubscription<void>? _salesChangesSubscription;
+  StreamSubscription<void>? _operationChangesSubscription;
+  StreamSubscription<void>? _cashChangesSubscription;
+
   bool _refreshing = false;
   bool _syncing = false;
   bool _refreshQueued = false;
@@ -76,8 +81,26 @@ class PosScreenState extends State<PosScreen> {
   void initState() {
     super.initState();
 
+    // ============================================================
+    // TIEMPO REAL DESDE SQLITE
+    // ============================================================
+    //
+    // Cada vez que SQLite muta una tabla relevante, LocalDb emite
+    // un evento y aquí recargamos lo necesario. No hace falta que
+    // el usuario presione "Actualizar".
+    //
+    // ============================================================
+
     _salesChangesSubscription = LocalDb.salesChanges.listen((_) {
       _handleSalesChanged();
+    });
+
+    _operationChangesSubscription = LocalDb.operationChanges.listen((_) {
+      _handleOperationChanged();
+    });
+
+    _cashChangesSubscription = LocalDb.cashChanges.listen((_) {
+      _handleCashChanged();
     });
 
     _loadProducts();
@@ -94,6 +117,13 @@ class PosScreenState extends State<PosScreen> {
   void dispose() {
     _salesChangesSubscription?.cancel();
     _salesChangesSubscription = null;
+
+    _operationChangesSubscription?.cancel();
+    _operationChangesSubscription = null;
+
+    _cashChangesSubscription?.cancel();
+    _cashChangesSubscription = null;
+
     _searchController.dispose();
     _cartNotifier.dispose();
     super.dispose();
@@ -181,9 +211,7 @@ class PosScreenState extends State<PosScreen> {
       });
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('No fue posible actualizar la caja: $error'),
-        ),
+        SnackBar(content: Text('No fue posible actualizar la caja: $error')),
       );
     } finally {
       _refreshing = false;
@@ -204,6 +232,16 @@ class PosScreenState extends State<PosScreen> {
 
     _refreshQueued = false;
     await _loadProducts();
+  }
+
+  Future<void> _handleOperationChanged() async {
+    if (!mounted) return;
+    await _loadOperationState();
+  }
+
+  Future<void> _handleCashChanged() async {
+    if (!mounted) return;
+    await _loadOperationState();
   }
 
   Future<void> _refreshLocalDataSilently() async {
@@ -228,6 +266,7 @@ class PosScreenState extends State<PosScreen> {
       }
 
       await _loadProducts();
+      await _loadCategories();
       await _loadOperationState();
 
       if (!mounted) return;
@@ -242,9 +281,7 @@ class PosScreenState extends State<PosScreen> {
       if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('No fue posible actualizar la caja: $error'),
-        ),
+        SnackBar(content: Text('No fue posible actualizar la caja: $error')),
       );
     } finally {
       if (mounted) {
@@ -255,26 +292,76 @@ class PosScreenState extends State<PosScreen> {
     }
   }
 
-  Future<void> _loadOperationState() async {
-    var state = await AppStorage().getOperationState();
-
+  /// Devuelve `true` si la empresa maneja cajas y hay una caja
+  /// abierta en SQLite local para el día comercial en curso.
+  ///
+  /// Se consulta `cash_registers` directamente, no el backend,
+  /// porque el POS opera offline-first. El backend puede estar
+  /// caído y la caja igual está abierta localmente.
+  Future<bool> _hasOpenCashRegisterLocal() async {
     try {
-      state = await ApiClient().getOperationStatus();
+      final caja = await _db.getCurrentCashRegisterLocal();
+      return caja != null && caja['estado']?.toString() == 'abierta';
+    } catch (error) {
+      debugPrint('⚠️ No se pudo leer la caja local: $error');
+      return false;
+    }
+  }
+
+  Future<void> _loadOperationState() async {
+    // 1) Estado guardado (último conocido en el dispositivo).
+    final savedState = await AppStorage().getOperationState();
+
+    Map<String, dynamic> state = savedState is Map
+        ? Map<String, dynamic>.from(savedState)
+        : <String, dynamic>{};
+
+    // 2) Intentar refrescar desde el servidor.
+    try {
+      final remote = await ApiClient().getOperationStatus();
+      debugPrint('🟢 OperationStatus remoto: $remote');
+      state = Map<String, dynamic>.from(remote);
       await AppStorage().saveOperationState(state);
 
       if (state['mesas_activas'] == true) {
         _tables = await ApiClient().getTables();
       }
-    } catch (_) {
-      // Offline: usar último estado guardado.
+    } catch (error) {
+      // Offline: se conserva `state` (último estado guardado).
+      debugPrint('⚠️ No se pudo refrescar estado de operación: $error');
     }
 
     if (!mounted) return;
 
+    final cajasActivas = state['cajas_activas'] == true;
+    final mesasActivas = state['mesas_activas'] == true;
+
+    // ============================================================
+    // CAJA ABIERTA → SQLite es la fuente de verdad
+    // ============================================================
+    //
+    // 1. Si NO hay cajas activas en la empresa → no aplica.
+    // 2. Si SÍ hay cajas activas → consultamos `cash_registers` local.
+    //    La caja debe estar abierta para poder vender.
+    //
+    // ============================================================
+
+    final cajaAbierta = cajasActivas
+        ? await _hasOpenCashRegisterLocal()
+        : false;
+
+    if (!mounted) return;
+
     setState(() {
-      _cajasActivas = state['cajas_activas'] == true;
-      _mesasActivas = state['mesas_activas'] == true;
-      _cajaAbierta = state['caja_abierta'] != null;
+      _cajasActivas = cajasActivas;
+      _mesasActivas = mesasActivas;
+      _cajaAbierta = cajaAbierta;
+
+      // Si la empresa no tiene cajas o mesas activas, limpiar la mesa.
+      if (!cajasActivas || !mesasActivas) {
+        _selectedTableId = null;
+        _selectedTableName = null;
+      }
     });
   }
 
@@ -289,14 +376,15 @@ class PosScreenState extends State<PosScreen> {
             'product_id': item.product.id,
             'name': item.product.name,
             'quantity': item.quantity,
-            'unit_price': item.product.price,
-            'total': item.subtotal,
+            'unit_price': item.product.price.toDouble(),
+            'total': item.subtotal.toDouble(),
           },
         )
         .toList();
   }
 
-  double get _total => _cartNotifier.value.fold(0, (sum, item) => sum + item.subtotal);
+  double get _total =>
+      _cartNotifier.value.fold(0, (sum, item) => sum + item.subtotal);
 
   bool _canAddProduct(Product product) {
     // Los productos no inventariables no dependen del stock.
@@ -308,7 +396,28 @@ class PosScreenState extends State<PosScreen> {
     return product.stock > 0;
   }
 
+  /// ¿Podemos operar (agregar / cobrar / guardar)? Falla cerrado si la
+  /// empresa usa cajas y no hay caja abierta en SQLite local.
+  bool get _puedeOperar => !_cajasActivas || _cajaAbierta;
+
+  /// ¿Debemos mostrar el aviso de "caja cerrada"?
+  bool get _debeAvisarCajaCerrada => _cajasActivas && !_cajaAbierta;
+
   void _addToCart(Product product) {
+    if (_cajasActivas && !_cajaAbierta) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Abre la caja antes de agregar productos a la venta.',
+            ),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+      return;
+    }
+
     if (!_canAddProduct(product)) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -344,12 +453,7 @@ class PosScreenState extends State<PosScreen> {
         quantity: existing.quantity + 1,
       );
     } else {
-      current.add(
-        CartItem(
-          product: product,
-          quantity: 1,
-        ),
-      );
+      current.add(CartItem(product: product, quantity: 1));
     }
 
     _setCart(current);
@@ -364,7 +468,10 @@ class PosScreenState extends State<PosScreen> {
     if (newQty <= 0) {
       current.removeAt(index);
     } else {
-      current[index] = CartItem(product: current[index].product, quantity: newQty);
+      current[index] = CartItem(
+        product: current[index].product,
+        quantity: newQty,
+      );
     }
 
     _setCart(current);
@@ -393,6 +500,7 @@ class PosScreenState extends State<PosScreen> {
           onRemove: _removeFromCart,
           onClear: _clearCart,
           onCheckout: _confirmSale,
+          canCheckout: () => _puedeOperar,
         ),
       ),
     );
@@ -410,6 +518,7 @@ class PosScreenState extends State<PosScreen> {
           onRemove: _removeFromCart,
           onClear: _clearCart,
           onCheckout: _confirmSale,
+          canCheckout: () => _puedeOperar,
         ),
       ),
     );
@@ -422,13 +531,18 @@ class PosScreenState extends State<PosScreen> {
   // ============================================================
 
   Future<bool> _canOperateSale() async {
+    // Reconsultar estado: la caja pudo abrirse/cerrarse mientras
+    // el usuario armaba el carrito.
     await _loadOperationState();
 
     if (_cajasActivas && !_cajaAbierta) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Primero debes abrir la caja antes de registrar o cobrar ventas.'),
+            content: Text(
+              'Primero debes abrir la caja antes de registrar o cobrar ventas.',
+            ),
+            duration: Duration(seconds: 3),
           ),
         );
       }
@@ -436,6 +550,15 @@ class PosScreenState extends State<PosScreen> {
     }
     return true;
   }
+
+  /// Devuelve el `tableId` a enviar a `saveSale`.
+  /// Solo aplica si la empresa tiene cajas Y mesas activas.
+  int? get _tableIdForSale =>
+      (_cajasActivas && _mesasActivas) ? _selectedTableId : null;
+
+  /// Devuelve el `tableName` a enviar a `saveSale`.
+  String? get _tableNameForSale =>
+      (_cajasActivas && _mesasActivas) ? _selectedTableName : null;
 
   Future<void> _savePendingSale() async {
     if (_cartNotifier.value.isEmpty || !await _canOperateSale()) return;
@@ -448,16 +571,16 @@ class PosScreenState extends State<PosScreen> {
           payments: const [],
           total: _total,
           status: 'pending',
-          tableId: _selectedTableId,
-          tableName: _selectedTableName,
+          tableId: _tableIdForSale,
+          tableName: _tableNameForSale,
         );
       } else {
         final updated = await _db.updatePendingSale(
           saleId: _pendingSaleId!,
           items: _currentSaleItems(),
           total: _total,
-          tableId: _selectedTableId,
-          tableName: _selectedTableName,
+          tableId: _tableIdForSale,
+          tableName: _tableNameForSale,
         );
 
         if (!updated) {
@@ -466,15 +589,16 @@ class PosScreenState extends State<PosScreen> {
       }
     } on StateError catch (error) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error.message.toString())));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(error.message.toString())));
       }
       return;
     }
 
     if (!mounted) return;
 
+    _setCart([]);
     setState(() {
-      _setCart([]);
       _pendingSaleId = null;
       _selectedTableId = null;
       _selectedTableName = null;
@@ -483,7 +607,9 @@ class PosScreenState extends State<PosScreen> {
     await _loadProducts();
 
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Venta guardada como pendiente.')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Venta guardada como pendiente.')),
+      );
     }
   }
 
@@ -496,7 +622,9 @@ class PosScreenState extends State<PosScreen> {
 
     if (_cartNotifier.value.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Agrega productos al carrito antes de confirmar.')),
+        const SnackBar(
+          content: Text('Agrega productos al carrito antes de confirmar.'),
+        ),
       );
       return false;
     }
@@ -510,153 +638,174 @@ class PosScreenState extends State<PosScreen> {
 
       if (paymentData == null) return false;
 
-    final uuid = 'sale_${DateTime.now().millisecondsSinceEpoch}';
-    final saleItems = _currentSaleItems();
-    final payments = (paymentData['payments'] as List<Map<String, dynamic>>?) ?? const [];
+      final uuid = 'sale_${DateTime.now().millisecondsSinceEpoch}';
+      final saleItems = _currentSaleItems();
+      final payments =
+          (paymentData['payments'] as List<Map<String, dynamic>>?) ?? const [];
 
-    final breakdown = PaymentBreakdown(
-      total: _total,
-      payments: payments
-          .map(
-            (item) => PaymentEntry(
-              method: (item['method'] ?? 'Efectivo').toString(),
-              amount: (item['amount'] is num) ? (item['amount'] as num).toDouble() : 0.0,
-            ),
-          )
-          .toList(),
-    );
+      final breakdown = PaymentBreakdown(
+        total: _total,
+        payments: payments
+            .map(
+              (item) => PaymentEntry(
+                method: (item['method'] ?? 'Efectivo').toString(),
+                amount: (item['amount'] is num)
+                    ? (item['amount'] as num).toDouble()
+                    : 0.0,
+              ),
+            )
+            .toList(),
+      );
 
-    final cashAmount = breakdown.cashAmount;
-    final change = breakdown.change;
+      final cashAmount = breakdown.cashAmount;
+      final change = breakdown.change;
 
-    var saleId = _pendingSaleId;
+      var saleId = _pendingSaleId;
 
-    try {
-      if (saleId != null) {
-        final paid = await _db.payPendingSale(
-          saleId,
-          payments: payments,
-          paymentMethod: _paymentMethodLabel(payments),
-          cashReceived: cashAmount,
-          changeDue: change,
-        );
+      try {
+        if (saleId != null) {
+          final paid = await _db.payPendingSale(
+            saleId,
+            payments: payments,
+            paymentMethod: _paymentMethodLabel(payments),
+            cashReceived: cashAmount,
+            changeDue: change,
+          );
 
-        if (!paid) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('La venta pendiente ya no está disponible.')),
-            );
+          if (!paid) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('La venta pendiente ya no está disponible.'),
+                ),
+              );
+            }
+            return false;
           }
-          return false;
+        } else {
+          saleId = await _db.saveSale(
+            uuid: uuid,
+            items: saleItems,
+            payments: payments,
+            total: _total,
+            status: 'paid',
+            syncStatus: 'pending',
+            paymentMethod: _paymentMethodLabel(payments),
+            cashReceived: cashAmount,
+            changeDue: change,
+            tableId: _tableIdForSale,
+            tableName: _tableNameForSale,
+          );
         }
-      } else {
-        saleId = await _db.saveSale(
-          uuid: uuid,
-          items: saleItems,
+      } on StateError catch (error) {
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text(error.message.toString())));
+        }
+        return false;
+      }
+
+      if (saleId != null) {
+        final printResult = await _printSaleAutomatically(
+          saleId: saleId,
+          saleItems: saleItems,
           payments: payments,
           total: _total,
-          status: 'paid',
-          syncStatus: 'pending',
-          paymentMethod: _paymentMethodLabel(payments),
-          cashReceived: cashAmount,
-          changeDue: change,
+          cashAmount: cashAmount,
+          change: change,
+          uuid: uuid,
         );
-      }
-    } on StateError catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error.message.toString())));
-      }
-      return false;
-    }
 
-    if (saleId != null) {
-      final printResult = await _printSaleAutomatically(
-        saleId: saleId,
-        saleItems: saleItems,
-        payments: payments,
-        total: _total,
-        cashAmount: cashAmount,
-        change: change,
-        uuid: uuid,
-      );
+        if (mounted && !printResult.success) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'Venta guardada correctamente, pero no se imprimió el ticket: ${printResult.message}',
+              ),
+            ),
+          );
+        }
+      }
 
-      if (mounted && !printResult.success) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Venta guardada correctamente, pero no se imprimió el ticket: ${printResult.message}',
+      final generatedSale = saleId == null
+          ? null
+          : await _db.getSaleById(saleId);
+
+      if (generatedSale != null && mounted) {
+        final sale = generatedSale;
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => SaleDetailScreen(
+              sale: SaleModel(
+                id: int.tryParse('${sale['id'] ?? 0}') ?? 0,
+                uuidLocal: sale['uuid_local']?.toString() ?? uuid,
+                serverId: null,
+                businessDate: DateTime.now().toIso8601String().substring(0, 10),
+                total: (sale['total'] is num)
+                    ? (sale['total'] as num).toDouble()
+                    : _total,
+                syncStatus: sale['sync_status']?.toString() ?? 'pending',
+                status: sale['status']?.toString() ?? 'paid',
+                items: saleItems
+                    .map(
+                      (item) => SaleItemModel(
+                        id: 0,
+                        saleId: 0,
+                        productId:
+                            int.tryParse('${item['product_id'] ?? 0}') ?? 0,
+                        name: item['name']?.toString() ?? '',
+                        quantity: (item['quantity'] is num)
+                            ? (item['quantity'] as num).toDouble()
+                            : 0.0,
+                        unitPrice: (item['unit_price'] is num)
+                            ? (item['unit_price'] as num).toDouble()
+                            : 0.0,
+                        total: (item['total'] is num)
+                            ? (item['total'] as num).toDouble()
+                            : 0.0,
+                      ),
+                    )
+                    .toList(),
+                payments: payments
+                    .map(
+                      (item) => SalePaymentModel(
+                        id: 0,
+                        saleId: 0,
+                        method: item['method']?.toString() ?? '',
+                        amount: (item['amount'] is num)
+                            ? (item['amount'] as num).toDouble()
+                            : 0.0,
+                      ),
+                    )
+                    .toList(),
+                createdAt: DateTime.now().toIso8601String(),
+                updatedAt: DateTime.now().toIso8601String(),
+              ),
             ),
           ),
         );
       }
-    }
 
-    final generatedSale = saleId == null ? null : await _db.getSaleById(saleId);
+      if (!mounted) return false;
 
-    if (generatedSale != null && mounted) {
-      final sale = generatedSale;
-      Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (_) => SaleDetailScreen(
-            sale: SaleModel(
-              id: int.tryParse('${sale['id'] ?? 0}') ?? 0,
-              uuidLocal: sale['uuid_local']?.toString() ?? uuid,
-              serverId: null,
-              businessDate: DateTime.now().toIso8601String().substring(0, 10),
-              total: (sale['total'] is num) ? (sale['total'] as num).toDouble() : _total,
-              syncStatus: sale['sync_status']?.toString() ?? 'pending',
-              status: sale['status']?.toString() ?? 'paid',
-              items: saleItems
-                  .map(
-                    (item) => SaleItemModel(
-                      id: 0,
-                      saleId: 0,
-                      productId: int.tryParse('${item['product_id'] ?? 0}') ?? 0,
-                      name: item['name']?.toString() ?? '',
-                      quantity: (item['quantity'] is num) ? (item['quantity'] as num).toDouble() : 0.0,
-                      unitPrice: (item['unit_price'] is num) ? (item['unit_price'] as num).toDouble() : 0.0,
-                      total: (item['total'] is num) ? (item['total'] as num).toDouble() : 0.0,
-                    ),
-                  )
-                  .toList(),
-              payments: payments
-                  .map(
-                    (item) => SalePaymentModel(
-                      id: 0,
-                      saleId: 0,
-                      method: item['method']?.toString() ?? '',
-                      amount: (item['amount'] is num) ? (item['amount'] as num).toDouble() : 0.0,
-                    ),
-                  )
-                  .toList(),
-              createdAt: DateTime.now().toIso8601String(),
-              updatedAt: DateTime.now().toIso8601String(),
-            ),
-          ),
-        ),
-      );
-    }
-
-    if (!mounted) return false;
-
-    setState(() {
       _setCart([]);
-      _pendingSaleId = null;
-      _selectedTableId = null;
-      _selectedTableName = null;
-    });
+      setState(() {
+        _pendingSaleId = null;
+        _selectedTableId = null;
+        _selectedTableName = null;
+      });
 
-    await _loadProducts();
+      await _loadProducts();
 
-    if (!mounted) return false;
+      if (!mounted) return false;
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          'Venta pagada y guardada para sincronización. Cambio: \$${change.toStringAsFixed(2)}',
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Venta pagada y guardada para sincronización. Cambio: \$${change.toStringAsFixed(2)}',
+          ),
         ),
-      ),
-    );
+      );
 
       return true;
     } finally {
@@ -724,7 +873,10 @@ class PosScreenState extends State<PosScreen> {
         'id': sale['id'] ?? saleId,
         'uuid_local': sale['uuid_local'] ?? uuid,
         'folio': sale['folio'] ?? sale['numero'] ?? saleId,
-        'fecha': sale['created_at'] ?? sale['createdAt'] ?? DateTime.now().toIso8601String(),
+        'fecha':
+            sale['created_at'] ??
+            sale['createdAt'] ??
+            DateTime.now().toIso8601String(),
         'metodoPago': _paymentMethodLabel(payments),
         'subtotal': total,
         'total': total,
@@ -735,10 +887,7 @@ class PosScreenState extends State<PosScreen> {
         'items': saleItems,
       };
 
-      return await _printerService.printSale(
-        saleMap,
-        config: config,
-      );
+      return await _printerService.printSale(saleMap, config: config);
     } catch (error) {
       return PrintOperationResult.error(
         'No fue posible imprimir el ticket: $error',
@@ -762,6 +911,7 @@ class PosScreenState extends State<PosScreen> {
     );
   }
 
+  // ============================================================
   // VER PENDIENTES
   // ============================================================
 
@@ -791,14 +941,19 @@ class PosScreenState extends State<PosScreen> {
                   const ListTile(title: Text('No hay ventas pendientes.')),
                 ...sales.map(
                   (sale) => ListTile(
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 4,
+                      vertical: 4,
+                    ),
                     title: Text(
                       'Venta #${sale['id']} — \$${(sale['total'] as num).toStringAsFixed(2)}',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
                     subtitle: Text(
-                      sale['mesa_nombre'] == null ? 'Aún no pagada' : 'Mesa: ${sale['mesa_nombre']}',
+                      sale['mesa_nombre'] == null
+                          ? 'Aún no pagada'
+                          : 'Mesa: ${sale['mesa_nombre']}',
                     ),
                     trailing: IconButton(
                       tooltip: 'Eliminar pendiente',
@@ -810,7 +965,9 @@ class PosScreenState extends State<PosScreen> {
                       },
                     ),
                     onTap: () async {
-                      final items = await _db.getSaleItemsBySaleId(sale['id'] as int);
+                      final items = await _db.getSaleItemsBySaleId(
+                        sale['id'] as int,
+                      );
                       final cart = <CartItem>[];
 
                       for (final item in items) {
@@ -822,7 +979,12 @@ class PosScreenState extends State<PosScreen> {
                           }
                         }
                         if (product == null) continue;
-                        cart.add(CartItem(product: product, quantity: (item['quantity'] as num).toInt()));
+                        cart.add(
+                          CartItem(
+                            product: product,
+                            quantity: (item['quantity'] as num).toInt(),
+                          ),
+                        );
                       }
 
                       if (!mounted) return;
@@ -831,7 +993,9 @@ class PosScreenState extends State<PosScreen> {
 
                       setState(() {
                         _pendingSaleId = sale['id'] as int;
-                        _selectedTableId = sale['mesa_id'] as int?;
+                        _selectedTableId = (sale['mesa_id'] is num)
+                            ? (sale['mesa_id'] as num).toInt()
+                            : int.tryParse('${sale['mesa_id']}');
                         _selectedTableName = sale['mesa_nombre']?.toString();
                       });
 
@@ -855,6 +1019,9 @@ class PosScreenState extends State<PosScreen> {
     await Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const OperationScreen()),
     );
+
+    // La OperationScreen pudo abrir/cerrar la caja. Forzamos una
+    // recarga del estado por si el stream no llegó a dispararse.
     await _loadOperationState();
   }
 
@@ -866,116 +1033,86 @@ class PosScreenState extends State<PosScreen> {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
 
-    return Scaffold(
-      backgroundColor: colorScheme.surface,
-      appBar: AppBar(
-        elevation: 0,
-        backgroundColor: colorScheme.surfaceContainerHighest,
-        titleSpacing: 12,
-        title: Text(
-          'Caja',
-          overflow: TextOverflow.ellipsis,
-          style: TextStyle(
-            color: colorScheme.onSurface,
-            fontWeight: FontWeight.w800,
-          ),
+    return AppScaffold(
+      title: 'Caja',
+      actions: [
+        IconButton(
+          tooltip: 'Actualizar',
+          onPressed: _syncing ? null : _refreshAll,
+          icon: _syncing
+              ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white,
+                  ),
+                )
+              : const Icon(Icons.refresh),
         ),
-        actions: [
-          IconButton(
-            tooltip: 'Actualizar',
-            onPressed: _syncing ? null : _refreshAll,
-            icon: _syncing
-                ? SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: colorScheme.primary,
-                    ),
-                  )
-                : const Icon(Icons.refresh),
-          ),
-          ValueListenableBuilder<List<CartItem>>(
-            valueListenable: _cartNotifier,
-            builder: (context, items, child) {
-              return Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: Stack(
-                  clipBehavior: Clip.none,
-                  children: [
-                    IconButton(
-                      tooltip: items.isEmpty ? 'Carrito vacío' : 'Abrir carrito',
-                      onPressed: _openCart,
-                      icon: const Icon(Icons.shopping_cart_outlined),
-                    ),
-                    if (items.isNotEmpty)
-                      Positioned(
-                        right: 0,
-                        top: 0,
-                        child: Container(
-                          constraints: const BoxConstraints(minWidth: 18),
-                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: colorScheme.error,
-                            borderRadius: BorderRadius.circular(999),
-                          ),
-                          child: Text(
-                            '${items.length}',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              color: colorScheme.onError,
-                              fontSize: 10,
-                              fontWeight: FontWeight.w800,
-                            ),
+        ValueListenableBuilder<List<CartItem>>(
+          valueListenable: _cartNotifier,
+          builder: (context, items, child) {
+            return Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  IconButton(
+                    tooltip: items.isEmpty ? 'Carrito vacío' : 'Abrir carrito',
+                    onPressed: _openCart,
+                    icon: const Icon(Icons.shopping_cart_outlined),
+                  ),
+                  if (items.isNotEmpty)
+                    Positioned(
+                      right: 0,
+                      top: 0,
+                      child: Container(
+                        constraints: const BoxConstraints(minWidth: 18),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 5,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: colorScheme.error,
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: Text(
+                          '${items.length}',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: colorScheme.onError,
+                            fontSize: 10,
+                            fontWeight: FontWeight.w800,
                           ),
                         ),
                       ),
-                  ],
-                ),
-              );
-            },
-          ),
-        ],
-      ),
+                    ),
+                ],
+              ),
+            );
+          },
+        ),
+      ],
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : SafeArea(
               child: LayoutBuilder(
                 builder: (context, constraints) {
                   return CustomScrollView(
-                    keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+                    keyboardDismissBehavior:
+                        ScrollViewKeyboardDismissBehavior.onDrag,
                     slivers: [
                       SliverPadding(
                         padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
                         sliver: SliverToBoxAdapter(
                           child: Column(
                             children: [
-                              if (_cajasActivas)
-                                Card(
-                                  margin: EdgeInsets.zero,
-                                  child: ListTile(
-                                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                                    leading: Icon(_cajaAbierta ? Icons.lock_open_outlined : Icons.lock_outline),
-                                    title: Text(
-                                      _cajaAbierta ? 'Caja abierta' : 'Caja pendiente de apertura',
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                    subtitle: Text(
-                                      _mesasActivas
-                                          ? 'Mesas activas para esta empresa.'
-                                          : 'Mesas no activas para esta empresa.',
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                    trailing: _mesasActivas
-                                        ? const Icon(Icons.table_restaurant_outlined)
-                                        : null,
-                                    onTap: _openOperation,
-                                  ),
-                                ),
-                              if (_cajasActivas) const SizedBox(height: 10),
-                              if (_mesasActivas)
+                              if (_debeAvisarCajaCerrada) ...[
+                                _buildCajaCerradaBanner(context),
+                                const SizedBox(height: 10),
+                              ],
+                              if (_cajasActivas && _mesasActivas)
                                 DropdownButtonFormField<int?>(
                                   value: _selectedTableId,
                                   isExpanded: true,
@@ -995,7 +1132,8 @@ class PosScreenState extends State<PosScreen> {
                                           (table) =>
                                               table['activo'] != false &&
                                               (table['estado'] == 'libre' ||
-                                                  table['id'] == _selectedTableId),
+                                                  table['id'] ==
+                                                      _selectedTableId),
                                         )
                                         .map(
                                           (table) => DropdownMenuItem<int?>(
@@ -1013,11 +1151,13 @@ class PosScreenState extends State<PosScreen> {
                                         .firstOrNull;
                                     setState(() {
                                       _selectedTableId = tableId;
-                                      _selectedTableName = table?['nombre']?.toString();
+                                      _selectedTableName = table?['nombre']
+                                          ?.toString();
                                     });
                                   },
                                 ),
-                              if (_mesasActivas) const SizedBox(height: 10),
+                              if (_cajasActivas && _mesasActivas)
+                                const SizedBox(height: 10),
                               _buildSearch(context),
                               const SizedBox(height: 12),
                               _buildMetrics(context, constraints),
@@ -1056,7 +1196,9 @@ class PosScreenState extends State<PosScreen> {
                                   Text(
                                     'No se encontraron productos.',
                                     textAlign: TextAlign.center,
-                                    style: TextStyle(color: colorScheme.onSurfaceVariant),
+                                    style: TextStyle(
+                                      color: colorScheme.onSurfaceVariant,
+                                    ),
                                   ),
                                 ],
                               ),
@@ -1075,19 +1217,100 @@ class PosScreenState extends State<PosScreen> {
             ),
     );
   }
+
   // ============================================================
   // WIDGETS DE UI
   // ============================================================
+
+  Widget _buildCajaCerradaBanner(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: colorScheme.error.withAlpha(20),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: colorScheme.error.withAlpha(90),
+          width: 1,
+        ),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: colorScheme.error.withAlpha(30),
+              borderRadius: BorderRadius.circular(11),
+            ),
+            child: Icon(
+              Icons.lock_outline,
+              color: colorScheme.error,
+              size: 22,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Caja cerrada',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 14,
+                    color: colorScheme.error,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'Abre la caja para poder vender. Mientras esté cerrada, '
+                  'no se pueden agregar productos ni cobrar ventas.',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: colorScheme.onSurfaceVariant,
+                    height: 1.25,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          FilledButton(
+            onPressed: _openOperation,
+            style: FilledButton.styleFrom(
+              backgroundColor: colorScheme.error,
+              foregroundColor: colorScheme.onError,
+              padding: const EdgeInsets.symmetric(
+                horizontal: 14,
+                vertical: 10,
+              ),
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
+            child: const Text('Abrir caja'),
+          ),
+        ],
+      ),
+    );
+  }
 
   List<Product> get _filteredProducts {
     final query = _searchController.text.trim().toLowerCase();
 
     return _products.where((product) {
-      final matchesQuery = query.isEmpty ||
+      final matchesQuery =
+          query.isEmpty ||
           product.name.toLowerCase().contains(query) ||
           product.code.toLowerCase().contains(query);
 
-      final matchesCategory = _selectedCategoryId == null ||
+      final matchesCategory =
+          _selectedCategoryId == null ||
           product.categoryId == _selectedCategoryId;
 
       return matchesQuery && matchesCategory;
@@ -1252,16 +1475,13 @@ class PosScreenState extends State<PosScreen> {
   Widget _buildProductSliver(BuildContext context) {
     if (!_isCardView) {
       return SliverList(
-        delegate: SliverChildBuilderDelegate(
-          (context, index) {
-            final product = _filteredProducts[index];
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: _buildProductListItem(context, product),
-            );
-          },
-          childCount: _filteredProducts.length,
-        ),
+        delegate: SliverChildBuilderDelegate((context, index) {
+          final product = _filteredProducts[index];
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: _buildProductListItem(context, product),
+          );
+        }, childCount: _filteredProducts.length),
       );
     }
 
@@ -1269,27 +1489,22 @@ class PosScreenState extends State<PosScreen> {
       builder: (context, sliverConstraints) {
         final width = sliverConstraints.crossAxisExtent;
 
-        // La cantidad de columnas se adapta al espacio real disponible.
-        // En pantallas amplias las tarjetas quedan en una sola fila por
-        // registro; en tablet y móvil se reduce progresivamente.
         final columns = width >= 920
             ? 3
             : width >= 560
-                ? 2
-                : 1;
+            ? 2
+            : 1;
 
         final cardHeight = width >= 920
             ? 154.0
             : width >= 560
-                ? 158.0
-                : 152.0;
+            ? 158.0
+            : 152.0;
 
         return SliverGrid(
           delegate: SliverChildBuilderDelegate(
-            (context, index) => _buildProductCard(
-              context,
-              _filteredProducts[index],
-            ),
+            (context, index) =>
+                _buildProductCard(context, _filteredProducts[index]),
             childCount: _filteredProducts.length,
           ),
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
@@ -1305,7 +1520,7 @@ class PosScreenState extends State<PosScreen> {
 
   Widget _buildProductListItem(BuildContext context, Product product) {
     final colorScheme = Theme.of(context).colorScheme;
-    final canAdd = _canAddProduct(product);
+    final canAdd = _canAddProduct(product) && _puedeOperar;
 
     return Card(
       margin: EdgeInsets.zero,
@@ -1368,7 +1583,10 @@ class PosScreenState extends State<PosScreen> {
                 FilledButton(
                   onPressed: canAdd ? () => _addToCart(product) : null,
                   style: FilledButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
                     minimumSize: Size.zero,
                     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                   ),
@@ -1382,7 +1600,6 @@ class PosScreenState extends State<PosScreen> {
     );
   }
 
-
   Widget _buildMetrics(BuildContext context, BoxConstraints constraints) {
     final colorScheme = Theme.of(context).colorScheme;
     final width = constraints.maxWidth;
@@ -1390,8 +1607,8 @@ class PosScreenState extends State<PosScreen> {
     final columns = width >= 700
         ? 3
         : width >= 500
-            ? 2
-            : 1;
+        ? 2
+        : 1;
 
     final metrics = [
       _MetricCard(
@@ -1425,8 +1642,8 @@ class PosScreenState extends State<PosScreen> {
         mainAxisExtent: columns == 3
             ? 92
             : columns == 2
-                ? 94
-                : 88,
+            ? 94
+            : 88,
       ),
       itemBuilder: (context, index) => metrics[index],
     );
@@ -1434,7 +1651,7 @@ class PosScreenState extends State<PosScreen> {
 
   Widget _buildProductCard(BuildContext context, Product product) {
     final colorScheme = Theme.of(context).colorScheme;
-    final canAdd = _canAddProduct(product);
+    final canAdd = _canAddProduct(product) && _puedeOperar;
     final category = product.categoryId == null
         ? 'Sin categoría'
         : _categoryLabel(product.categoryId!);
@@ -1574,8 +1791,8 @@ class PosScreenState extends State<PosScreen> {
     final color = !product.isInventoriable
         ? colorScheme.primary
         : hasStock
-            ? colorScheme.primary
-            : colorScheme.error;
+        ? colorScheme.primary
+        : colorScheme.error;
     final label = !product.isInventoriable
         ? 'Sin inventario'
         : 'Stock: ${product.stock.toStringAsFixed(0)}';
@@ -1612,7 +1829,10 @@ class PosScreenState extends State<PosScreen> {
             fit: BoxFit.scaleDown,
             child: Text(
               product.code,
-              style: TextStyle(fontWeight: FontWeight.bold, color: Theme.of(context).colorScheme.onSurface),
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                color: Theme.of(context).colorScheme.onSurface,
+              ),
             ),
           ),
         ),
@@ -1628,20 +1848,28 @@ class PosScreenState extends State<PosScreen> {
           product.name,
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
-          style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15, color: Theme.of(context).colorScheme.onSurface),
+          style: TextStyle(
+            fontWeight: FontWeight.w700,
+            fontSize: 15,
+            color: Theme.of(context).colorScheme.onSurface,
+          ),
         ),
         const SizedBox(height: 6),
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
           decoration: BoxDecoration(
-            color: product.stock > 0 ? Theme.of(context).colorScheme.primary.withAlpha(23) : Theme.of(context).colorScheme.error.withAlpha(20),
+            color: product.stock > 0
+                ? Theme.of(context).colorScheme.primary.withAlpha(23)
+                : Theme.of(context).colorScheme.error.withAlpha(20),
             borderRadius: BorderRadius.circular(999),
           ),
           child: Text(
             'Stock: ${product.stock.toStringAsFixed(0)}',
             style: TextStyle(
               fontSize: 11,
-              color: product.stock > 0 ? Theme.of(context).colorScheme.primary : Theme.of(context).colorScheme.error,
+              color: product.stock > 0
+                  ? Theme.of(context).colorScheme.primary
+                  : Theme.of(context).colorScheme.error,
               fontWeight: FontWeight.w600,
             ),
           ),
@@ -1650,14 +1878,22 @@ class PosScreenState extends State<PosScreen> {
     );
   }
 
-  Widget _productBottomActions(BuildContext context, Product product, {bool fullWidth = false}) {
+  Widget _productBottomActions(
+    BuildContext context,
+    Product product, {
+    bool fullWidth = false,
+  }) {
     if (fullWidth) {
       return Row(
         children: [
           Expanded(
             child: Text(
               '\$${product.price.toStringAsFixed(2)}',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Theme.of(context).colorScheme.onSurface),
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w800,
+                color: Theme.of(context).colorScheme.onSurface,
+              ),
             ),
           ),
           ElevatedButton(
@@ -1666,7 +1902,9 @@ class PosScreenState extends State<PosScreen> {
               backgroundColor: Theme.of(context).colorScheme.primary,
               foregroundColor: Theme.of(context).colorScheme.onPrimary,
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
             ),
             child: const Text('Agregar'),
           ),
@@ -1680,7 +1918,11 @@ class PosScreenState extends State<PosScreen> {
         FittedBox(
           child: Text(
             '\$${product.price.toStringAsFixed(2)}',
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Theme.of(context).colorScheme.onSurface),
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w800,
+              color: Theme.of(context).colorScheme.onSurface,
+            ),
           ),
         ),
         const SizedBox(height: 8),
@@ -1690,7 +1932,9 @@ class PosScreenState extends State<PosScreen> {
             backgroundColor: Theme.of(context).colorScheme.primary,
             foregroundColor: Theme.of(context).colorScheme.onPrimary,
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
           ),
           child: const Text('Agregar'),
         ),
@@ -1704,9 +1948,7 @@ class PosScreenState extends State<PosScreen> {
 // ============================================================
 
 class _PaymentDialog extends StatefulWidget {
-  const _PaymentDialog({
-    required this.total,
-  });
+  const _PaymentDialog({required this.total});
 
   final double total;
 
@@ -1745,10 +1987,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
 
   void _addInitialCashRow() {
     _rows.add(
-      _createRow(
-        method: 'Efectivo',
-        amount: widget.total.toStringAsFixed(2),
-      ),
+      _createRow(method: 'Efectivo', amount: widget.total.toStringAsFixed(2)),
     );
   }
 
@@ -1781,9 +2020,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
     }
 
     setState(() {
-      _rows.add(
-        _createRow(),
-      );
+      _rows.add(_createRow());
     });
   }
 
@@ -1792,9 +2029,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
       return;
     }
 
-    final index = _rows.indexWhere(
-      (row) => row.id == rowId,
-    );
+    final index = _rows.indexWhere((row) => row.id == rowId);
 
     if (index < 0) {
       return;
@@ -1806,18 +2041,13 @@ class _PaymentDialogState extends State<_PaymentDialog> {
       _rows.removeAt(index);
     });
 
-    // Se elimina después del setState para que el árbol no tenga
-    // una referencia a un controller ya destruido durante el rebuild.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       row.controller.dispose();
     });
   }
 
   double _parseMoney(String value) {
-    final normalized = value
-        .replaceAll(',', '')
-        .replaceAll(r'$','')
-        .trim();
+    final normalized = value.replaceAll(',', '').replaceAll(r'$', '').trim();
 
     if (normalized.isEmpty || normalized == '.') {
       return 0.0;
@@ -1834,9 +2064,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
             amount: _parseMoney(row.controller.text),
           ),
         )
-        .where(
-          (entry) => entry.amount > 0,
-        )
+        .where((entry) => entry.amount > 0)
         .toList();
   }
 
@@ -1848,30 +2076,20 @@ class _PaymentDialogState extends State<_PaymentDialog> {
     final entries = _entries();
 
     if (entries.isEmpty) {
-      _showMessage(
-        'Debes indicar al menos un pago.',
-        isError: true,
-      );
+      _showMessage('Debes indicar al menos un pago.', isError: true);
       return;
     }
 
-    final breakdown = PaymentBreakdown(
-      total: widget.total,
-      payments: entries,
-    );
+    final breakdown = PaymentBreakdown(total: widget.total, payments: entries);
 
     if (breakdown.totalCollected + 0.005 < widget.total) {
       final falta = breakdown.shortfall.toStringAsFixed(2);
 
-      _showMessage(
-        'Falta por cobrar: \$$falta',
-        isError: true,
-      );
+      _showMessage('Falta por cobrar: \$$falta', isError: true);
       return;
     }
 
-    final hasNonCashOverage =
-        breakdown.nonCashAmount > widget.total + 0.005;
+    final hasNonCashOverage = breakdown.nonCashAmount > widget.total + 0.005;
 
     if (hasNonCashOverage) {
       _showMessage(
@@ -1893,29 +2111,23 @@ class _PaymentDialogState extends State<_PaymentDialog> {
     });
   }
 
-  void _showMessage(
-    String message, {
-    bool isError = false,
-  }) {
+  void _showMessage(String message, {bool isError = false}) {
     if (!mounted) {
       return;
     }
 
-    final messenger =
-        ScaffoldMessenger.maybeOf(context);
+    final messenger = ScaffoldMessenger.maybeOf(context);
 
     if (messenger == null) {
       return;
     }
 
-    messenger
-        .hideCurrentSnackBar();
+    messenger.hideCurrentSnackBar();
 
     messenger.showSnackBar(
       SnackBar(
         content: Text(message),
-        backgroundColor:
-            isError ? Theme.of(context).colorScheme.error : null,
+        backgroundColor: isError ? Theme.of(context).colorScheme.error : null,
       ),
     );
   }
@@ -1927,34 +2139,25 @@ class _PaymentDialogState extends State<_PaymentDialog> {
       content: SizedBox(
         width: double.maxFinite,
         child: ConstrainedBox(
-          constraints: const BoxConstraints(
-            maxHeight: 600,
-          ),
+          constraints: const BoxConstraints(maxHeight: 600),
           child: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment:
-                  CrossAxisAlignment.start,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Container(
                   width: double.infinity,
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.primary
-                        .withAlpha(26),
-                    borderRadius:
-                        BorderRadius.circular(10),
+                    color: Theme.of(context).colorScheme.primary.withAlpha(26),
+                    borderRadius: BorderRadius.circular(10),
                   ),
                   child: Column(
-                    crossAxisAlignment:
-                        CrossAxisAlignment.start,
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       const Text(
                         'Monto a cobrar',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Colors.black54,
-                        ),
+                        style: TextStyle(fontSize: 12, color: Colors.black54),
                       ),
                       const SizedBox(height: 2),
                       FittedBox(
@@ -1975,8 +2178,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                 ..._rows.map(
                   (row) => Padding(
                     key: ValueKey<int>(row.id),
-                    padding:
-                        const EdgeInsets.only(bottom: 10),
+                    padding: const EdgeInsets.only(bottom: 10),
                     child: _buildPaymentRow(row),
                   ),
                 ),
@@ -1984,12 +2186,8 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                   alignment: Alignment.centerLeft,
                   child: TextButton.icon(
                     onPressed: _addPaymentRow,
-                    icon: const Icon(
-                      Icons.add_circle_outline,
-                    ),
-                    label: const Text(
-                      'Agregar tipo de pago',
-                    ),
+                    icon: const Icon(Icons.add_circle_outline),
+                    label: const Text('Agregar tipo de pago'),
                   ),
                 ),
                 const SizedBox(height: 8),
@@ -2008,46 +2206,34 @@ class _PaymentDialogState extends State<_PaymentDialog> {
         ),
         FilledButton.icon(
           onPressed: _submit,
-          icon: const Icon(
-            Icons.check_circle_outline,
-          ),
+          icon: const Icon(Icons.check_circle_outline),
           label: const Text('Guardar cobro'),
         ),
       ],
     );
   }
 
-  Widget _buildPaymentRow(
-    _PaymentRowData row,
-  ) {
+  Widget _buildPaymentRow(_PaymentRowData row) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Row(
           children: [
-            Expanded(
-              flex: 2,
-              child: _buildMethodDropdown(row),
-            ),
+            Expanded(flex: 2, child: _buildMethodDropdown(row)),
             const SizedBox(width: 8),
             Expanded(
               flex: 3,
               child: TextField(
-                key: ValueKey<String>(
-                  'amount-${row.id}',
-                ),
+                key: ValueKey<String>('amount-${row.id}'),
                 controller: row.controller,
-                keyboardType:
-                    const TextInputType.numberWithOptions(
+                keyboardType: const TextInputType.numberWithOptions(
                   decimal: true,
                 ),
-                textInputAction:
-                    TextInputAction.done,
+                textInputAction: TextInputAction.done,
                 decoration: InputDecoration(
                   labelText: 'Cantidad',
                   border: OutlineInputBorder(
-                    borderRadius:
-                        BorderRadius.circular(8),
+                    borderRadius: BorderRadius.circular(8),
                   ),
                 ),
                 onChanged: (_) {
@@ -2063,9 +2249,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
               onPressed: _rows.length > 1
                   ? () => _removePaymentRow(row.id)
                   : null,
-              icon: const Icon(
-                Icons.delete_outline,
-              ),
+              icon: const Icon(Icons.delete_outline),
             ),
           ],
         ),
@@ -2073,39 +2257,24 @@ class _PaymentDialogState extends State<_PaymentDialog> {
     );
   }
 
-  Widget _buildMethodDropdown(
-    _PaymentRowData row,
-  ) {
+  Widget _buildMethodDropdown(_PaymentRowData row) {
     return Container(
       height: 56,
       decoration: BoxDecoration(
-        border: Border.all(
-          color: Colors.grey.shade400,
-        ),
-        borderRadius:
-            BorderRadius.circular(8),
+        border: Border.all(color: Colors.grey.shade400),
+        borderRadius: BorderRadius.circular(8),
       ),
       child: DropdownButtonHideUnderline(
         child: DropdownButton<String>(
-          key: ValueKey<String>(
-            'method-${row.id}',
-          ),
-          value: _methods.contains(row.method)
-              ? row.method
-              : _methods.first,
+          key: ValueKey<String>('method-${row.id}'),
+          value: _methods.contains(row.method) ? row.method : _methods.first,
           isExpanded: true,
-          padding: const EdgeInsets.symmetric(
-            horizontal: 12,
-          ),
+          padding: const EdgeInsets.symmetric(horizontal: 12),
           items: _methods
               .map(
                 (method) => DropdownMenuItem<String>(
                   value: method,
-                  child: Text(
-                    method,
-                    overflow:
-                        TextOverflow.ellipsis,
-                  ),
+                  child: Text(method, overflow: TextOverflow.ellipsis),
                 ),
               )
               .toList(),
@@ -2128,50 +2297,33 @@ class _PaymentDialogState extends State<_PaymentDialog> {
         .map(
           (row) => PaymentEntry(
             method: row.method,
-            amount: _parseMoney(
-              row.controller.text,
-            ),
+            amount: _parseMoney(row.controller.text),
           ),
         )
         .toList();
 
-    final breakdown = PaymentBreakdown(
-      total: widget.total,
-      payments: entries,
-    );
+    final breakdown = PaymentBreakdown(total: widget.total, payments: entries);
 
-    final totalCollected =
-        breakdown.totalCollected;
-    final cashAmount =
-        breakdown.cashAmount;
-    final change =
-        breakdown.change;
-    final excess =
-        breakdown.excess;
-    final shortfall =
-        breakdown.shortfall;
+    final totalCollected = breakdown.totalCollected;
+    final cashAmount = breakdown.cashAmount;
+    final change = breakdown.change;
+    final excess = breakdown.excess;
+    final shortfall = breakdown.shortfall;
 
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: Colors.grey.shade100,
-        borderRadius:
-            BorderRadius.circular(10),
-        border: Border.all(
-          color: Colors.grey.shade300,
-        ),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.grey.shade300),
       ),
       child: Column(
-        crossAxisAlignment:
-            CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
             'Resumen de cobro',
-            style: TextStyle(
-              fontWeight: FontWeight.w700,
-              fontSize: 13,
-            ),
+            style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
           ),
           const SizedBox(height: 10),
           _summaryRow(
@@ -2195,15 +2347,10 @@ class _PaymentDialogState extends State<_PaymentDialog> {
             const SizedBox(height: 6),
           ],
           ...entries
-              .where(
-                (entry) =>
-                    entry.method != 'Efectivo' &&
-                    entry.amount > 0,
-              )
+              .where((entry) => entry.method != 'Efectivo' && entry.amount > 0)
               .map(
                 (entry) => Padding(
-                  padding:
-                      const EdgeInsets.only(bottom: 6),
+                  padding: const EdgeInsets.only(bottom: 6),
                   child: _summaryRow(
                     '${entry.method}:',
                     '\$${entry.amount.toStringAsFixed(2)}',
@@ -2220,27 +2367,19 @@ class _PaymentDialogState extends State<_PaymentDialog> {
                 '\$${change.toStringAsFixed(2)}',
               )
             else
-              _buildWarningBox(
-                '\$${excess.toStringAsFixed(2)}',
-              ),
+              _buildWarningBox('\$${excess.toStringAsFixed(2)}'),
           ] else if (totalCollected < widget.total - 0.005)
-            _buildErrorBox(
-              '\$${shortfall.toStringAsFixed(2)}',
-            )
+            _buildErrorBox('\$${shortfall.toStringAsFixed(2)}')
           else
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(8),
               decoration: BoxDecoration(
-                color:
-                    Theme.of(context).colorScheme.primary
-                        .withAlpha(20),
-                borderRadius:
-                    BorderRadius.circular(6),
+                color: Theme.of(context).colorScheme.primary.withAlpha(20),
+                borderRadius: BorderRadius.circular(6),
               ),
               child: Row(
-                mainAxisAlignment:
-                    MainAxisAlignment.spaceBetween,
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Text(
                     'Cobro exacto',
@@ -2263,20 +2402,13 @@ class _PaymentDialogState extends State<_PaymentDialog> {
     );
   }
 
-  Widget _summaryRow(
-    String label,
-    String value, {
-    bool small = false,
-  }) {
+  Widget _summaryRow(String label, String value, {bool small = false}) {
     return Row(
       children: [
         Expanded(
           child: Text(
             label,
-            style: TextStyle(
-              fontSize: small ? 11 : 12,
-              color: Colors.black54,
-            ),
+            style: TextStyle(fontSize: small ? 11 : 12, color: Colors.black54),
           ),
         ),
         const SizedBox(width: 8),
@@ -2291,19 +2423,13 @@ class _PaymentDialogState extends State<_PaymentDialog> {
     );
   }
 
-  Widget _buildSuccessBox(
-    String label,
-    String value,
-  ) {
+  Widget _buildSuccessBox(String label, String value) {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
-        color:
-            Theme.of(context).colorScheme.primary
-                .withAlpha(20),
-        borderRadius:
-            BorderRadius.circular(6),
+        color: Theme.of(context).colorScheme.primary.withAlpha(20),
+        borderRadius: BorderRadius.circular(6),
       ),
       child: Row(
         children: [
@@ -2336,8 +2462,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.tertiary.withAlpha(26),
-        borderRadius:
-            BorderRadius.circular(6),
+        borderRadius: BorderRadius.circular(6),
         border: Border.all(
           color: Theme.of(context).colorScheme.tertiary.withAlpha(100),
         ),
@@ -2374,8 +2499,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.error.withAlpha(20),
-        borderRadius:
-            BorderRadius.circular(6),
+        borderRadius: BorderRadius.circular(6),
       ),
       child: Row(
         children: [
@@ -2425,10 +2549,7 @@ class _MetricCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: colorScheme.surface,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: color.withAlpha(65),
-          width: 1,
-        ),
+        border: Border.all(color: color.withAlpha(65), width: 1),
         boxShadow: [
           BoxShadow(
             color: color.withAlpha(18),
@@ -2446,11 +2567,7 @@ class _MetricCard extends StatelessWidget {
               color: color.withAlpha(22),
               borderRadius: BorderRadius.circular(11),
             ),
-            child: Icon(
-              icon,
-              color: color,
-              size: 22,
-            ),
+            child: Icon(icon, color: color, size: 22),
           ),
           const SizedBox(width: 11),
           Expanded(

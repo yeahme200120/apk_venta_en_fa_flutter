@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import '../core/network/api_client.dart';
 import '../core/storage/app_storage.dart';
 import 'caja/cash_management_screen.dart';
-import 'daily_stats/daily_stats_screen_backup.dart';
+import 'daily_stats/daily_stats_screen.dart';
 import 'operacion/operation_screen.dart';
 import 'pos/pos_screen.dart';
 import 'settings/settings_screen.dart';
@@ -15,7 +15,8 @@ class HomeShell extends StatefulWidget {
   State<HomeShell> createState() => _HomeShellState();
 }
 
-class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
+class _HomeShellState extends State<HomeShell>
+    with WidgetsBindingObserver, TickerProviderStateMixin {
   final GlobalKey<PosScreenState> _posKey = GlobalKey<PosScreenState>();
 
   int _currentIndex = 0;
@@ -24,19 +25,53 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
   // Sub-tab dentro de "Caja": 0 = Operación, 1 = Movimientos
   int _cashSubIndex = 0;
 
-  // ── Estado operativo ────────────────────────────────────────
+  // NO usar late final. Se inicializa en initState y se guarda como nullable.
+  TabController? _cashTabController;
+
   bool _cajasActivas = false;
   bool _esCajero = false;
 
   @override
   void initState() {
     super.initState();
+
+    // Inicialización inmediata y síncrona
+    _initCashTabController();
+
     WidgetsBinding.instance.addObserver(this);
     _loadOperationState();
   }
 
+  void _initCashTabController() {
+    _cashTabController?.removeListener(_onCashTabChanged);
+    _cashTabController?.dispose();
+
+    final controller = TabController(length: 2, vsync: this);
+
+    controller.addListener(() {
+      if (!mounted) return;
+      _onCashTabChanged();
+    });
+
+    _cashTabController = controller;
+  }
+
+  void _onCashTabChanged() {
+    final controller = _cashTabController;
+    if (controller == null) return;
+    if (controller.index == _cashSubIndex) return;
+
+    setState(() {
+      _cashSubIndex = controller.index;
+    });
+  }
+
   @override
   void dispose() {
+    _cashTabController?.removeListener(_onCashTabChanged);
+    _cashTabController?.dispose();
+    _cashTabController = null;
+
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -79,22 +114,14 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
     } catch (_) {
       // Modo offline o API no disponible.
     }
-
-    if (rolLocal == null) {
-      // Nada que hacer hasta que el usuario vuelva a hacer login online.
-    }
   }
 
   // ============================================================
   // LÓGICA DE NAVEGACIÓN
   // ============================================================
 
-  /// La tab Caja solo se muestra cuando:
-  ///   - cajas_activas == true  (configuración de la empresa)
-  ///   - el usuario tiene rol cajero, admin o superadmin
   bool get _showCajaTab => _cajasActivas && _esCajero;
 
-  /// Índice real del tab "Caja" (o -1 si no está visible).
   int get _cajaTabIndex => _showCajaTab ? 2 : -1;
 
   List<Widget> _buildPages() {
@@ -139,98 +166,71 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
     ];
   }
 
-  /// Tab "Caja" con dos sub-vistas internas: Operación y Movimientos.
-  /// Tab "Caja" con dos sub-vistas internas: Operación y Movimientos.
   Widget _buildCashTab() {
-    final cs = Theme.of(context).colorScheme;
-
-    return Column(
-      children: [
-        // ─────────────────────────────────────────────
-        // Header con el SegmentedButton bien espaciado
-        // ─────────────────────────────────────────────
-        Material(
-          color: cs.surface,
-          elevation: 1,
-          child: SafeArea(
-            bottom: false,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
-              child: SizedBox(
-                width: double.infinity,
-                child: SegmentedButton<int>(
-                  segments: const [
-                    ButtonSegment(
-                      value: 0,
-                      icon: Icon(Icons.tune, size: 16),
-                      label: Text('Operación'),
-                    ),
-                    ButtonSegment(
-                      value: 1,
-                      icon: Icon(
-                        Icons.account_balance_wallet_outlined,
-                        size: 16,
-                      ),
-                      label: Text('Movimientos'),
-                    ),
-                  ],
-                  selected: {_cashSubIndex},
-                  onSelectionChanged: (set) {
-                    setState(() => _cashSubIndex = set.first);
-                  },
-                  showSelectedIcon: false,
-                  style: ButtonStyle(
-                    visualDensity: VisualDensity.compact,
-                    padding: WidgetStateProperty.all(
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-
-        // ─────────────────────────────────────────────
-        // Contenido del sub-tab
-        // ─────────────────────────────────────────────
-        Expanded(
-          child: IndexedStack(
-            index: _cashSubIndex,
-            children: const [OperationScreen(), CashManagementScreen()],
-          ),
-        ),
+    return IndexedStack(
+      index: _cashSubIndex.clamp(0, 1),
+      children: const [
+        OperationScreen(),
+        CashManagementScreen(),
       ],
     );
   }
+
   // ============================================================
   // BUILD
   // ============================================================
 
   @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    final pages = _buildPages();
-    final destinations = _buildDestinations();
+Widget build(BuildContext context) {
+  final colors = Theme.of(context).colorScheme;
+  final pages = _buildPages();
+  final destinations = _buildDestinations();
 
-    final safeIndex = _currentIndex.clamp(0, pages.length - 1);
+  final safeIndex = _currentIndex.clamp(0, pages.length - 1);
 
-    return Scaffold(
-      backgroundColor: colors.surface,
-      body: IndexedStack(index: safeIndex, children: pages),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: safeIndex,
-        onDestinationSelected: (index) {
-          setState(() => _currentIndex = index);
+  // 🔑 Aquí está el fix: no uses _cajaTabIndex, compara directo.
+  final estaEnCaja = _showCajaTab && safeIndex == 2;
 
-          // Al abrir la tab Caja, refrescar el estado operativo
-          // y volver al sub-tab de Operación.
-          if (index == _cajaTabIndex) {
-            _loadOperationState();
-          }
-        },
-        destinations: destinations,
-      ),
-    );
-  }
+  return Scaffold(
+    backgroundColor: colors.surface,
+
+    appBar: estaEnCaja
+        ? AppBar(
+            title: Text(
+              _cashSubIndex == 0 ? 'Operación' : 'Movimientos',
+              style: const TextStyle(fontWeight: FontWeight.w800),
+            ),
+            bottom: _cashTabController != null
+                ? TabBar(
+                    controller: _cashTabController,
+                    labelColor: Colors.white,
+                    unselectedLabelColor: Colors.white70,
+                    indicatorColor: Colors.white,
+                    tabs: const [
+                      Tab(text: 'Operación'),
+                      Tab(text: 'Movimientos'),
+                    ],
+                  )
+                : null,
+          )
+        : null,
+
+    body: IndexedStack(
+      index: safeIndex,
+      children: pages,
+    ),
+
+    bottomNavigationBar: NavigationBar(
+      selectedIndex: safeIndex,
+      onDestinationSelected: (index) {
+        setState(() => _currentIndex = index);
+
+        if (_showCajaTab && index == 2) {
+          _loadOperationState();
+        }
+      },
+      destinations: destinations,
+    ),
+  );
+}
 }

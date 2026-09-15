@@ -1,7 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../core/database/local_db.dart';
 import '../../core/services/cash_service.dart';
+import '../../core/storage/app_storage.dart';
+import '../widgets/app_scaffold.dart';
 
 class CashManagementScreen extends StatefulWidget {
   const CashManagementScreen({super.key});
@@ -23,74 +27,210 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
   List<Map<String, dynamic>> _movimientosPorTipoMetodo = const [];
   List<Map<String, dynamic>> _movimientos = const [];
 
+  // ============================================================
+  // FECHA COMERCIAL (AUTORIZADA POR EL SERVIDOR)
+  // ============================================================
+  //
+  // La fecha comercial la manda el backend. NO usamos DateTime.now()
+  // para el rango por defecto ni para comparaciones de caja.
+  //
+  String? _businessDateKey;
+
   DateTime _desde = DateTime.now().subtract(const Duration(days: 7));
-  final DateTime _hasta = DateTime.now();
+  DateTime _hasta = DateTime.now();
 
   String _tipoFiltro = 'todos';
+
+  // ============================================================
+  // TIEMPO REAL
+  // ============================================================
+
+  StreamSubscription<void>? _cashSub;
+  StreamSubscription<void>? _operationSub;
+
+  /// Si es `true`, el próximo evento de stream se ignora porque
+  /// fue disparado por nosotros mismos.
+  bool _suppressNextReload = false;
+
+  bool get _cajaAbierta {
+    final caja = _caja;
+    if (caja == null) return false;
+    return caja['estado']?.toString().toLowerCase() == 'abierta';
+  }
+
+  /// Fecha comercial como DateTime (medianoche).
+  DateTime get _businessDate {
+    final key = _businessDateKey;
+
+    if (key != null && key.isNotEmpty) {
+      final parsed = DateTime.tryParse(key);
+
+      if (parsed != null) {
+        return DateTime(parsed.year, parsed.month, parsed.day);
+      }
+    }
+
+    final now = DateTime.now();
+    return DateTime(now.year, now.month, now.day);
+  }
 
   @override
   void initState() {
     super.initState();
-    _load();
+
+    _cashSub = LocalDb.cashChanges.listen((_) {
+      _onExternalCashChange();
+    });
+
+    _operationSub = LocalDb.operationChanges.listen((_) {
+      _onExternalCashChange();
+    });
+
+    _initialize();
+  }
+
+  @override
+  void dispose() {
+    _cashSub?.cancel();
+    _cashSub = null;
+
+    _operationSub?.cancel();
+    _operationSub = null;
+
+    super.dispose();
+  }
+
+  /// Carga la fecha comercial del servidor y luego carga datos.
+  Future<void> _initialize() async {
+    final key = await AppStorage().getServerBusinessDateKey();
+
+    if (!mounted) return;
+
+    if (key != null && key.isNotEmpty) {
+      final parsed = DateTime.tryParse(key);
+
+      if (parsed != null) {
+        final business = DateTime(parsed.year, parsed.month, parsed.day);
+
+        setState(() {
+          _businessDateKey = key;
+          _hasta = business;
+          _desde = business.subtract(const Duration(days: 7));
+        });
+      } else {
+        setState(() => _businessDateKey = key);
+      }
+    }
+
+    await _load();
+  }
+
+  void _onExternalCashChange() async {
+    if (!mounted) return;
+
+    // Si la fecha comercial cambió (por login, syncPull, cleanup, etc.)
+    // recargamos la fecha y los datos.
+    final key = await AppStorage().getServerBusinessDateKey();
+
+    if (!mounted) return;
+
+    if (key != null && key.isNotEmpty && key != _businessDateKey) {
+      final parsed = DateTime.tryParse(key);
+
+      if (parsed != null) {
+        final business = DateTime(parsed.year, parsed.month, parsed.day);
+
+        setState(() {
+          _businessDateKey = key;
+          _hasta = business;
+          _desde = business.subtract(const Duration(days: 7));
+        });
+      } else {
+        setState(() => _businessDateKey = key);
+      }
+    }
+
+    if (_suppressNextReload) {
+      _suppressNextReload = false;
+      return;
+    }
+
+    _load(silent: true);
   }
 
   // ============================================================
   // CARGA
   // ============================================================
 
-  Future<void> _load() async {
-    setState(() => _loading = true);
+  Future<void> _load({bool silent = false}) async {
+    if (!mounted) return;
 
-    final caja = await _db.getCurrentCashRegisterLocal();
+    if (!silent) {
+      setState(() => _loading = true);
+    }
 
-    Map<String, dynamic> resumen = const {};
-    Map<String, double> porMetodo = const {};
-    List<Map<String, dynamic>> movimientos = const [];
-    List<Map<String, dynamic>> ventasPorMetodo = const [];
-    List<Map<String, dynamic>> movimientosPorTipoMetodo = const [];
+    try {
+      final caja = await _db.getCurrentCashRegisterLocal();
 
-    if (caja != null) {
-      resumen = await _db.getCashSummaryLocal(
-        cashRegisterId: caja['id'] as int,
-      );
+      Map<String, dynamic> resumen = const {};
+      Map<String, double> porMetodo = const {};
+      List<Map<String, dynamic>> movimientos = const [];
+      List<Map<String, dynamic>> ventasPorMetodo = const [];
+      List<Map<String, dynamic>> movimientosPorTipoMetodo = const [];
 
-      final todos = await _db.getCashMovementsLocal(
-        cashRegisterId: caja['id'] as int,
-        tipo: _tipoFiltro == 'todos' ? null : _tipoFiltro,
-        desde: DateTime(_desde.year, _desde.month, _desde.day),
-        hasta: DateTime(_hasta.year, _hasta.month, _hasta.day, 23, 59, 59),
-      );
+      if (caja != null) {
+        resumen = await _db.getCashSummaryLocal(
+          cashRegisterId: caja['id'] as int,
+        );
 
-      movimientos = todos
-          .where((m) => m['tipo'] != 'apertura' && m['tipo'] != 'cierre')
-          .toList();
+        final todos = await _db.getCashMovementsLocal(
+          cashRegisterId: caja['id'] as int,
+          tipo: _tipoFiltro == 'todos' ? null : _tipoFiltro,
+          desde: DateTime(_desde.year, _desde.month, _desde.day),
+          hasta: DateTime(_hasta.year, _hasta.month, _hasta.day, 23, 59, 59),
+        );
 
-      porMetodo = _calcularPorMetodo(movimientos);
+        movimientos = todos
+            .where((m) => m['tipo'] != 'apertura' && m['tipo'] != 'cierre')
+            .toList();
 
-      final fechaCaja = caja['fecha_comercial']?.toString() ?? '';
-      if (fechaCaja.isNotEmpty) {
-        final fecha = DateTime.tryParse(fechaCaja) ?? DateTime.now();
+        porMetodo = _calcularPorMetodo(movimientos);
 
-        ventasPorMetodo = await _db.getSalesByPaymentMethodLocal(
-          businessDate: fecha,
+        final fechaCaja = caja['fecha_comercial']?.toString() ?? '';
+
+        if (fechaCaja.isNotEmpty) {
+          // ⚠️ Usamos la fecha comercial de la CAJA (que ya viene
+          // del servidor). NO DateTime.now().
+          final fecha = DateTime.tryParse(fechaCaja) ?? _businessDate;
+
+          ventasPorMetodo = await _db.getSalesByPaymentMethodLocal(
+            businessDate: fecha,
+          );
+        }
+
+        movimientosPorTipoMetodo = await _db.getMovementsByTypeAndMethodLocal(
+          cashRegisterId: caja['id'] as int,
         );
       }
 
-      movimientosPorTipoMetodo = await _db.getMovementsByTypeAndMethodLocal(
-        cashRegisterId: caja['id'] as int,
-      );
-    }
+      if (!mounted) return;
 
-    if (!mounted) return;
-    setState(() {
-      _caja = caja;
-      _resumen = resumen;
-      _porMetodo = porMetodo;
-      _movimientos = movimientos;
-      _ventasPorMetodo = ventasPorMetodo;
-      _movimientosPorTipoMetodo = movimientosPorTipoMetodo;
-      _loading = false;
-    });
+      setState(() {
+        _caja = caja;
+        _resumen = resumen;
+        _porMetodo = porMetodo;
+        _movimientos = movimientos;
+        _ventasPorMetodo = ventasPorMetodo;
+        _movimientosPorTipoMetodo = movimientosPorTipoMetodo;
+        _loading = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+
+      setState(() => _loading = false);
+
+      debugPrint('⚠️ Error cargando gestión de caja: $error');
+    }
   }
 
   Map<String, double> _calcularPorMetodo(List<Map<String, dynamic>> movs) {
@@ -127,34 +267,47 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
   // ============================================================
 
   Future<void> _abrirCaja() async {
-    final monto = await _pedirMonto(
-      titulo: 'Abrir caja',
-      label: 'Monto de apertura',
+    final monto = await showDialog<double>(
+      context: context,
+      builder: (_) => const _AmountDialog(
+        titulo: 'Abrir caja',
+        label: 'Monto de apertura',
+      ),
     );
+
     if (monto == null) return;
 
     try {
-      final result = await _service.openCash(montoApertura: monto);
-      await _load();
+      await _service.openCash(montoApertura: monto);
 
-      final reapertura = result['reapertura'] == true;
+      _suppressNextReload = true;
 
-      _snack(
-        reapertura
-            ? 'Caja reabierta. Ya había sido cerrada hoy.'
-            : 'Caja abierta correctamente.',
-      );
+      LocalDb.notifyCashChanged();
+      LocalDb.notifyOperationChanged();
+
+      if (!mounted) return;
+      await _load(silent: true);
+
+      _snack('Caja abierta correctamente.');
     } catch (e) {
       _snack('Error al abrir caja: $e', error: true);
     }
   }
 
   Future<void> _cerrarCaja() async {
-    if (_caja == null) return;
-    final monto = await _pedirMonto(
-      titulo: 'Cerrar caja',
-      label: 'Efectivo declarado',
+    if (!_cajaAbierta) {
+      _snack('No hay caja abierta para cerrar.', error: true);
+      return;
+    }
+
+    final monto = await showDialog<double>(
+      context: context,
+      builder: (_) => const _AmountDialog(
+        titulo: 'Cerrar caja',
+        label: 'Efectivo declarado',
+      ),
     );
+
     if (monto == null) return;
 
     try {
@@ -162,7 +315,15 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
         cashRegisterId: _caja!['id'] as int,
         montoDeclarado: monto,
       );
-      await _load();
+
+      _suppressNextReload = true;
+
+      LocalDb.notifyCashChanged();
+      LocalDb.notifyOperationChanged();
+
+      if (!mounted) return;
+      await _load(silent: true);
+
       _snack('Caja cerrada correctamente.');
     } catch (e) {
       _snack('Error al cerrar caja: $e', error: true);
@@ -170,8 +331,8 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
   }
 
   Future<void> _registrarMovimiento() async {
-    if (_caja == null) {
-      _snack('No hay caja abierta.', error: true);
+    if (!_cajaAbierta) {
+      _snack('Abre la caja antes de registrar movimientos.', error: true);
       return;
     }
 
@@ -192,44 +353,15 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
         notas: result['notas'] as String?,
         formaPago: result['forma_pago'] as String?,
       );
-      await _load();
+
+      _suppressNextReload = true;
+      LocalDb.notifyCashChanged();
+
+      if (!mounted) return;
+      await _load(silent: true);
     } catch (e) {
       _snack('Error al registrar movimiento: $e', error: true);
     }
-  }
-
-  Future<double?> _pedirMonto({
-    required String titulo,
-    required String label,
-  }) async {
-    final ctrl = TextEditingController(text: '0.00');
-    final result = await showDialog<double>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(titulo),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          decoration: InputDecoration(labelText: label),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancelar'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(
-              ctx,
-              double.tryParse(ctrl.text.replaceAll(',', '.')),
-            ),
-            child: const Text('Confirmar'),
-          ),
-        ],
-      ),
-    );
-    ctrl.dispose();
-    return result;
   }
 
   void _snack(String msg, {bool error = false}) {
@@ -251,123 +383,118 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
     final cs = Theme.of(context).colorScheme;
 
     if (_loading) {
-      return const Center(child: CircularProgressIndicator());
+      return const AppScaffold(
+        title: 'Movimientos',
+        body: Center(child: CircularProgressIndicator()),
+      );
     }
 
-    return RefreshIndicator(
-      onRefresh: _load,
-      child: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 100),
-        children: [
-          // ----------------------------------------
-          // Header
-          // ----------------------------------------
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  '💰 Gestión de Cajas',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w800,
-                    color: cs.onSurface,
+    final fab = _cajaAbierta
+        ? FloatingActionButton.extended(
+            onPressed: _registrarMovimiento,
+            icon: const Icon(Icons.add),
+            label: const Text('Movimiento'),
+          )
+        : FloatingActionButton.extended(
+            onPressed: _abrirCaja,
+            icon: const Icon(Icons.lock_open),
+            label: const Text('Abrir caja'),
+          );
+
+    return AppScaffold(
+      title: 'Movimientos',
+      floatingActionButton: fab,
+      body: RefreshIndicator(
+        onRefresh: () => _load(silent: false),
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 100),
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '💰 Gestión de Cajas',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w800,
+                      color: cs.onSurface,
+                    ),
                   ),
                 ),
+                IconButton(
+                  tooltip: 'Refrescar',
+                  onPressed: () => _load(silent: false),
+                  icon: const Icon(Icons.refresh),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Administra aperturas, cierres y movimientos de caja.',
+              style: TextStyle(color: cs.onSurfaceVariant, fontSize: 13),
+            ),
+
+            const SizedBox(height: 16),
+
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: _cajaAbierta ? _registrarMovimiento : _abrirCaja,
+                icon: Icon(
+                  _cajaAbierta ? Icons.add : Icons.lock_open,
+                  size: 18,
+                ),
+                label: Text(
+                  _cajaAbierta ? 'Registrar movimiento' : 'Abrir caja',
+                ),
+                style: FilledButton.styleFrom(minimumSize: const Size(0, 48)),
               ),
-              IconButton(
-                tooltip: 'Refrescar',
-                onPressed: _load,
-                icon: const Icon(Icons.refresh),
-              ),
+            ),
+
+            const SizedBox(height: 16),
+
+            _buildCajaActual(cs),
+
+            if (_ventasPorMetodo.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              _buildDesgloseVentas(cs),
             ],
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'Administra aperturas, cierres y movimientos de caja.',
-            style: TextStyle(color: cs.onSurfaceVariant, fontSize: 13),
-          ),
 
-          const SizedBox(height: 16),
+            if (_movimientosPorTipoMetodo.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              _buildDesgloseMovimientos(cs),
+            ],
 
-          // ----------------------------------------
-          // Botón principal
-          // ----------------------------------------
-          SizedBox(
-            width: double.infinity,
-            child: FilledButton.icon(
-              onPressed: _caja == null ? _abrirCaja : _registrarMovimiento,
-              icon: Icon(
-                _caja == null ? Icons.lock_open : Icons.add,
-                size: 18,
+            const SizedBox(height: 12),
+            _buildResumen(cs),
+
+            if (_porMetodo.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              _buildDesglosePorMetodo(cs),
+            ],
+
+            const SizedBox(height: 20),
+            Text(
+              'Historial de operaciones',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+                color: cs.onSurface,
               ),
-              label: Text(
-                _caja == null ? 'Abrir caja' : 'Registrar movimiento',
-              ),
-              style: FilledButton.styleFrom(minimumSize: const Size(0, 48)),
             ),
-          ),
-
-          const SizedBox(height: 16),
-
-          // ----------------------------------------
-          // Caja actual
-          // ----------------------------------------
-          _buildCajaActual(cs),
-
-          // ----------------------------------------
-          // Ventas por método de pago
-          // ----------------------------------------
-          if (_ventasPorMetodo.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            _buildDesgloseVentas(cs),
-          ],
-
-          // ----------------------------------------
-          // Movimientos manuales
-          // ----------------------------------------
-          if (_movimientosPorTipoMetodo.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            _buildDesgloseMovimientos(cs),
-          ],
-
-          // ----------------------------------------
-          // Resumen consolidado
-          // ----------------------------------------
-          const SizedBox(height: 12),
-          _buildResumen(cs),
-
-          // ----------------------------------------
-          // Totales netos por método
-          // ----------------------------------------
-          if (_porMetodo.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            _buildDesglosePorMetodo(cs),
-          ],
-
-          // ----------------------------------------
-          // Historial
-          // ----------------------------------------
-          const SizedBox(height: 20),
-          Text(
-            'Historial de operaciones',
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w700,
-              color: cs.onSurface,
+            const SizedBox(height: 4),
+            Text(
+              'Consulta los movimientos registrados en las cajas.',
+              style: TextStyle(color: cs.onSurfaceVariant, fontSize: 13),
             ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'Consulta los movimientos registrados en las cajas.',
-            style: TextStyle(color: cs.onSurfaceVariant, fontSize: 13),
-          ),
-          const SizedBox(height: 12),
-          _buildFiltros(),
-          const SizedBox(height: 8),
-          _buildTablaMovimientos(cs),
-        ],
+            const SizedBox(height: 12),
+            _buildFiltros(),
+            const SizedBox(height: 8),
+            _buildTablaMovimientos(cs),
+          ],
+        ),
       ),
     );
   }
@@ -377,7 +504,7 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
   // ============================================================
 
   Widget _buildCajaActual(ColorScheme cs) {
-    final abierta = _caja != null;
+    final abierta = _cajaAbierta;
 
     final apertura = _d(_caja?['monto_apertura']);
     final declarado = _d(_caja?['monto_declarado']);
@@ -416,7 +543,9 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    abierta ? 'Caja abierta' : 'Sin caja abierta',
+                    abierta
+                        ? 'Caja abierta'
+                        : (_caja == null ? 'Sin caja abierta' : 'Caja cerrada'),
                     style: const TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.w600,
@@ -444,7 +573,7 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
             const Divider(height: 16),
             _kv('Monto esperado', _m(esperadoEnVivo), bold: true),
 
-            if (!abierta) ...[
+            if (!abierta && _caja != null) ...[
               _kv('Monto declarado', _m(declarado)),
               _kv(
                 'Diferencia',
@@ -464,6 +593,38 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
             _kv('Apertura', _fmt(_caja?['abierta_at']?.toString())),
             if (_caja?['cerrada_at'] != null)
               _kv('Cierre', _fmt(_caja?['cerrada_at']?.toString())),
+
+            if (!abierta) ...[
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 10,
+                ),
+                decoration: BoxDecoration(
+                  color: cs.error.withAlpha(20),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: cs.error.withAlpha(80)),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.info_outline, size: 18, color: cs.error),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Abre la caja con el botón "Abrir caja" para poder registrar movimientos.',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: cs.error,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ],
         ),
       ),
@@ -656,9 +817,7 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
                         child: Row(
                           children: [
                             Icon(
-                              _iconMetodo(
-                                m['method_label']?.toString() ?? '',
-                              ),
+                              _iconMetodo(m['method_label']?.toString() ?? ''),
                               size: 14,
                               color: cs.onSurfaceVariant,
                             ),
@@ -859,6 +1018,10 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
   // ============================================================
 
   Widget _buildFiltros() {
+    // ⚠️ El picker permite hasta la fecha comercial del servidor.
+    // Nunca fechas futuras más allá del día operativo.
+    final lastDate = _businessDate.add(const Duration(days: 1));
+
     return Wrap(
       spacing: 8,
       runSpacing: 8,
@@ -869,11 +1032,11 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
               context: context,
               initialDate: _desde,
               firstDate: DateTime(2020),
-              lastDate: DateTime.now().add(const Duration(days: 1)),
+              lastDate: lastDate,
             );
-            if (p != null) {
+            if (p != null && mounted) {
               setState(() => _desde = p);
-              _load();
+              _load(silent: true);
             }
           },
           icon: const Icon(Icons.calendar_today, size: 16),
@@ -894,7 +1057,7 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
           ],
           onChanged: (v) {
             setState(() => _tipoFiltro = v ?? 'todos');
-            _load();
+            _load(silent: true);
           },
         ),
       ],
@@ -912,11 +1075,7 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
           padding: const EdgeInsets.all(24),
           child: Column(
             children: [
-              const Icon(
-                Icons.inbox_outlined,
-                size: 48,
-                color: Colors.black26,
-              ),
+              const Icon(Icons.inbox_outlined, size: 48, color: Colors.black26),
               const SizedBox(height: 12),
               const Text(
                 'No hay operaciones',
@@ -941,10 +1100,7 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
           Material(
             color: cs.surfaceContainerHighest,
             child: Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 12,
-                vertical: 10,
-              ),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
               child: Row(
                 children: const [
                   Expanded(flex: 3, child: Text('Fecha', style: _h)),
@@ -963,10 +1119,7 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
                   top: BorderSide(color: cs.outlineVariant, width: 0.5),
                 ),
               ),
-              padding: const EdgeInsets.symmetric(
-                horizontal: 12,
-                vertical: 10,
-              ),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
               child: Row(
                 children: [
                   Expanded(
@@ -978,10 +1131,7 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
                   ),
                   Expanded(
                     flex: 2,
-                    child: _buildTipoBadge(
-                      (m['tipo'] ?? '').toString(),
-                      cs,
-                    ),
+                    child: _buildTipoBadge((m['tipo'] ?? '').toString(), cs),
                   ),
                   Expanded(
                     flex: 4,
@@ -1113,12 +1263,7 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
 
   static const _h = TextStyle(fontWeight: FontWeight.w700, fontSize: 12);
 
-  Widget _kv(
-    String k,
-    String v, {
-    bool bold = false,
-    Color? color,
-  }) {
+  Widget _kv(String k, String v, {bool bold = false, Color? color}) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 3),
       child: Row(
@@ -1126,7 +1271,9 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
           Expanded(
             child: Text(
               k,
-              style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
             ),
           ),
           Text(
@@ -1163,6 +1310,56 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
         '${d.year} '
         '${d.hour.toString().padLeft(2, '0')}:'
         '${d.minute.toString().padLeft(2, '0')}';
+  }
+}
+
+// ============================================================
+// DIÁLOGO DE MONTO
+// ============================================================
+
+class _AmountDialog extends StatefulWidget {
+  const _AmountDialog({required this.titulo, required this.label});
+
+  final String titulo;
+  final String label;
+
+  @override
+  State<_AmountDialog> createState() => _AmountDialogState();
+}
+
+class _AmountDialogState extends State<_AmountDialog> {
+  final _ctrl = TextEditingController(text: '0.00');
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.titulo),
+      content: TextField(
+        controller: _ctrl,
+        autofocus: true,
+        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+        decoration: InputDecoration(labelText: widget.label),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(
+            context,
+            double.tryParse(_ctrl.text.replaceAll(',', '.')),
+          ),
+          child: const Text('Confirmar'),
+        ),
+      ],
+    );
   }
 }
 
@@ -1279,8 +1476,7 @@ class _MovementDialogState extends State<_MovementDialog> {
               'referencia': _referencia.text.trim().isEmpty
                   ? null
                   : _referencia.text.trim(),
-              'notas':
-                  _notas.text.trim().isEmpty ? null : _notas.text.trim(),
+              'notas': _notas.text.trim().isEmpty ? null : _notas.text.trim(),
               'forma_pago': _formaPago,
             });
           },

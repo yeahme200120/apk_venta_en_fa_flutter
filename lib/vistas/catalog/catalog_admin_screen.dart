@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/database/local_db.dart';
 import '../../core/network/api_client.dart';
+import '../../core/services/catalog_excel_service.dart';
 import 'catalog_edit_screen.dart';
 
 class CatalogAdminScreen extends StatefulWidget {
@@ -15,11 +16,13 @@ class CatalogAdminScreen extends StatefulWidget {
 
 class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
   final LocalDb _db = LocalDb();
+  final CatalogExcelService _excel = CatalogExcelService();
 
   int _selectedCatalog = 0;
   bool _loading = true;
   bool _isDisposed = false;
   bool _isSyncing = false;
+  bool _isImporting = false;
 
   List<Map<String, dynamic>> _items = [];
   int _loadGeneration = 0;
@@ -66,6 +69,8 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
 
   bool get _isPaymentMethod => _selectedCatalog == 2;
 
+  bool get _supportsExcel => !_isPaymentMethod;
+
   _CatalogInfo get _currentCatalog => _catalogs[_selectedCatalog];
 
   // ============================================================
@@ -86,9 +91,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
 
       final email = (item['email'] ?? '').toString().toLowerCase();
 
-      return name.contains(q) ||
-          code.contains(q) ||
-          email.contains(q);
+      return name.contains(q) || code.contains(q) || email.contains(q);
     }).toList();
   }
 
@@ -138,10 +141,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
       if (catalogIndex == 1) {
         data = await _db.getAllProducts();
       } else {
-        data = await _db.getCatalogItems(
-          _currentTable,
-          activeOnly: false,
-        );
+        data = await _db.getCatalogItems(_currentTable, activeOnly: false);
       }
 
       if (_isDisposed || !mounted) return;
@@ -149,10 +149,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
       if (catalogIndex != _selectedCatalog) return;
 
       _safeSetState(() {
-        _items = data
-            .map((e) => Map<String, dynamic>.from(e))
-            .toList();
-
+        _items = data.map((e) => Map<String, dynamic>.from(e)).toList();
         _loading = false;
       });
     } catch (e) {
@@ -191,14 +188,171 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
   }
 
   // ============================================================
+  // EXCEL: DESCARGAR PLANTILLA
+  // ============================================================
+
+  Future<void> _downloadTemplate() async {
+    if (_isDisposed || !mounted) return;
+
+    if (!_supportsExcel) {
+      _showError('Este catálogo no soporta plantilla Excel.');
+      return;
+    }
+
+    try {
+      final path = await _excel.downloadTemplate(_currentTable);
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text('Plantilla guardada en: $path'),
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+    } catch (e) {
+      if (!mounted) return;
+
+      _showError('No se pudo generar la plantilla: $e');
+    }
+  }
+
+  // ============================================================
+  // EXCEL: IMPORTAR
+  // ============================================================
+
+  Future<void> _importExcel() async {
+    if (_isDisposed || !mounted || _isImporting) return;
+
+    if (!_supportsExcel) {
+      _showError('Este catálogo no soporta carga por Excel.');
+      return;
+    }
+
+    _safeSetState(() {
+      _isImporting = true;
+    });
+
+    try {
+      final result = await _excel.pickAndImport(_currentTable);
+
+      if (!mounted) return;
+
+      if (result == null) {
+        // Usuario canceló.
+        return;
+      }
+
+      // Recargar lista.
+      await _load();
+
+      if (!mounted) return;
+
+      // Mostrar resultado.
+      await _showImportResult(result);
+    } catch (e) {
+      if (!mounted) return;
+
+      _showError('Error al importar el Excel: $e');
+    } finally {
+      if (mounted) {
+        _safeSetState(() {
+          _isImporting = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _showImportResult(ExcelImportResult result) async {
+    if (!mounted) return;
+
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(
+          result.hasErrors
+              ? 'Importación con errores'
+              : 'Importación completada',
+        ),
+        content: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.sizeOf(ctx).height * 0.65,
+            maxWidth: 520,
+          ),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Filas procesadas: ${result.totalRows}'),
+                const SizedBox(height: 4),
+                Text('Insertadas: ${result.inserted}'),
+                const SizedBox(height: 4),
+                Text('Errores: ${result.errors.length}'),
+                if (result.errors.isNotEmpty) ...[
+                  const Divider(height: 24),
+                  const Text(
+                    'Filas rechazadas:',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 8),
+                  ...result.errors.map(
+                    (e) => Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: Colors.red.withAlpha(15),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: Colors.red.withAlpha(60),
+                          ),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Fila ${e.rowNumber}'
+                              '${e.field.isNotEmpty ? ' · ${e.field}' : ''}',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w700,
+                                fontSize: 13,
+                              ),
+                            ),
+                            const SizedBox(height: 3),
+                            Text(
+                              e.message,
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Aceptar'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ============================================================
   // EDITAR
   // ============================================================
 
-  Future<void> _openEditor([
-    Map<String, dynamic>? item,
-  ]) async {
+  Future<void> _openEditor([Map<String, dynamic>? item]) async {
     if (_isDisposed || !mounted) return;
-
     if (_isPaymentMethod) return;
 
     final result = await Navigator.push<bool>(
@@ -229,9 +383,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
   // ESTADO FORMAS DE PAGO
   // ============================================================
 
-  Future<void> _toggleStatus(
-    Map<String, dynamic> item,
-  ) async {
+  Future<void> _toggleStatus(Map<String, dynamic> item) async {
     if (_isDisposed || !mounted) return;
 
     final id = _toIntOrNull(item['id']);
@@ -242,10 +394,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
     }
 
     final currentActive = _isActive(
-      item['is_active'] ??
-          item['active'] ??
-          item['activo'] ??
-          1,
+      item['is_active'] ?? item['active'] ?? item['activo'] ?? 1,
     );
 
     final newActive = !currentActive;
@@ -254,18 +403,13 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
       final activeCount = _items
           .where(
             (i) => _isActive(
-              i['is_active'] ??
-                  i['active'] ??
-                  i['activo'] ??
-                  1,
+              i['is_active'] ?? i['active'] ?? i['activo'] ?? 1,
             ),
           )
           .length;
 
       if (activeCount <= 1) {
-        _showError(
-          'Debes tener al menos una forma de pago activa.',
-        );
+        _showError('Debes tener al menos una forma de pago activa.');
         return;
       }
     }
@@ -274,13 +418,9 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
       await _db.updateCatalogItem(
         table: _currentTable,
         id: id,
-        name: item['name']?.toString() ??
-            item['nombre']?.toString() ??
-            '',
+        name: item['name']?.toString() ?? item['nombre']?.toString() ?? '',
         code: item['code']?.toString() ?? '',
-        rate: double.tryParse(
-          item['rate']?.toString() ?? '',
-        ),
+        rate: double.tryParse(item['rate']?.toString() ?? ''),
         active: newActive,
       );
 
@@ -290,9 +430,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
     } catch (e) {
       if (_isDisposed || !mounted) return;
 
-      _showError(
-        'Error al cambiar estado: $e',
-      );
+      _showError('Error al cambiar estado: $e');
     }
   }
 
@@ -300,15 +438,11 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
   // ELIMINAR / DESACTIVAR
   // ============================================================
 
-  Future<void> _delete(
-    Map<String, dynamic> item,
-  ) async {
+  Future<void> _delete(Map<String, dynamic> item) async {
     if (_isDisposed || !mounted) return;
-
     if (_isPaymentMethod) return;
 
-    final name =
-        item['name']?.toString() ??
+    final name = item['name']?.toString() ??
         item['nombre']?.toString() ??
         'registro';
 
@@ -322,9 +456,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text(
-          'Desactivar registro',
-        ),
+        title: const Text('Desactivar registro'),
         content: Text(
           '¿Deseas desactivar "$name"?',
           maxLines: 4,
@@ -347,9 +479,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
       ),
     );
 
-    if (_isDisposed ||
-        !mounted ||
-        confirmed != true) {
+    if (_isDisposed || !mounted || confirmed != true) {
       return;
     }
 
@@ -357,10 +487,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
       if (_isProduct) {
         await _db.deleteProduct(id);
       } else {
-        await _db.deleteCatalogItem(
-          _currentTable,
-          id,
-        );
+        await _db.deleteCatalogItem(_currentTable, id);
       }
 
       if (_isDisposed || !mounted) return;
@@ -371,9 +498,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
     } catch (e) {
       if (_isDisposed || !mounted) return;
 
-      _showError(
-        'Error al desactivar "$name": $e',
-      );
+      _showError('Error al desactivar "$name": $e');
     }
   }
 
@@ -382,9 +507,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
   // ============================================================
 
   Future<void> _syncCatalogs() async {
-    if (_isDisposed ||
-        !mounted ||
-        _isSyncing) {
+    if (_isDisposed || !mounted || _isSyncing) {
       return;
     }
 
@@ -409,9 +532,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
         ..hideCurrentSnackBar()
         ..showSnackBar(
           const SnackBar(
-            content: Text(
-              'Catálogos sincronizados correctamente.',
-            ),
+            content: Text('Catálogos sincronizados correctamente.'),
             behavior: SnackBarBehavior.floating,
           ),
         );
@@ -422,9 +543,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
         ..hideCurrentSnackBar()
         ..showSnackBar(
           SnackBar(
-            content: Text(
-              'Error al sincronizar: $e',
-            ),
+            content: Text('Error al sincronizar: $e'),
             behavior: SnackBarBehavior.floating,
           ),
         );
@@ -443,17 +562,10 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
 
   int? _toIntOrNull(dynamic value) {
     if (value == null) return null;
-
     if (value is int) return value;
-
-    if (value is num) {
-      return value.toInt();
-    }
-
+    if (value is num) return value.toInt();
     final text = value.toString().trim();
-
     if (text.isEmpty) return null;
-
     return int.tryParse(text);
   }
 
@@ -461,22 +573,14 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
     if (value is num) {
       return value.toDouble();
     }
-
-    return double.tryParse(
-          value?.toString().trim() ?? '',
-        ) ??
-        0;
+    return double.tryParse(value?.toString().trim() ?? '') ?? 0;
   }
 
   bool _isActive(dynamic value) {
     if (value is bool) return value;
+    if (value is num) return value != 0;
 
-    if (value is num) {
-      return value != 0;
-    }
-
-    final text =
-        value?.toString().trim().toLowerCase();
+    final text = value?.toString().trim().toLowerCase();
 
     return text == '1' ||
         text == 'true' ||
@@ -484,10 +588,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
         text == 'active';
   }
 
-  dynamic _jsonValue(
-    Map<String, dynamic> item,
-    List<String> keys,
-  ) {
+  dynamic _jsonValue(Map<String, dynamic> item, List<String> keys) {
     for (final key in keys) {
       if (item[key] != null) {
         return item[key];
@@ -496,8 +597,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
 
     final raw = item['data_json'];
 
-    if (raw is String &&
-        raw.trim().isNotEmpty) {
+    if (raw is String && raw.trim().isNotEmpty) {
       try {
         final decoded = jsonDecode(raw);
 
@@ -542,31 +642,58 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text(
-          'Catálogos de la empresa',
-        ),
+        title: const Text('Catálogos de la empresa'),
         actions: [
-          Padding(
-            padding: const EdgeInsets.only(
-              right: 8,
+          if (_supportsExcel)
+            PopupMenuButton<String>(
+              tooltip: 'Opciones de Excel',
+              enabled: !_isImporting && !_isSyncing,
+              icon: const Icon(Icons.description_outlined),
+              onSelected: (value) {
+                if (value == 'template') {
+                  _downloadTemplate();
+                } else if (value == 'import') {
+                  _importExcel();
+                }
+              },
+              itemBuilder: (ctx) => const [
+                PopupMenuItem(
+                  value: 'template',
+                  child: Row(
+                    children: [
+                      Icon(Icons.download_outlined, size: 18),
+                      SizedBox(width: 10),
+                      Text('Descargar plantilla'),
+                    ],
+                  ),
+                ),
+                PopupMenuItem(
+                  value: 'import',
+                  child: Row(
+                    children: [
+                      Icon(Icons.upload_file_outlined, size: 18),
+                      SizedBox(width: 10),
+                      Text('Importar Excel'),
+                    ],
+                  ),
+                ),
+              ],
             ),
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
             child: _isSyncing
                 ? const Padding(
                     padding: EdgeInsets.all(12),
                     child: SizedBox(
                       width: 22,
                       height: 22,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2.5,
-                      ),
+                      child: CircularProgressIndicator(strokeWidth: 2.5),
                     ),
                   )
                 : IconButton(
                     tooltip: 'Sincronizar catálogos',
                     onPressed: _syncCatalogs,
-                    icon: const Icon(
-                      Icons.sync,
-                    ),
+                    icon: const Icon(Icons.sync),
                   ),
           ),
         ],
@@ -578,14 +705,12 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
 
             final isDesktop = width >= 1100;
 
-            final isTablet =
-                width >= 700 && width < 1100;
+            final isTablet = width >= 700 && width < 1100;
 
             return Column(
               children: [
-                // ==================================================
-                // SELECTOR
-                // ==================================================
+                if (_isImporting)
+                  const LinearProgressIndicator(minHeight: 3),
 
                 _buildCatalogSelector(
                   isDesktop: isDesktop,
@@ -594,17 +719,8 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
 
                 const Divider(height: 1),
 
-                // ==================================================
-                // BÚSQUEDA
-                // ==================================================
-
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(
-                    12,
-                    10,
-                    12,
-                    6,
-                  ),
+                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
                   child: TextField(
                     controller: _searchCtrl,
                     decoration: InputDecoration(
@@ -619,34 +735,24 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
                         color: cs.onSurfaceVariant,
                         size: 20,
                       ),
-                      suffixIcon:
-                          _searchQuery.isNotEmpty
-                              ? IconButton(
-                                  icon: const Icon(
-                                    Icons.clear,
-                                    size: 18,
-                                  ),
-                                  onPressed: () {
-                                    _safeSetState(() {
-                                      _searchCtrl.clear();
-                                      _searchQuery = '';
-                                    });
-                                  },
-                                )
-                              : null,
+                      suffixIcon: _searchQuery.isNotEmpty
+                          ? IconButton(
+                              icon: const Icon(Icons.clear, size: 18),
+                              onPressed: () {
+                                _safeSetState(() {
+                                  _searchCtrl.clear();
+                                  _searchQuery = '';
+                                });
+                              },
+                            )
+                          : null,
                       filled: true,
-                      fillColor:
-                          cs.surfaceContainerHighest,
+                      fillColor: cs.surfaceContainerHighest,
                       border: OutlineInputBorder(
-                        borderRadius:
-                            BorderRadius.circular(12),
-                        borderSide:
-                            BorderSide.none,
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide.none,
                       ),
-                      contentPadding:
-                          const EdgeInsets.symmetric(
-                        vertical: 10,
-                      ),
+                      contentPadding: const EdgeInsets.symmetric(vertical: 10),
                     ),
                     onChanged: (value) {
                       _safeSetState(() {
@@ -656,28 +762,19 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
                   ),
                 ),
 
-                // ==================================================
-                // CONTENIDO
-                // ==================================================
-
                 Expanded(
                   child: _loading
-                      ? const Center(
-                          child:
-                              CircularProgressIndicator(),
-                        )
+                      ? const Center(child: CircularProgressIndicator())
                       : _filteredItems.isEmpty
                           ? _buildEmptyState(catalog)
                           : width >= 800
                               ? RefreshIndicator(
                                   onRefresh: _load,
-                                  child:
-                                      _buildGrid(width),
+                                  child: _buildGrid(width),
                                 )
                               : RefreshIndicator(
                                   onRefresh: _load,
-                                  child:
-                                      _buildList(),
+                                  child: _buildList(),
                                 ),
                 ),
               ],
@@ -685,8 +782,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
           },
         ),
       ),
-      floatingActionButton:
-          _buildFAB(catalog),
+      floatingActionButton: _buildFAB(catalog),
     );
   }
 
@@ -741,37 +837,25 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
           width: double.infinity,
           height: selectorHeight,
           child: ScrollConfiguration(
-            behavior:
-                const ScrollBehavior().copyWith(
+            behavior: const ScrollBehavior().copyWith(
               scrollbars: false,
               overscroll: false,
             ),
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
-              physics:
-                  const BouncingScrollPhysics(
-                parent:
-                    AlwaysScrollableScrollPhysics(),
+              physics: const BouncingScrollPhysics(
+                parent: AlwaysScrollableScrollPhysics(),
               ),
               padding: EdgeInsets.symmetric(
                 horizontal: horizontalPadding,
                 vertical: 8,
               ),
               itemCount: _catalogs.length,
-              separatorBuilder: (_, __) {
-                return const SizedBox(
-                  width: 8,
-                );
-              },
-              itemBuilder: (
-                context,
-                index,
-              ) {
-                final catalog =
-                    _catalogs[index];
+              separatorBuilder: (_, __) => const SizedBox(width: 8),
+              itemBuilder: (context, index) {
+                final catalog = _catalogs[index];
 
-                final selected =
-                    index == _selectedCatalog;
+                final selected = index == _selectedCatalog;
 
                 return SizedBox(
                   width: cardWidth,
@@ -779,31 +863,20 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
                   child: Material(
                     color: Colors.transparent,
                     child: InkWell(
-                      borderRadius:
-                          BorderRadius.circular(14),
+                      borderRadius: BorderRadius.circular(14),
                       onTap: () {
-                        if (_selectedCatalog ==
-                            index) {
+                        if (_selectedCatalog == index) {
                           return;
                         }
-
                         _changeCatalog(index);
                       },
                       child: AnimatedContainer(
-                        duration:
-                            const Duration(
-                          milliseconds: 180,
-                        ),
+                        duration: const Duration(milliseconds: 180),
                         curve: Curves.easeOut,
                         width: cardWidth,
-                        height:
-                            selectorHeight - 16,
-                        padding:
-                            EdgeInsets.symmetric(
-                          horizontal:
-                              isSmallMobile
-                                  ? 6
-                                  : 8,
+                        height: selectorHeight - 16,
+                        padding: EdgeInsets.symmetric(
+                          horizontal: isSmallMobile ? 6 : 8,
                           vertical: 7,
                         ),
                         decoration: BoxDecoration(
@@ -812,86 +885,53 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
                               : Theme.of(context)
                                   .colorScheme
                                   .surfaceContainerHighest,
-                          borderRadius:
-                              BorderRadius.circular(
-                            14,
-                          ),
+                          borderRadius: BorderRadius.circular(14),
                           border: Border.all(
                             color: selected
                                 ? catalog.color
                                 : Theme.of(context)
                                     .colorScheme
                                     .outlineVariant
-                                    .withValues(
-                                      alpha: .35,
-                                    ),
-                            width:
-                                selected ? 1.5 : 1,
+                                    .withValues(alpha: .35),
+                            width: selected ? 1.5 : 1,
                           ),
                           boxShadow: selected
                               ? [
                                   BoxShadow(
-                                    color: catalog
-                                        .color
-                                        .withValues(
-                                      alpha: .18,
-                                    ),
+                                    color: catalog.color.withValues(alpha: .18),
                                     blurRadius: 8,
-                                    offset:
-                                        const Offset(
-                                      0,
-                                      2,
-                                    ),
+                                    offset: const Offset(0, 2),
                                   ),
                                 ]
                               : null,
                         ),
                         child: Column(
-                          mainAxisAlignment:
-                              MainAxisAlignment
-                                  .center,
-                          mainAxisSize:
-                              MainAxisSize.min,
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          mainAxisSize: MainAxisSize.min,
                           children: [
                             Icon(
                               catalog.icon,
                               size: iconSize,
-                              color: selected
-                                  ? Colors.white
-                                  : catalog.color,
+                              color: selected ? Colors.white : catalog.color,
                             ),
-                            const SizedBox(
-                              height: 5,
-                            ),
+                            const SizedBox(height: 5),
                             Flexible(
                               child: Padding(
                                 padding:
-                                    const EdgeInsets
-                                        .symmetric(
-                                  horizontal: 2,
-                                ),
+                                    const EdgeInsets.symmetric(horizontal: 2),
                                 child: Text(
                                   catalog.title,
-                                  textAlign:
-                                      TextAlign
-                                          .center,
+                                  textAlign: TextAlign.center,
                                   maxLines: 2,
                                   softWrap: true,
-                                  overflow:
-                                      TextOverflow
-                                          .ellipsis,
+                                  overflow: TextOverflow.ellipsis,
                                   style: TextStyle(
-                                    fontSize:
-                                        fontSize,
+                                    fontSize: fontSize,
                                     height: 1.1,
-                                    fontWeight:
-                                        FontWeight
-                                            .w600,
+                                    fontWeight: FontWeight.w600,
                                     color: selected
                                         ? Colors.white
-                                        : Theme.of(
-                                            context,
-                                          )
+                                        : Theme.of(context)
                                             .colorScheme
                                             .onSurface,
                                   ),
@@ -920,8 +960,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
     return ListView.separated(
       padding: const EdgeInsets.all(12),
       itemCount: _filteredItems.length,
-      separatorBuilder: (_, __) =>
-          const SizedBox(height: 8),
+      separatorBuilder: (_, __) => const SizedBox(height: 8),
       itemBuilder: (_, i) => _buildItemCard(
         _filteredItems[i],
         compact: true,
@@ -941,11 +980,8 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
             : 2;
 
     return GridView.builder(
-      padding: EdgeInsets.all(
-        width >= 1200 ? 24 : 16,
-      ),
-      gridDelegate:
-          SliverGridDelegateWithFixedCrossAxisCount(
+      padding: EdgeInsets.all(width >= 1200 ? 24 : 16),
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: cols,
         crossAxisSpacing: 14,
         mainAxisSpacing: 14,
@@ -969,23 +1005,17 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
   }) {
     final catalog = _currentCatalog;
 
-    final name =
-        item['name']?.toString() ??
+    final name = item['name']?.toString() ??
         item['nombre']?.toString() ??
         'Sin nombre';
 
-    final code =
-        item['code']?.toString() ?? '';
+    final code = item['code']?.toString() ?? '';
 
     final active = _isActive(
-      item['is_active'] ??
-          item['active'] ??
-          item['activo'] ??
-          1,
+      item['is_active'] ?? item['active'] ?? item['activo'] ?? 1,
     );
 
-    final details =
-        _buildDetails(item, code);
+    final details = _buildDetails(item, code);
 
     return Card(
       margin: EdgeInsets.zero,
@@ -993,28 +1023,21 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
       child: Padding(
         padding: const EdgeInsets.all(12),
         child: Row(
-          crossAxisAlignment:
-              CrossAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            _buildIconBox(
-              catalog,
-              size: compact ? 46 : 44,
-            ),
+            _buildIconBox(catalog, size: compact ? 46 : 44),
             const SizedBox(width: 10),
             Expanded(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment:
-                    CrossAxisAlignment.start,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
                     name,
                     maxLines: 2,
-                    overflow:
-                        TextOverflow.ellipsis,
+                    overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
-                      fontWeight:
-                          FontWeight.w600,
+                      fontWeight: FontWeight.w600,
                       fontSize: 15,
                     ),
                   ),
@@ -1023,11 +1046,9 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
                     Text(
                       details,
                       maxLines: 2,
-                      overflow:
-                          TextOverflow.ellipsis,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        color:
-                            Colors.grey.shade600,
+                        color: Colors.grey.shade600,
                         fontSize: 12,
                       ),
                     ),
@@ -1039,16 +1060,9 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
             ),
             const SizedBox(width: 4),
             if (_isPaymentMethod)
-              _buildToggleSwitch(
-                item,
-                active,
-              )
+              _buildToggleSwitch(item, active)
             else
-              _buildActions(
-                item,
-                active,
-                compact: compact,
-              ),
+              _buildActions(item, active, compact: compact),
           ],
         ),
       ),
@@ -1059,14 +1073,10 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
   // SWITCH FORMAS DE PAGO
   // ============================================================
 
-  Widget _buildToggleSwitch(
-    Map<String, dynamic> item,
-    bool active,
-  ) {
+  Widget _buildToggleSwitch(Map<String, dynamic> item, bool active) {
     return Switch(
       value: active,
-      onChanged: (_) =>
-          _toggleStatus(item),
+      onChanged: (_) => _toggleStatus(item),
       activeThumbColor: Colors.green,
       inactiveThumbColor: Colors.grey,
     );
@@ -1076,16 +1086,11 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
   // DETALLES
   // ============================================================
 
-  String _buildDetails(
-    Map<String, dynamic> item,
-    String code,
-  ) {
+  String _buildDetails(Map<String, dynamic> item, String code) {
     if (_isProduct) {
-      final price =
-          _toDouble(item['price']);
+      final price = _toDouble(item['price']);
 
-      final stock =
-          _toDouble(item['stock']);
+      final stock = _toDouble(item['stock']);
 
       final parts = <String>[];
 
@@ -1095,29 +1100,17 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
 
       final categoryName = _jsonValue(
         item,
-        [
-          'categoria_nombre',
-          'category_name',
-        ],
+        ['categoria_nombre', 'category_name'],
       );
 
       if (categoryName != null &&
-          categoryName
-              .toString()
-              .trim()
-              .isNotEmpty) {
-        parts.add(
-          'Cat: ${categoryName.toString()}',
-        );
+          categoryName.toString().trim().isNotEmpty) {
+        parts.add('Cat: ${categoryName.toString()}');
       }
 
-      parts.add(
-        'Stock: ${stock.toStringAsFixed(0)}',
-      );
+      parts.add('Stock: ${stock.toStringAsFixed(0)}');
 
-      parts.add(
-        '\$${price.toStringAsFixed(2)}',
-      );
+      parts.add('\$${price.toStringAsFixed(2)}');
 
       return parts.join('  •  ');
     }
@@ -1129,22 +1122,14 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
   // ICONO
   // ============================================================
 
-  Widget _buildIconBox(
-    _CatalogInfo catalog, {
-    double size = 48,
-  }) {
+  Widget _buildIconBox(_CatalogInfo catalog, {double size = 48}) {
     return SizedBox(
       width: size,
       height: size,
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: catalog.color.withValues(
-            alpha: 0.12,
-          ),
-          borderRadius:
-              BorderRadius.circular(
-            size >= 48 ? 14 : 12,
-          ),
+          color: catalog.color.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(size >= 48 ? 14 : 12),
         ),
         child: Icon(
           catalog.icon,
@@ -1161,47 +1146,28 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
 
   Widget _buildStatusBadge(bool active) {
     return Container(
-      padding:
-          const EdgeInsets.symmetric(
-        horizontal: 9,
-        vertical: 5,
-      ),
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
       decoration: BoxDecoration(
         color: active
-            ? Colors.green.withValues(
-                alpha: 0.10,
-              )
-            : Colors.grey.withValues(
-                alpha: 0.12,
-              ),
-        borderRadius:
-            BorderRadius.circular(20),
+            ? Colors.green.withValues(alpha: 0.10)
+            : Colors.grey.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(20),
       ),
       child: Row(
-        mainAxisSize:
-            MainAxisSize.min,
+        mainAxisSize: MainAxisSize.min,
         children: [
           Icon(
-            active
-                ? Icons.check_circle_outline
-                : Icons.cancel_outlined,
+            active ? Icons.check_circle_outline : Icons.cancel_outlined,
             size: 15,
-            color: active
-                ? Colors.green
-                : Colors.grey.shade600,
+            color: active ? Colors.green : Colors.grey.shade600,
           ),
           const SizedBox(width: 5),
           Text(
-            active
-                ? 'Activo'
-                : 'Inactivo',
+            active ? 'Activo' : 'Inactivo',
             style: TextStyle(
               fontSize: 11,
-              fontWeight:
-                  FontWeight.w600,
-              color: active
-                  ? Colors.green
-                  : Colors.grey.shade600,
+              fontWeight: FontWeight.w600,
+              color: active ? Colors.green : Colors.grey.shade600,
             ),
           ),
         ],
@@ -1219,29 +1185,18 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
     required bool compact,
   }) {
     return Row(
-      mainAxisSize:
-          MainAxisSize.min,
+      mainAxisSize: MainAxisSize.min,
       children: [
         IconButton(
-          visualDensity:
-              VisualDensity.compact,
-          onPressed: () =>
-              _openEditor(item),
-          icon: const Icon(
-            Icons.edit_outlined,
-            size: 21,
-          ),
+          visualDensity: VisualDensity.compact,
+          onPressed: () => _openEditor(item),
+          icon: const Icon(Icons.edit_outlined, size: 21),
         ),
         IconButton(
-          visualDensity:
-              VisualDensity.compact,
-          onPressed: active
-              ? () => _delete(item)
-              : null,
+          visualDensity: VisualDensity.compact,
+          onPressed: active ? () => _delete(item) : null,
           icon: Icon(
-            active
-                ? Icons.delete_outline
-                : Icons.check_circle_outline,
+            active ? Icons.delete_outline : Icons.check_circle_outline,
             size: 21,
           ),
         ),
@@ -1253,52 +1208,32 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
   // ESTADO VACÍO
   // ============================================================
 
-  Widget _buildEmptyState(
-    _CatalogInfo catalog,
-  ) {
+  Widget _buildEmptyState(_CatalogInfo catalog) {
     return RefreshIndicator(
       onRefresh: _load,
       child: ListView(
-        physics:
-            const AlwaysScrollableScrollPhysics(),
-        padding:
-            const EdgeInsets.symmetric(
-          horizontal: 20,
-          vertical: 24,
-        ),
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
         children: [
           ConstrainedBox(
             constraints: BoxConstraints(
-              minHeight:
-                  MediaQuery.of(context)
-                          .size
-                          .height *
-                      0.5,
+              minHeight: MediaQuery.of(context).size.height * 0.5,
             ),
             child: Center(
               child: Column(
-                mainAxisSize:
-                    MainAxisSize.min,
+                mainAxisSize: MainAxisSize.min,
                 children: [
                   Container(
                     width: 88,
                     height: 88,
-                    decoration:
-                        BoxDecoration(
-                      color: catalog.color
-                          .withValues(
-                        alpha: 0.10,
-                      ),
-                      shape:
-                          BoxShape.circle,
+                    decoration: BoxDecoration(
+                      color: catalog.color.withValues(alpha: 0.10),
+                      shape: BoxShape.circle,
                     ),
                     child: Icon(
                       catalog.icon,
                       size: 46,
-                      color: catalog.color
-                          .withValues(
-                        alpha: 0.55,
-                      ),
+                      color: catalog.color.withValues(alpha: 0.55),
                     ),
                   ),
                   const SizedBox(height: 18),
@@ -1306,47 +1241,30 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
                     _searchQuery.isNotEmpty
                         ? 'Sin resultados para "$_searchQuery"'
                         : 'No hay registros',
-                    textAlign:
-                        TextAlign.center,
-                    style:
-                        const TextStyle(
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
                       fontSize: 20,
-                      fontWeight:
-                          FontWeight.w700,
+                      fontWeight: FontWeight.w700,
                     ),
                   ),
                   const SizedBox(height: 8),
                   ConstrainedBox(
-                    constraints:
-                        const BoxConstraints(
-                      maxWidth: 420,
-                    ),
+                    constraints: const BoxConstraints(maxWidth: 420),
                     child: Text(
                       _searchQuery.isNotEmpty
                           ? 'Intenta con otro término de búsqueda.'
                           : 'Todavía no existen registros en ${catalog.title.toLowerCase()}.',
-                      textAlign:
-                          TextAlign.center,
+                      textAlign: TextAlign.center,
                       softWrap: true,
-                      style: TextStyle(
-                        color:
-                            Colors.grey.shade600,
-                      ),
+                      style: TextStyle(color: Colors.grey.shade600),
                     ),
                   ),
                   const SizedBox(height: 20),
-                  if (!_isPaymentMethod &&
-                      _searchQuery.isEmpty)
+                  if (!_isPaymentMethod && _searchQuery.isEmpty)
                     FilledButton.icon(
-                      onPressed:
-                          () => _openEditor(),
-                      icon: const Icon(
-                        Icons.add,
-                      ),
-                      label:
-                          const Text(
-                        'Agregar',
-                      ),
+                      onPressed: () => _openEditor(),
+                      icon: const Icon(Icons.add),
+                      label: const Text('Agregar'),
                     ),
                 ],
               ),
@@ -1361,30 +1279,22 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
   // FAB
   // ============================================================
 
-  Widget _buildFAB(
-    _CatalogInfo catalog,
-  ) {
+  Widget _buildFAB(_CatalogInfo catalog) {
     if (_isPaymentMethod) {
       return const SizedBox.shrink();
     }
 
     return FloatingActionButton.extended(
       onPressed: () => _openEditor(),
-      backgroundColor:
-          catalog.color,
-      foregroundColor:
-          Colors.white,
+      backgroundColor: catalog.color,
+      foregroundColor: Colors.white,
       icon: const Icon(Icons.add),
       label: ConstrainedBox(
-        constraints:
-            const BoxConstraints(
-          maxWidth: 180,
-        ),
+        constraints: const BoxConstraints(maxWidth: 180),
         child: Text(
           'Nuevo ${catalog.title}',
           maxLines: 1,
-          overflow:
-              TextOverflow.ellipsis,
+          overflow: TextOverflow.ellipsis,
         ),
       ),
     );

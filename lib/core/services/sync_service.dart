@@ -8,6 +8,7 @@ import '../database/local_db.dart';
 import '../database/pos_db_service.dart';
 import '../network/api_client.dart';
 import '../storage/app_storage.dart';
+import 'daily_cleanup_service.dart';
 
 class SyncResult {
   const SyncResult({
@@ -1555,6 +1556,15 @@ class SyncService {
       'skipped=$skipped',
     );
 
+    // ============================================================
+    // TIEMPO REAL: si algo se sincronizó, avisamos a la UI.
+    // Ventas y movimientos de caja pueden haber cambiado.
+    // ============================================================
+    if (synced > 0) {
+      LocalDb.notifySalesChanged();
+      LocalDb.notifyCashChanged();
+    }
+
     return SyncResult(
       total: total,
       synced: synced,
@@ -2279,6 +2289,20 @@ class SyncService {
       await _historyDb.syncCatalogs(serverData);
     }
 
+    // ==========================================================
+    // 🔴 DETECTAR CAMBIO DE DÍA COMERCIAL DESDE EL PULL
+    // ==========================================================
+    //
+    // El pull de Laravel trae la empresa actualizada. Si su
+    // business_date cambió, hay que hacer el cleanup igual que
+    // en el login.
+    //
+    try {
+      await _maybeCleanupOnBusinessDateChange();
+    } catch (e) {
+      print('⚠️ Cleanup por syncPull falló: $e');
+    }
+
     final empresaLocal = await _historyDb.getCompany();
 
     print('🏢 EMPRESA LOCAL: $empresaLocal');
@@ -2305,9 +2329,110 @@ class SyncService {
 
     print('✅ SYNC PULL finalizado.');
 
+    LocalDb.notifyAllChanged();
+
     return response;
   }
 
+  // ============================================================
+  // DETECTAR Y LIMPIAR CAMBIO DE DÍA COMERCIAL
+  // ============================================================
+  //
+  // El pull puede traer una empresa con business_date distinta a
+  // la que tenemos guardada. En ese caso:
+  //
+  //   1. Sincronizar pendientes del día anterior.
+  //   2. Archivar pendientes en LocalDb.
+  //   3. Borrar la base diaria vieja.
+  //
+  // Los pendientes que no se sincronicen quedan en LocalDb y se
+  // reintentan en el siguiente ciclo.
+  Future<void> _maybeCleanupOnBusinessDateChange() async {
+    final storage = AppStorage();
+
+    if (!await storage.isLoggedIn()) return;
+
+    final token = await storage.getToken();
+
+    if (token == null || token.trim().isEmpty) return;
+
+    final companyId = await storage.getEmpresaId() ?? 0;
+    final userId = await storage.getUserId() ?? 0;
+
+    if (companyId <= 0 || userId <= 0) return;
+
+    // Consultar la fecha del servidor.
+    String? remoteDate;
+
+    try {
+      final user = await _apiClient.getCurrentUser();
+
+      final empresa = user['empresa'] is Map
+          ? Map<String, dynamic>.from(user['empresa'] as Map)
+          : <String, dynamic>{};
+
+      remoteDate =
+          (user['business_date'] ??
+                  user['fecha_negocio'] ??
+                  user['fecha_operacion'] ??
+                  user['fecha_comercial'] ??
+                  empresa['business_date'] ??
+                  empresa['fecha_negocio'] ??
+                  empresa['fecha_operacion'] ??
+                  empresa['fecha_comercial'])
+              ?.toString();
+    } catch (_) {
+      return;
+    }
+
+    if (remoteDate == null || remoteDate.trim().isEmpty) return;
+
+    if (!await storage.businessDateChanged(remoteDate)) {
+      return;
+    }
+
+    final previousDate = await storage.getServerBusinessDateKey();
+
+    print(
+      '🔄 syncPull detectó cambio de día: '
+      '$previousDate → $remoteDate',
+    );
+
+    final previousParsed =
+        DateTime.tryParse(previousDate ?? '') ?? DateTime.now();
+
+    try {
+      await syncManual(
+        companyId: companyId,
+        userId: userId,
+        businessDate: previousParsed,
+      );
+    } catch (e) {
+      print('⚠️ Sync del día anterior falló: $e');
+    }
+
+    try {
+      await archivePendingSalesFromDay(
+        companyId: companyId,
+        userId: userId,
+        businessDate: previousParsed,
+      );
+    } catch (e) {
+      print('⚠️ Archivar pendientes falló: $e');
+    }
+
+    try {
+      await DailyCleanupService().archiveAndClearDailyDatabase(
+        companyId: companyId,
+        userId: userId,
+        businessDate: previousParsed,
+      );
+    } catch (e) {
+      print('⚠️ Borrar base vieja falló: $e');
+    }
+
+    await storage.saveServerBusinessDate(remoteDate);
+  }
   // ============================================================
   // UPSERT DE VENTAS RECIBIDAS
   // ============================================================

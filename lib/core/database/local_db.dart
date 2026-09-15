@@ -4,6 +4,8 @@ import 'dart:convert';
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
+import '../storage/app_storage.dart';
+
 class LocalDb {
   static final LocalDb _instance = LocalDb._internal();
 
@@ -13,15 +15,50 @@ class LocalDb {
 
   static Database? _database;
   static const int _databaseVersion = 13;
+
+  // ============================================================
+  // STREAMS DE CAMBIOS EN TIEMPO REAL
+  // ============================================================
+  //
+  // Un canal por dominio. La UI escucha solo lo que necesita.
+  //
+  //   salesChanges      → ventas (crear, pagar, cancelar, sync)
+  //   operationChanges  → estado de operación (cajas activas, mesas)
+  //   cashChanges       → cajas (apertura/cierre) y movimientos
+  //
+  // ============================================================
+
   static final StreamController<void> _salesChanges =
       StreamController<void>.broadcast();
 
+  static final StreamController<void> _operationChanges =
+      StreamController<void>.broadcast();
+
+  static final StreamController<void> _cashChanges =
+      StreamController<void>.broadcast();
+
   static Stream<void> get salesChanges => _salesChanges.stream;
+  static Stream<void> get operationChanges => _operationChanges.stream;
+  static Stream<void> get cashChanges => _cashChanges.stream;
 
   static void notifySalesChanged() {
-    if (!_salesChanges.isClosed) {
-      _salesChanges.add(null);
-    }
+    if (!_salesChanges.isClosed) _salesChanges.add(null);
+  }
+
+  static void notifyOperationChanged() {
+    if (!_operationChanges.isClosed) _operationChanges.add(null);
+  }
+
+  static void notifyCashChanged() {
+    if (!_cashChanges.isClosed) _cashChanges.add(null);
+  }
+
+  /// Emite todos los eventos. Útil cuando un cambio afecta varios
+  /// dominios a la vez (p. ej. sincronización de catálogos).
+  static void notifyAllChanged() {
+    notifySalesChanged();
+    notifyOperationChanged();
+    notifyCashChanged();
   }
 
   Future<Database> get database async {
@@ -1520,7 +1557,59 @@ class LocalDb {
 
     final db = await database;
 
+    // ============================================================
+    // PURGA POR CAMBIO DE EMPRESA
+    // ============================================================
+    //
+    // El backend ya filtra por empresa_id del token.
+    //
+    // Este dispositivo se usa con UNA SOLA empresa.
+    //
+    // La primera sincronización tras un login purga los catálogos
+    // locales para evitar mezclar datos entre empresas si el
+    // dispositivo cambió de empresa.
+    //
+    // NO se purgan: sales, sale_items, sale_payments, cash_*.
+    //
+    final purge = await AppStorage().consumeCatalogPurgePending();
+
     await db.transaction((txn) async {
+      if (purge) {
+        // Solo purgamos si el server mandó el catálogo.
+        // Si viene null, algo raro pasó y NO borramos datos locales.
+        if (data['productos'] is List) {
+          await txn.delete('products');
+        }
+
+        if (data['categorias'] is List) {
+          await txn.delete('categories');
+        }
+
+        if (data['clientes'] is List) {
+          await txn.delete('clients');
+        }
+
+        if (data['impuestos'] is List) {
+          await txn.delete('taxes');
+        }
+
+        if (data['formas_pago'] is List) {
+          await txn.delete('payment_methods');
+        }
+
+        if (data['unidades_medida'] is List) {
+          await txn.delete('units');
+        }
+
+        if (data['promociones'] is List) {
+          await txn.delete('promotions');
+        }
+
+        if (data['cupones'] is List) {
+          await txn.delete('coupons');
+        }
+      }
+
       if (data['empresa'] is Map) {
         await _upsertCompanyWithExecutor(
           txn,
@@ -2656,16 +2745,24 @@ class LocalDb {
     );
   }
 
-  /// Devuelve la caja abierta actual (fecha comercial = hoy)
-  /// o `null` si no existe.
+  /// Devuelve la caja abierta actual usando la fecha comercial
+  /// AUTORIZADA POR EL SERVIDOR.
+  ///
+  /// Si no hay fecha comercial guardada, retorna null. NO usamos
+  /// DateTime.now() porque la fecha comercial la manda el backend.
   Future<Map<String, dynamic>?> getCurrentCashRegisterLocal() async {
     final db = await database;
-    final hoy = DateTime.now().toIso8601String().substring(0, 10);
+
+    final hoyKey = await AppStorage().getServerBusinessDateKey();
+
+    if (hoyKey == null || hoyKey.isEmpty) {
+      return null;
+    }
 
     final rows = await db.query(
       'cash_registers',
       where: "fecha_comercial = ? AND estado = 'abierta'",
-      whereArgs: [hoy],
+      whereArgs: [hoyKey],
       orderBy: 'abierta_at DESC',
       limit: 1,
     );
@@ -2673,7 +2770,10 @@ class LocalDb {
     return rows.isEmpty ? null : Map<String, dynamic>.from(rows.first);
   }
 
-  /// Abre una caja para hoy. Si ya existe una abierta, la devuelve.
+  /// Abre una caja para el día comercial AUTORIZADO POR EL SERVIDOR.
+  ///
+  /// Si ya existe una caja abierta para ese día, lanza excepción.
+  /// Si existe una caja cerrada para ese día, la reabre.
   ///
   /// No toca red. Solo SQLite + outbox.
   Future<Map<String, dynamic>> openCashRegisterLocal({
@@ -2683,8 +2783,18 @@ class LocalDb {
   }) async {
     final db = await database;
 
+    // ✅ Fuera del transaction: AppStorage es async.
+    final hoyKey = await AppStorage().getServerBusinessDateKey();
+
+    if (hoyKey == null || hoyKey.isEmpty) {
+      throw Exception(
+        'No existe fecha comercial autorizada. '
+        'Inicia sesión nuevamente.',
+      );
+    }
+
     return db.transaction((txn) async {
-      final hoy = DateTime.now().toIso8601String().substring(0, 10);
+      final hoy = hoyKey;
       final now = DateTime.now().toIso8601String();
 
       final existente = await txn.query(
@@ -2754,7 +2864,8 @@ class LocalDb {
           limit: 1,
         );
 
-        notifySalesChanged();
+        notifyCashChanged();
+        notifyOperationChanged();
 
         return Map<String, dynamic>.from(rows.first);
       }
@@ -2850,7 +2961,8 @@ class LocalDb {
         limit: 1,
       );
 
-      notifySalesChanged();
+      notifyCashChanged();
+      notifyOperationChanged();
 
       return Map<String, dynamic>.from(rows.first);
     });
@@ -2977,10 +3089,51 @@ class LocalDb {
         limit: 1,
       );
 
-      notifySalesChanged();
+      notifyCashChanged();
+      notifyOperationChanged();
 
       return Map<String, dynamic>.from(updated.first);
     });
+  }
+
+  /// Devuelve las ventas del rango agrupadas por método de pago,
+  /// sumando los pagos reales de `sale_payments`. No usa el campo
+  /// `payment_method` (que puede ser "Mixto").
+  Future<List<Map<String, dynamic>>> getSalesByPaymentMethodInRangeLocal({
+    required DateTime desde,
+    required DateTime hasta,
+  }) async {
+    final db = await database;
+
+    final rows = await db.rawQuery(
+      '''
+    SELECT
+      LOWER(COALESCE(p.method, 'efectivo')) AS method_key,
+      COALESCE(p.method, 'Efectivo')       AS method_label,
+      COUNT(DISTINCT s.id)                 AS tickets,
+      COALESCE(SUM(p.amount), 0)           AS total
+    FROM sales s
+    INNER JOIN sale_payments p ON p.sale_id = s.id
+    WHERE s.created_at >= ?
+      AND s.created_at <= ?
+      AND LOWER(COALESCE(s.status, '')) NOT IN
+          ('cancelled','canceled','cancelado','cancelada','anulado','anulada')
+    GROUP BY method_key, method_label
+    ORDER BY total DESC
+  ''',
+      [desde.toIso8601String(), hasta.toIso8601String()],
+    );
+
+    return rows
+        .map(
+          (r) => {
+            'method_key': r['method_key']?.toString() ?? '',
+            'method_label': r['method_label']?.toString() ?? '',
+            'tickets': _toInt(r['tickets']),
+            'total': _toDouble(r['total']),
+          },
+        )
+        .toList();
   }
 
   /// Registra un movimiento manual (ingreso/egreso/retiro/ajuste).
@@ -3047,7 +3200,7 @@ class LocalDb {
         limit: 1,
       );
 
-      notifySalesChanged();
+      notifyCashChanged();
 
       return Map<String, dynamic>.from(rows.first);
     });
@@ -3156,14 +3309,7 @@ class LocalDb {
     }
 
     // ------------------------------------------------------------
-    // 3. Ventas en efectivo del día comercial (💡 ESTO FALTABA)
-    // ------------------------------------------------------------
-    //
-    // Se suman SOLO las ventas pagadas en Efectivo del día comercial
-    // de la caja. Si el sistema maneja ventas en otros métodos, esas
-    // no entran en la caja de efectivo.
-    //
-    // Se excluyen ventas canceladas.
+    // 3. Ventas en efectivo del día comercial
     // ------------------------------------------------------------
     double ventasEfectivo = 0;
     double ventasTotal = 0;
@@ -3331,7 +3477,7 @@ class LocalDb {
   }
 
   /// Devuelve las ventas del día comercial (fecha de la caja) agrupadas
-  /// por método de pago. Se usa para el desglose por tipo de pago.
+  /// por método de pago.
   Future<List<Map<String, dynamic>>> getSalesByPaymentMethodLocal({
     required DateTime businessDate,
   }) async {
