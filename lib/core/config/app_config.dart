@@ -8,7 +8,8 @@ class AppConfig {
   // ============================================================
   static const String apiBaseUrl = String.fromEnvironment(
     'API_BASE_URL',
-    defaultValue: 'https://apis.desarrollos-iaeh.org', // <-- Cambia según tu caso
+    //defaultValue: 'https://apis.desarrollos-iaeh.org', // <-- Cambia según tu caso
+    defaultValue: ' http://10.0.2.2:8000',
   );
 
   static const String apiPrefix = '/api/v1';

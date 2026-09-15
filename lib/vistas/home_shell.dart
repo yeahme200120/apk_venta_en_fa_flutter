@@ -2,9 +2,10 @@ import 'package:flutter/material.dart';
 
 import '../core/network/api_client.dart';
 import '../core/storage/app_storage.dart';
-import 'pos/pos_screen.dart';
-import 'daily_stats/daily_stats_screen.dart';
+import 'caja/cash_management_screen.dart';
+import 'daily_stats/daily_stats_screen_backup.dart';
 import 'operacion/operation_screen.dart';
+import 'pos/pos_screen.dart';
 import 'settings/settings_screen.dart';
 
 class HomeShell extends StatefulWidget {
@@ -20,10 +21,12 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
   int _currentIndex = 0;
   int _cartCount = 0;
 
+  // Sub-tab dentro de "Caja": 0 = Operación, 1 = Movimientos
+  int _cashSubIndex = 0;
+
   // ── Estado operativo ────────────────────────────────────────
-  // Controla si se muestra la tab Caja.
   bool _cajasActivas = false;
-  bool _esCajero = false;  // cajero | admin | superadmin
+  bool _esCajero = false;
 
   @override
   void initState() {
@@ -40,7 +43,6 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // Al volver a primer plano, refrescar estado operativo.
     if (state == AppLifecycleState.resumed && mounted) {
       _loadOperationState();
     }
@@ -51,7 +53,6 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
   // ============================================================
 
   Future<void> _loadOperationState() async {
-    // 1. Usar el caché local mientras llega la respuesta remota.
     final cached = await AppStorage().getOperationState();
     final rolLocal = await AppStorage().getRol();
     final cajeroLocal = await AppStorage().isCajero();
@@ -63,7 +64,6 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
       });
     }
 
-    // 2. Intentar actualizar desde la API (offline-safe).
     try {
       final offline = await AppStorage().isOfflineSession();
       if (!offline) {
@@ -77,11 +77,9 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
         }
       }
     } catch (_) {
-      // Modo offline o API no disponible: usa caché ya aplicado.
+      // Modo offline o API no disponible.
     }
 
-    // 3. Si el rol aún no está guardado (sesiones previas), intentar leerlo
-    //    desde AppStorage como fallback (no tiene método remoto aquí).
     if (rolLocal == null) {
       // Nada que hacer hasta que el usuario vuelva a hacer login online.
     }
@@ -96,11 +94,11 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
   ///   - el usuario tiene rol cajero, admin o superadmin
   bool get _showCajaTab => _cajasActivas && _esCajero;
 
-  // Índices reales según si la tab Caja está visible o no.
-  // Sin Caja: [0=Venta, 1=Stats, 2=Admin]
-  // Con Caja:  [0=Venta, 1=Stats, 2=Caja, 3=Admin]
+  /// Índice real del tab "Caja" (o -1 si no está visible).
+  int get _cajaTabIndex => _showCajaTab ? 2 : -1;
+
   List<Widget> _buildPages() {
-    final pages = <Widget>[
+    return [
       PosScreen(
         key: _posKey,
         onCartChanged: (count) {
@@ -110,10 +108,9 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
         },
       ),
       const DailyStatsScreen(),
-      if (_showCajaTab) const OperationScreen(),
+      if (_showCajaTab) _buildCashTab(),
       const SettingsScreen(),
     ];
-    return pages;
   }
 
   List<NavigationDestination> _buildDestinations() {
@@ -142,6 +139,70 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
     ];
   }
 
+  /// Tab "Caja" con dos sub-vistas internas: Operación y Movimientos.
+  /// Tab "Caja" con dos sub-vistas internas: Operación y Movimientos.
+  Widget _buildCashTab() {
+    final cs = Theme.of(context).colorScheme;
+
+    return Column(
+      children: [
+        // ─────────────────────────────────────────────
+        // Header con el SegmentedButton bien espaciado
+        // ─────────────────────────────────────────────
+        Material(
+          color: cs.surface,
+          elevation: 1,
+          child: SafeArea(
+            bottom: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+              child: SizedBox(
+                width: double.infinity,
+                child: SegmentedButton<int>(
+                  segments: const [
+                    ButtonSegment(
+                      value: 0,
+                      icon: Icon(Icons.tune, size: 16),
+                      label: Text('Operación'),
+                    ),
+                    ButtonSegment(
+                      value: 1,
+                      icon: Icon(
+                        Icons.account_balance_wallet_outlined,
+                        size: 16,
+                      ),
+                      label: Text('Movimientos'),
+                    ),
+                  ],
+                  selected: {_cashSubIndex},
+                  onSelectionChanged: (set) {
+                    setState(() => _cashSubIndex = set.first);
+                  },
+                  showSelectedIcon: false,
+                  style: ButtonStyle(
+                    visualDensity: VisualDensity.compact,
+                    padding: WidgetStateProperty.all(
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+
+        // ─────────────────────────────────────────────
+        // Contenido del sub-tab
+        // ─────────────────────────────────────────────
+        Expanded(
+          child: IndexedStack(
+            index: _cashSubIndex,
+            children: const [OperationScreen(), CashManagementScreen()],
+          ),
+        ),
+      ],
+    );
+  }
   // ============================================================
   // BUILD
   // ============================================================
@@ -152,23 +213,19 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
     final pages = _buildPages();
     final destinations = _buildDestinations();
 
-    // Proteger el índice si cambió el número de tabs.
     final safeIndex = _currentIndex.clamp(0, pages.length - 1);
 
     return Scaffold(
       backgroundColor: colors.surface,
-      body: IndexedStack(
-        index: safeIndex,
-        children: pages,
-      ),
+      body: IndexedStack(index: safeIndex, children: pages),
       bottomNavigationBar: NavigationBar(
         selectedIndex: safeIndex,
         onDestinationSelected: (index) {
           setState(() => _currentIndex = index);
 
-          // Al abrir la tab Caja, refrescar el estado operativo.
-          final cajaTabIndex = _showCajaTab ? 2 : -1;
-          if (index == cajaTabIndex) {
+          // Al abrir la tab Caja, refrescar el estado operativo
+          // y volver al sub-tab de Operación.
+          if (index == _cajaTabIndex) {
             _loadOperationState();
           }
         },

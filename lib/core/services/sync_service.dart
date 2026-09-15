@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:dio/dio.dart';
 import 'package:sqflite/sqflite.dart';
 
 import '../database/local_db.dart';
@@ -1423,10 +1424,38 @@ class SyncService {
         )
         .toList();
 
+    final cashRegisters = queue
+        .where(
+          (item) =>
+              item['entity_type']?.toString().trim().toLowerCase() ==
+              'cash_register',
+        )
+        .toList();
+
+    final cashRegisterCloses = queue
+        .where(
+          (item) =>
+              item['entity_type']?.toString().trim().toLowerCase() ==
+              'cash_register_close',
+        )
+        .toList();
+
+    final cashMovements = queue
+        .where(
+          (item) =>
+              item['entity_type']?.toString().trim().toLowerCase() ==
+              'cash_movement',
+        )
+        .toList();
+
     final ignored = queue.where((item) {
       final type = item['entity_type']?.toString().trim().toLowerCase() ?? '';
 
-      return type != 'category' && type != 'product';
+      return type != 'category' &&
+          type != 'product' &&
+          type != 'cash_register' &&
+          type != 'cash_register_close' &&
+          type != 'cash_movement';
     }).toList();
 
     skipped += ignored.length;
@@ -1463,6 +1492,53 @@ class SyncService {
       total++;
 
       final result = await _processProductQueueItem(item);
+
+      if (result) {
+        synced++;
+      } else {
+        failed++;
+      }
+    }
+    // ==========================================================
+    // 3. CAJAS (APERTURA)
+    // ==========================================================
+
+    for (final item in cashRegisters) {
+      total++;
+
+      final result = await _processCashRegisterQueueItem(item);
+
+      if (result) {
+        synced++;
+      } else {
+        failed++;
+      }
+    }
+
+    // ==========================================================
+    // 4. CAJAS (CIERRE)
+    // ==========================================================
+
+    for (final item in cashRegisterCloses) {
+      total++;
+
+      final result = await _processCashRegisterCloseQueueItem(item);
+
+      if (result) {
+        synced++;
+      } else {
+        failed++;
+      }
+    }
+
+    // ==========================================================
+    // 5. MOVIMIENTOS DE CAJA
+    // ==========================================================
+
+    for (final item in cashMovements) {
+      total++;
+
+      final result = await _processCashMovementQueueItem(item);
 
       if (result) {
         synced++;
@@ -1796,6 +1872,238 @@ class SyncService {
     }
   }
 
+  // ============================================================
+  // PROCESAR APERTURA DE CAJA
+  // ============================================================
+
+  Future<bool> _processCashRegisterQueueItem(Map<String, dynamic> item) async {
+    final queueId = _toInt(item['id']);
+    if (queueId <= 0) return false;
+
+    await _historyDb.markSyncQueueSyncing(queueId);
+
+    try {
+      final payload = Map<String, dynamic>.from(
+        jsonDecode(item['payload_json']?.toString() ?? '{}'),
+      );
+
+      final localId = _toInt(payload['local_id'] ?? item['entity_id_local']);
+      if (localId <= 0) {
+        throw const FormatException('Caja sin local_id válido.');
+      }
+
+      try {
+        final response = await _apiClient.openCashRegister(
+          openingAmount: _toDouble(payload['monto_apertura']),
+          notes: payload['notas']?.toString(),
+        );
+
+        final serverId = _extractServerId(response);
+
+        if (serverId > 0) {
+          final db = await _historyDb.database;
+          await db.update(
+            'cash_registers',
+            {
+              'server_id': serverId,
+              'sync_status': 'synced',
+              'updated_at': DateTime.now().toIso8601String(),
+            },
+            where: 'id = ?',
+            whereArgs: [localId],
+          );
+        }
+
+        await _historyDb.markSyncQueueSynced(
+          queueId,
+          serverId: serverId > 0 ? serverId : null,
+          serverStatus: 'accepted',
+          serverReceivedAt: DateTime.now().toIso8601String(),
+        );
+
+        return true;
+      } on DioException catch (e) {
+        final status = e.response?.statusCode;
+        final mensaje = e.response?.data is Map
+            ? (e.response!.data['message']?.toString() ?? '')
+            : '';
+
+        final esConflictoDeApertura =
+            status == 422 &&
+            mensaje.toLowerCase().contains('ya existe una caja abierta');
+
+        if (esConflictoDeApertura) {
+          print(
+            'ℹ️ Caja local $localId ya está abierta en backend. Vinculando...',
+          );
+
+          try {
+            final remota = await _apiClient.getCurrentCashRegister();
+            final serverId = _toInt(remota?['id']);
+
+            if (serverId > 0) {
+              final db = await _historyDb.database;
+              await db.update(
+                'cash_registers',
+                {
+                  'server_id': serverId,
+                  'sync_status': 'synced',
+                  'updated_at': DateTime.now().toIso8601String(),
+                },
+                where: 'id = ?',
+                whereArgs: [localId],
+              );
+
+              await _historyDb.markSyncQueueSynced(
+                queueId,
+                serverId: serverId,
+                serverStatus: 'accepted',
+                serverReceivedAt: DateTime.now().toIso8601String(),
+              );
+
+              print('✅ Caja local $localId vinculada a server_id $serverId.');
+              return true;
+            }
+          } catch (_) {}
+        }
+
+        rethrow;
+      }
+    } on AuthenticationException {
+      await _resetSyncQueueItemForAuthentication(queueId);
+      rethrow;
+    } catch (e) {
+      print('❌ Error sincronizando apertura de caja: $e');
+      await _historyDb.markSyncQueueFailed(queueId, errorMessage: e.toString());
+      return false;
+    }
+  }
+  // ============================================================
+  // PROCESAR CIERRE DE CAJA
+  // ============================================================
+
+  Future<bool> _processCashRegisterCloseQueueItem(
+    Map<String, dynamic> item,
+  ) async {
+    final queueId = _toInt(item['id']);
+    if (queueId <= 0) return false;
+
+    await _historyDb.markSyncQueueSyncing(queueId);
+
+    try {
+      final payload = Map<String, dynamic>.from(
+        jsonDecode(item['payload_json']?.toString() ?? '{}'),
+      );
+
+      final serverId = _toInt(payload['server_id']);
+
+      if (serverId <= 0) {
+        throw Exception('La caja aún no tiene server_id. Esperando apertura.');
+      }
+
+      final response = await _apiClient.closeCashRegister(
+        cashRegisterId: serverId,
+        declaredAmount: _toDouble(payload['monto_declarado']),
+        notes: payload['notas']?.toString(),
+      );
+
+      await _historyDb.markSyncQueueSynced(
+        queueId,
+        serverId: serverId,
+        serverStatus: 'accepted',
+        serverReceivedAt: DateTime.now().toIso8601String(),
+      );
+
+      return true;
+    } on AuthenticationException {
+      await _resetSyncQueueItemForAuthentication(queueId);
+      rethrow;
+    } catch (e) {
+      print('❌ Error sincronizando cierre de caja: $e');
+      await _historyDb.markSyncQueueFailed(queueId, errorMessage: e.toString());
+      return false;
+    }
+  }
+
+  // ============================================================
+  // PROCESAR MOVIMIENTO DE CAJA
+  // ============================================================
+
+  Future<bool> _processCashMovementQueueItem(Map<String, dynamic> item) async {
+    final queueId = _toInt(item['id']);
+    if (queueId <= 0) return false;
+
+    await _historyDb.markSyncQueueSyncing(queueId);
+
+    try {
+      final payload = Map<String, dynamic>.from(
+        jsonDecode(item['payload_json']?.toString() ?? '{}'),
+      );
+
+      final localId = _toInt(payload['local_id'] ?? item['entity_id_local']);
+      final cashLocalId = _toInt(payload['cash_register_local_id']);
+
+      if (localId <= 0 || cashLocalId <= 0) {
+        throw const FormatException('Movimiento sin referencias válidas.');
+      }
+
+      // Resolver server_id de la caja
+      final db = await _historyDb.database;
+      final rows = await db.query(
+        'cash_registers',
+        columns: ['server_id'],
+        where: 'id = ?',
+        whereArgs: [cashLocalId],
+        limit: 1,
+      );
+
+      final serverCashId = rows.isEmpty ? 0 : _toInt(rows.first['server_id']);
+
+      if (serverCashId <= 0) {
+        throw Exception(
+          'La caja aún no tiene server_id. Reintentando más tarde.',
+        );
+      }
+
+      final response = await _apiClient.registerCashMovement(
+        cashRegisterId: serverCashId,
+        tipo: payload['tipo']?.toString() ?? 'ingreso',
+        concepto: payload['concepto']?.toString() ?? '',
+        monto: _toDouble(payload['monto']),
+        referencia: payload['referencia']?.toString(),
+        notas: payload['notas']?.toString(),
+      );
+
+      final serverId = _extractServerId(response);
+
+      await db.update(
+        'cash_movements',
+        {
+          if (serverId > 0) 'server_id': serverId,
+          'sync_status': 'synced',
+          'updated_at': DateTime.now().toIso8601String(),
+        },
+        where: 'id = ?',
+        whereArgs: [localId],
+      );
+
+      await _historyDb.markSyncQueueSynced(
+        queueId,
+        serverId: serverId > 0 ? serverId : null,
+        serverStatus: 'accepted',
+        serverReceivedAt: DateTime.now().toIso8601String(),
+      );
+
+      return true;
+    } on AuthenticationException {
+      await _resetSyncQueueItemForAuthentication(queueId);
+      rethrow;
+    } catch (e) {
+      print('❌ Error sincronizando movimiento de caja: $e');
+      await _historyDb.markSyncQueueFailed(queueId, errorMessage: e.toString());
+      return false;
+    }
+  }
   // ============================================================
   // EXTRAER SERVER ID DE RESPUESTA
   // ============================================================

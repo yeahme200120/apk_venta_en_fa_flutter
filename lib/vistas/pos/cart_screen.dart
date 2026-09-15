@@ -37,6 +37,24 @@ class _CartScreenState
   bool _isProcessing = false;
 
   // ============================================================
+  // HELPERS
+  // ============================================================
+
+  /// Indica si se puede incrementar la cantidad de un item.
+  ///
+  /// - Si el producto NO es inventariable → sin límite.
+  /// - Si el producto SÍ es inventariable → limitado por stock.
+  bool _canIncrease(CartItem item) {
+    final product = item.product;
+
+    if (!product.isInventoriable) {
+      return true;
+    }
+
+    return item.quantity < product.stock;
+  }
+
+  // ============================================================
   // BUILD
   // ============================================================
 
@@ -347,9 +365,9 @@ class _CartScreenState
                                 tooltip:
                                     'Aumentar',
                                 onPressed:
-                                    item.quantity <
-                                            item.product
-                                                .stock
+                                    _canIncrease(
+                                  item,
+                                )
                                         ? () =>
                                             widget
                                                 .onQuantityChanged(
@@ -457,9 +475,9 @@ class _CartScreenState
                               tooltip:
                                   'Aumentar',
                               onPressed:
-                                  item.quantity <
-                                          item.product
-                                              .stock
+                                  _canIncrease(
+                                item,
+                              )
                                       ? () =>
                                           widget
                                               .onQuantityChanged(

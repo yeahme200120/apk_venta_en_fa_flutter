@@ -12,7 +12,7 @@ class LocalDb {
   LocalDb._internal();
 
   static Database? _database;
-  static const int _databaseVersion = 12;
+  static const int _databaseVersion = 13;
   static final StreamController<void> _salesChanges =
       StreamController<void>.broadcast();
 
@@ -48,6 +48,7 @@ class LocalDb {
     await _createSalesTables(db);
     await _createCatalogTables(db);
     await _createSyncQueueTable(db);
+    await _createCashTables(db);
   }
 
   Future<void> _createCompanyTable(Database db) async {
@@ -352,12 +353,7 @@ class LocalDb {
       };
 
       for (final entry in columns.entries) {
-        await _addColumnIfNotExists(
-          db,
-          'sales',
-          entry.key,
-          entry.value,
-        );
+        await _addColumnIfNotExists(db, 'sales', entry.key, entry.value);
       }
 
       await _addColumnIfNotExists(
@@ -367,19 +363,9 @@ class LocalDb {
         'REAL DEFAULT 0',
       );
 
-      await _addColumnIfNotExists(
-        db,
-        'sale_payments',
-        'referencia',
-        'TEXT',
-      );
+      await _addColumnIfNotExists(db, 'sale_payments', 'referencia', 'TEXT');
 
-      await _addColumnIfNotExists(
-        db,
-        'catalog_sync',
-        'cursor',
-        'TEXT',
-      );
+      await _addColumnIfNotExists(db, 'catalog_sync', 'cursor', 'TEXT');
 
       await db.execute(
         'CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_uuid_local '
@@ -402,12 +388,7 @@ class LocalDb {
     }
 
     if (oldVersion < 9) {
-      await _addColumnIfNotExists(
-        db,
-        'products',
-        'server_id',
-        'INTEGER',
-      );
+      await _addColumnIfNotExists(db, 'products', 'server_id', 'INTEGER');
 
       await db.execute(
         'CREATE INDEX IF NOT EXISTS idx_products_server_id '
@@ -423,19 +404,9 @@ class LocalDb {
     }
 
     if (oldVersion < 10) {
-      await _addColumnIfNotExists(
-        db,
-        'categories',
-        'server_id',
-        'INTEGER',
-      );
+      await _addColumnIfNotExists(db, 'categories', 'server_id', 'INTEGER');
 
-      await _addColumnIfNotExists(
-        db,
-        'products',
-        'category_id',
-        'INTEGER',
-      );
+      await _addColumnIfNotExists(db, 'products', 'category_id', 'INTEGER');
 
       await db.execute(
         'CREATE INDEX IF NOT EXISTS idx_categories_server_id '
@@ -467,9 +438,7 @@ class LocalDb {
           final decoded = jsonDecode(raw.toString());
 
           if (decoded is Map) {
-            final remoteId = _toInt(
-              decoded['server_id'] ?? decoded['id'],
-            );
+            final remoteId = _toInt(decoded['server_id'] ?? decoded['id']);
 
             if (remoteId > 0) {
               await db.update(
@@ -564,6 +533,9 @@ class LocalDb {
         'INTEGER NOT NULL DEFAULT 1',
       );
     }
+    if (oldVersion < 13) {
+      await _createCashTables(db);
+    }
   }
 
   Future<void> _addColumnIfNotExists(
@@ -577,9 +549,7 @@ class LocalDb {
     if (!columns.any(
       (columnInfo) => columnInfo['name']?.toString() == column,
     )) {
-      await db.execute(
-        'ALTER TABLE $table ADD COLUMN $column $definition',
-      );
+      await db.execute('ALTER TABLE $table ADD COLUMN $column $definition');
     }
   }
 
@@ -588,10 +558,7 @@ class LocalDb {
       return value.toDouble();
     }
 
-    return double.tryParse(
-          (value ?? '').toString().replaceAll(',', '.'),
-        ) ??
-        0;
+    return double.tryParse((value ?? '').toString().replaceAll(',', '.')) ?? 0;
   }
 
   int _toInt(dynamic value) {
@@ -612,10 +579,7 @@ class LocalDb {
     return valueInt > 0 ? valueInt : null;
   }
 
-  String? _stringValue(
-    Map<String, dynamic> data,
-    List<String> keys,
-  ) {
+  String? _stringValue(Map<String, dynamic> data, List<String> keys) {
     for (final key in keys) {
       final value = data[key];
 
@@ -628,8 +592,7 @@ class LocalDb {
   }
 
   int _activeValue(Map<String, dynamic> data) {
-    final value =
-        data['is_active'] ?? data['activo'] ?? data['active'] ?? 1;
+    final value = data['is_active'] ?? data['activo'] ?? data['active'] ?? 1;
 
     if (value is bool) {
       return value ? 1 : 0;
@@ -669,14 +632,7 @@ class LocalDb {
 
     final normalized = value.toString().trim().toLowerCase();
 
-    return const {
-          'false',
-          '0',
-          'no',
-          'off',
-        }.contains(normalized)
-        ? 0
-        : 1;
+    return const {'false', '0', 'no', 'off'}.contains(normalized) ? 0 : 1;
   }
 
   List<Map<String, dynamic>> _asList(dynamic value) {
@@ -705,9 +661,7 @@ class LocalDb {
   Future<void> upsertCompany(Map<String, dynamic> data) async {
     final db = await database;
 
-    await db.transaction(
-      (txn) => _upsertCompanyWithExecutor(txn, data),
-    );
+    await db.transaction((txn) => _upsertCompanyWithExecutor(txn, data));
   }
 
   Future<void> _upsertCompanyWithExecutor(
@@ -735,29 +689,25 @@ class LocalDb {
         ? null
         : jsonEncode(config);
 
-    await executor.insert(
-      'company',
-      {
-        'id': id,
-        'nombre': data['nombre']?.toString(),
-        'logo': data['logo']?.toString(),
-        'logo_url': data['logo_url']?.toString(),
-        'colores_json': colorsJson,
-        'configuracion_json': configJson,
-        'direccion': data['direccion']?.toString(),
-        'telefono': data['telefono']?.toString(),
-        'email_contacto': data['email_contacto']?.toString(),
-        'rfc': data['rfc']?.toString(),
-        'razon_social': data['razon_social']?.toString(),
-        'leyenda_ticket': data['leyenda_ticket']?.toString(),
-        'whatsapp_numero': data['whatsapp_numero']?.toString(),
-        'activo': _activeValue(data),
-        'updated_at':
-            _stringValue(data, ['updated_at', 'updatedAt']) ??
-            DateTime.now().toIso8601String(),
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    await executor.insert('company', {
+      'id': id,
+      'nombre': data['nombre']?.toString(),
+      'logo': data['logo']?.toString(),
+      'logo_url': data['logo_url']?.toString(),
+      'colores_json': colorsJson,
+      'configuracion_json': configJson,
+      'direccion': data['direccion']?.toString(),
+      'telefono': data['telefono']?.toString(),
+      'email_contacto': data['email_contacto']?.toString(),
+      'rfc': data['rfc']?.toString(),
+      'razon_social': data['razon_social']?.toString(),
+      'leyenda_ticket': data['leyenda_ticket']?.toString(),
+      'whatsapp_numero': data['whatsapp_numero']?.toString(),
+      'activo': _activeValue(data),
+      'updated_at':
+          _stringValue(data, ['updated_at', 'updatedAt']) ??
+          DateTime.now().toIso8601String(),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   Future<Map<String, dynamic>?> getCompany() async {
@@ -777,18 +727,11 @@ class LocalDb {
     return row;
   }
 
-  Future<List<Map<String, dynamic>>> getProducts() async =>
-      (await database).query(
-        'products',
-        where: 'is_active = 1',
-        orderBy: 'name ASC',
-      );
+  Future<List<Map<String, dynamic>>> getProducts() async => (await database)
+      .query('products', where: 'is_active = 1', orderBy: 'name ASC');
 
   Future<List<Map<String, dynamic>>> getAllProducts() async =>
-      (await database).query(
-        'products',
-        orderBy: 'name ASC',
-      );
+      (await database).query('products', orderBy: 'name ASC');
 
   Future<Map<String, dynamic>?> getProductById(int id) async {
     if (id <= 0) {
@@ -802,14 +745,10 @@ class LocalDb {
       limit: 1,
     );
 
-    return rows.isEmpty
-        ? null
-        : Map<String, dynamic>.from(rows.first);
+    return rows.isEmpty ? null : Map<String, dynamic>.from(rows.first);
   }
 
-  Future<Map<String, dynamic>?> getProductByServerId(
-    int serverId,
-  ) async {
+  Future<Map<String, dynamic>?> getProductByServerId(int serverId) async {
     if (serverId <= 0) {
       return null;
     }
@@ -821,14 +760,10 @@ class LocalDb {
       limit: 1,
     );
 
-    return rows.isEmpty
-        ? null
-        : Map<String, dynamic>.from(rows.first);
+    return rows.isEmpty ? null : Map<String, dynamic>.from(rows.first);
   }
 
-  Future<Map<String, dynamic>?> getProductByCode(
-    String code,
-  ) async {
+  Future<Map<String, dynamic>?> getProductByCode(String code) async {
     final normalized = code.trim();
 
     if (normalized.isEmpty) {
@@ -842,9 +777,7 @@ class LocalDb {
       limit: 1,
     );
 
-    return rows.isEmpty
-        ? null
-        : Map<String, dynamic>.from(rows.first);
+    return rows.isEmpty ? null : Map<String, dynamic>.from(rows.first);
   }
 
   Future<void> setProductServerId({
@@ -857,10 +790,7 @@ class LocalDb {
 
     final updated = await (await database).update(
       'products',
-      {
-        'server_id': serverId,
-        'updated_at': DateTime.now().toIso8601String(),
-      },
+      {'server_id': serverId, 'updated_at': DateTime.now().toIso8601String()},
       where: 'id = ?',
       whereArgs: [localId],
     );
@@ -883,24 +813,19 @@ class LocalDb {
     Map<String, dynamic>? data,
     String? updatedAt,
   }) async {
-    return (await database).insert(
-      'products',
-      {
-        if (id != null) 'id': id,
-        if (serverId != null) 'server_id': serverId,
-        if (categoryId != null) 'category_id': categoryId,
-        'code': code,
-        'name': name,
-        'price': price,
-        'stock': stock,
-        'is_active': isActive ? 1 : 0,
-        'is_inventariable': isInventoriable ? 1 : 0,
-        'data_json': data == null ? null : jsonEncode(data),
-        'updated_at':
-            updatedAt ?? DateTime.now().toIso8601String(),
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    return (await database).insert('products', {
+      if (id != null) 'id': id,
+      if (serverId != null) 'server_id': serverId,
+      if (categoryId != null) 'category_id': categoryId,
+      'code': code,
+      'name': name,
+      'price': price,
+      'stock': stock,
+      'is_active': isActive ? 1 : 0,
+      'is_inventariable': isInventoriable ? 1 : 0,
+      'data_json': data == null ? null : jsonEncode(data),
+      'updated_at': updatedAt ?? DateTime.now().toIso8601String(),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   Future<int> updateProduct({
@@ -926,8 +851,7 @@ class LocalDb {
       if (serverId != null) 'server_id': serverId,
       if (categoryId != null) 'category_id': categoryId,
       if (data != null) 'data_json': jsonEncode(data),
-      'updated_at':
-          updatedAt ?? DateTime.now().toIso8601String(),
+      'updated_at': updatedAt ?? DateTime.now().toIso8601String(),
     };
 
     return (await database).update(
@@ -941,10 +865,7 @@ class LocalDb {
   Future<int> deleteProduct(int id) async {
     return (await database).update(
       'products',
-      {
-        'is_active': 0,
-        'updated_at': DateTime.now().toIso8601String(),
-      },
+      {'is_active': 0, 'updated_at': DateTime.now().toIso8601String()},
       where: 'id = ?',
       whereArgs: [id],
     );
@@ -960,25 +881,18 @@ class LocalDb {
       return;
     }
 
-    await executor.insert(
-      'clients',
-      {
-        'id': id,
-        'name': _stringValue(data, ['name', 'nombre']),
-        'email': _stringValue(data, ['email', 'correo']),
-        'phone': _stringValue(
-          data,
-          ['phone', 'telefono', 'teléfono'],
-        ),
-        'rfc': _stringValue(data, ['rfc']),
-        'is_active': _activeValue(data),
-        'data_json': jsonEncode(data),
-        'updated_at':
-            _stringValue(data, ['updated_at', 'updatedAt']) ??
-            DateTime.now().toIso8601String(),
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    await executor.insert('clients', {
+      'id': id,
+      'name': _stringValue(data, ['name', 'nombre']),
+      'email': _stringValue(data, ['email', 'correo']),
+      'phone': _stringValue(data, ['phone', 'telefono', 'teléfono']),
+      'rfc': _stringValue(data, ['rfc']),
+      'is_active': _activeValue(data),
+      'data_json': jsonEncode(data),
+      'updated_at':
+          _stringValue(data, ['updated_at', 'updatedAt']) ??
+          DateTime.now().toIso8601String(),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   Future<void> _upsertCatalogWithExecutor(
@@ -1017,10 +931,7 @@ class LocalDb {
 
     if (includeRate) {
       values['rate'] = _toDouble(
-        data['rate'] ??
-            data['tasa'] ??
-            data['porcentaje'] ??
-            data['valor'],
+        data['rate'] ?? data['tasa'] ?? data['porcentaje'] ?? data['valor'],
       );
     }
 
@@ -1031,87 +942,48 @@ class LocalDb {
     );
   }
 
-  Future<void> upsertClient(
-    Map<String, dynamic> data,
-  ) async =>
+  Future<void> upsertClient(Map<String, dynamic> data) async =>
       _upsertClientWithExecutor(await database, data);
 
-  Future<void> upsertTax(
-    Map<String, dynamic> data,
-  ) async =>
-      _upsertCatalogItem(
-        'taxes',
-        data,
-        includeRate: true,
-      );
+  Future<void> upsertTax(Map<String, dynamic> data) async =>
+      _upsertCatalogItem('taxes', data, includeRate: true);
 
-  Future<void> upsertPaymentMethod(
-    Map<String, dynamic> data,
-  ) async =>
-      _upsertCatalogItem(
-        'payment_methods',
-        data,
-      );
+  Future<void> upsertPaymentMethod(Map<String, dynamic> data) async =>
+      _upsertCatalogItem('payment_methods', data);
 
-  Future<void> upsertUnit(
-    Map<String, dynamic> data,
-  ) async =>
-      _upsertCatalogItem(
-        'units',
-        data,
-      );
+  Future<void> upsertUnit(Map<String, dynamic> data) async =>
+      _upsertCatalogItem('units', data);
 
-  Future<void> upsertCategory(
-    Map<String, dynamic> data,
-  ) async =>
-      _upsertCategoryWithExecutor(
-        await database,
-        data,
-      );
+  Future<void> upsertCategory(Map<String, dynamic> data) async =>
+      _upsertCategoryWithExecutor(await database, data);
 
   Future<void> _upsertCategoryWithExecutor(
     dynamic executor,
     Map<String, dynamic> data,
   ) async {
-    final serverId = _toInt(
-      data['server_id'] ?? data['id'],
-    );
+    final serverId = _toInt(data['server_id'] ?? data['id']);
 
     if (serverId <= 0) {
       return;
     }
 
     final name =
-        _stringValue(
-          data,
-          [
-            'name',
-            'nombre',
-            'descripcion',
-            'description',
-          ],
-        ) ??
+        _stringValue(data, ['name', 'nombre', 'descripcion', 'description']) ??
         '';
 
     final code =
-        _stringValue(
-          data,
-          [
-            'code',
-            'codigo',
-            'clave',
-            'abreviatura',
-          ],
-        )?.trim() ??
+        _stringValue(data, [
+          'code',
+          'codigo',
+          'clave',
+          'abreviatura',
+        ])?.trim() ??
         '';
 
     final active = _activeValue(data);
 
     final updatedAt =
-        _stringValue(
-          data,
-          ['updated_at', 'updatedAt'],
-        ) ??
+        _stringValue(data, ['updated_at', 'updatedAt']) ??
         DateTime.now().toIso8601String();
 
     final json = jsonEncode(data);
@@ -1172,34 +1044,21 @@ class LocalDb {
       }
     }
 
-    await executor.insert(
-      'categories',
-      {
-        'server_id': serverId,
-        'name': name,
-        'code': code,
-        'is_active': active,
-        'data_json': json,
-        'updated_at': updatedAt,
-      },
-    );
+    await executor.insert('categories', {
+      'server_id': serverId,
+      'name': name,
+      'code': code,
+      'is_active': active,
+      'data_json': json,
+      'updated_at': updatedAt,
+    });
   }
 
-  Future<void> upsertPromotion(
-    Map<String, dynamic> data,
-  ) async =>
-      _upsertCatalogItem(
-        'promotions',
-        data,
-      );
+  Future<void> upsertPromotion(Map<String, dynamic> data) async =>
+      _upsertCatalogItem('promotions', data);
 
-  Future<void> upsertCoupon(
-    Map<String, dynamic> data,
-  ) async =>
-      _upsertCatalogItem(
-        'coupons',
-        data,
-      );
+  Future<void> upsertCoupon(Map<String, dynamic> data) async =>
+      _upsertCatalogItem('coupons', data);
 
   Future<void> _upsertCatalogItem(
     String table,
@@ -1214,22 +1073,13 @@ class LocalDb {
     );
   }
 
-  Future<List<Map<String, dynamic>>> getClients() async =>
-      (await database).query(
-        'clients',
-        where: 'is_active = 1',
-        orderBy: 'name ASC',
-      );
+  Future<List<Map<String, dynamic>>> getClients() async => (await database)
+      .query('clients', where: 'is_active = 1', orderBy: 'name ASC');
 
   Future<List<Map<String, dynamic>>> getAllClients() async =>
-      (await database).query(
-        'clients',
-        orderBy: 'name ASC',
-      );
+      (await database).query('clients', orderBy: 'name ASC');
 
-  Future<Map<String, dynamic>?> getClientById(
-    int id,
-  ) async {
+  Future<Map<String, dynamic>?> getClientById(int id) async {
     final rows = await (await database).query(
       'clients',
       where: 'id = ?',
@@ -1237,23 +1087,17 @@ class LocalDb {
       limit: 1,
     );
 
-    return rows.isEmpty
-        ? null
-        : Map<String, dynamic>.from(rows.first);
+    return rows.isEmpty ? null : Map<String, dynamic>.from(rows.first);
   }
 
-  Future<List<Map<String, dynamic>>> getTaxes() async =>
-      (await database).query(
-        'taxes',
-        where: 'is_active = 1',
-        orderBy: 'name ASC',
-      );
+  Future<List<Map<String, dynamic>>> getTaxes() async => (await database).query(
+    'taxes',
+    where: 'is_active = 1',
+    orderBy: 'name ASC',
+  );
 
   Future<List<Map<String, dynamic>>> getAllTaxes() async =>
-      (await database).query(
-        'taxes',
-        orderBy: 'name ASC',
-      );
+      (await database).query('taxes', orderBy: 'name ASC');
 
   Future<List<Map<String, dynamic>>> getPaymentMethods() async =>
       (await database).query(
@@ -1263,30 +1107,19 @@ class LocalDb {
       );
 
   Future<List<Map<String, dynamic>>> getAllPaymentMethods() async =>
-      (await database).query(
-        'payment_methods',
-        orderBy: 'name ASC',
-      );
+      (await database).query('payment_methods', orderBy: 'name ASC');
 
-  Future<List<Map<String, dynamic>>> getUnits() async =>
-      (await database).query(
-        'units',
-        where: 'is_active = 1',
-        orderBy: 'name ASC',
-      );
+  Future<List<Map<String, dynamic>>> getUnits() async => (await database).query(
+    'units',
+    where: 'is_active = 1',
+    orderBy: 'name ASC',
+  );
 
   Future<List<Map<String, dynamic>>> getAllUnits() async =>
-      (await database).query(
-        'units',
-        orderBy: 'name ASC',
-      );
+      (await database).query('units', orderBy: 'name ASC');
 
-  Future<List<Map<String, dynamic>>> getCategories() async =>
-      (await database).query(
-        'categories',
-        where: 'is_active = 1',
-        orderBy: 'name ASC',
-      );
+  Future<List<Map<String, dynamic>>> getCategories() async => (await database)
+      .query('categories', where: 'is_active = 1', orderBy: 'name ASC');
 
   Future<int> enqueueSyncOperation({
     required String uuidLocal,
@@ -1300,29 +1133,23 @@ class LocalDb {
     final db = await database;
     final now = DateTime.now().toIso8601String();
 
-    return db.insert(
-      'sync_queue',
-      {
-        'uuid_local': uuidLocal,
-        'empresa_id': empresaId,
-        'usuario_id': usuarioId,
-        'business_date': businessDate,
-        'entity_type': entityType,
-        'entity_id_local': entityIdLocal,
-        'payload_json': jsonEncode(payload),
-        'status': 'pending',
-        'server_status': 'not_sent',
-        'attempts': 0,
-        'created_at': now,
-        'updated_at': now,
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    return db.insert('sync_queue', {
+      'uuid_local': uuidLocal,
+      'empresa_id': empresaId,
+      'usuario_id': usuarioId,
+      'business_date': businessDate,
+      'entity_type': entityType,
+      'entity_id_local': entityIdLocal,
+      'payload_json': jsonEncode(payload),
+      'status': 'pending',
+      'server_status': 'not_sent',
+      'attempts': 0,
+      'created_at': now,
+      'updated_at': now,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
-  Future<List<Map<String, dynamic>>> getPendingSyncQueue({
-    int? limit,
-  }) async {
+  Future<List<Map<String, dynamic>>> getPendingSyncQueue({int? limit}) async {
     final db = await database;
     final now = DateTime.now().toIso8601String();
 
@@ -1342,11 +1169,7 @@ class LocalDb {
 
     await (await database).update(
       'sync_queue',
-      {
-        'status': 'syncing',
-        'last_attempt_at': now,
-        'updated_at': now,
-      },
+      {'status': 'syncing', 'last_attempt_at': now, 'updated_at': now},
       where: 'id = ?',
       whereArgs: [id],
     );
@@ -1397,16 +1220,13 @@ class LocalDb {
       limit: 1,
     );
 
-    final currentAttempts =
-        rows.isEmpty ? 0 : _toInt(rows.first['attempts']);
+    final currentAttempts = rows.isEmpty ? 0 : _toInt(rows.first['attempts']);
 
     final attempts = currentAttempts + 1;
 
     final retryMinutes = attempts.clamp(1, 30) * 2;
 
-    final nextRetry = DateTime.now().add(
-      Duration(minutes: retryMinutes),
-    );
+    final nextRetry = DateTime.now().add(Duration(minutes: retryMinutes));
 
     final now = DateTime.now().toIso8601String();
 
@@ -1427,9 +1247,7 @@ class LocalDb {
     );
   }
 
-  Future<String> getNextCategoryCode(
-    String categoryName,
-  ) async {
+  Future<String> getNextCategoryCode(String categoryName) async {
     final name = categoryName.trim();
 
     if (name.isEmpty) {
@@ -1443,10 +1261,7 @@ class LocalDb {
       var result = value;
 
       for (var i = 0; i < accents.length; i++) {
-        result = result.replaceAll(
-          accents[i],
-          replacements[i],
-        );
+        result = result.replaceAll(accents[i], replacements[i]);
       }
 
       return result;
@@ -1455,10 +1270,7 @@ class LocalDb {
     String buildPrefix(String value) {
       final normalized = removeAccents(value)
           .toUpperCase()
-          .replaceAll(
-            RegExp(r'[^A-Z0-9\s]'),
-            ' ',
-          )
+          .replaceAll(RegExp(r'[^A-Z0-9\s]'), ' ')
           .trim();
 
       if (normalized.isEmpty) {
@@ -1488,24 +1300,18 @@ class LocalDb {
       final second = words[1];
 
       if (first.length >= 2) {
-        return (
-          first.substring(0, 2) +
-          second.substring(0, 1)
-        ).padRight(3, 'X');
+        return (first.substring(0, 2) + second.substring(0, 1)).padRight(
+          3,
+          'X',
+        );
       }
 
-      return (
-        first.substring(0, 1) +
-        second.substring(0, 2)
-      ).padRight(3, 'X');
+      return (first.substring(0, 1) + second.substring(0, 2)).padRight(3, 'X');
     }
 
     final prefix = buildPrefix(name);
 
-    final rows = await (await database).query(
-      'categories',
-      columns: ['code'],
-    );
+    final rows = await (await database).query('categories', columns: ['code']);
 
     var maxSequence = 0;
 
@@ -1527,9 +1333,7 @@ class LocalDb {
         continue;
       }
 
-      final sequence = int.tryParse(
-        match.group(1) ?? '',
-      );
+      final sequence = int.tryParse(match.group(1) ?? '');
 
       if (sequence != null && sequence > maxSequence) {
         maxSequence = sequence;
@@ -1542,36 +1346,19 @@ class LocalDb {
   }
 
   Future<List<Map<String, dynamic>>> getAllCategories() async =>
-      (await database).query(
-        'categories',
-        orderBy: 'name ASC',
-      );
+      (await database).query('categories', orderBy: 'name ASC');
 
-  Future<List<Map<String, dynamic>>> getPromotions() async =>
-      (await database).query(
-        'promotions',
-        where: 'is_active = 1',
-        orderBy: 'name ASC',
-      );
+  Future<List<Map<String, dynamic>>> getPromotions() async => (await database)
+      .query('promotions', where: 'is_active = 1', orderBy: 'name ASC');
 
   Future<List<Map<String, dynamic>>> getAllPromotions() async =>
-      (await database).query(
-        'promotions',
-        orderBy: 'name ASC',
-      );
+      (await database).query('promotions', orderBy: 'name ASC');
 
-  Future<List<Map<String, dynamic>>> getCoupons() async =>
-      (await database).query(
-        'coupons',
-        where: 'is_active = 1',
-        orderBy: 'name ASC',
-      );
+  Future<List<Map<String, dynamic>>> getCoupons() async => (await database)
+      .query('coupons', where: 'is_active = 1', orderBy: 'name ASC');
 
   Future<List<Map<String, dynamic>>> getAllCoupons() async =>
-      (await database).query(
-        'coupons',
-        orderBy: 'name ASC',
-      );
+      (await database).query('coupons', orderBy: 'name ASC');
 
   Future<List<Map<String, dynamic>>> getCatalogItems(
     String table, {
@@ -1591,8 +1378,7 @@ class LocalDb {
             ...row,
             'id': _toInt(row['id']),
             'is_active': _toInt(row['is_active']),
-            if (table == 'taxes')
-              'rate': _toDouble(row['rate']),
+            if (table == 'taxes') 'rate': _toDouble(row['rate']),
           },
         )
         .toList();
@@ -1609,9 +1395,7 @@ class LocalDb {
 
   void _validateCatalogTable(String table) {
     if (!_catalogTables.contains(table)) {
-      throw ArgumentError(
-        'Catálogo no permitido: $table',
-      );
+      throw ArgumentError('Catálogo no permitido: $table');
     }
   }
 
@@ -1625,17 +1409,14 @@ class LocalDb {
   }) async {
     _validateCatalogTable(table);
 
-    return (await database).insert(
-      table,
-      {
-        'name': name.trim(),
-        'code': code?.trim(),
-        if (table == 'taxes') 'rate': rate ?? 0,
-        'is_active': isActive ? 1 : 0,
-        'data_json': data == null ? null : jsonEncode(data),
-        'updated_at': DateTime.now().toIso8601String(),
-      },
-    );
+    return (await database).insert(table, {
+      'name': name.trim(),
+      'code': code?.trim(),
+      if (table == 'taxes') 'rate': rate ?? 0,
+      'is_active': isActive ? 1 : 0,
+      'data_json': data == null ? null : jsonEncode(data),
+      'updated_at': DateTime.now().toIso8601String(),
+    });
   }
 
   Future<int> updateCatalogItem({
@@ -1664,18 +1445,12 @@ class LocalDb {
     );
   }
 
-  Future<int> deleteCatalogItem(
-    String table,
-    int id,
-  ) async {
+  Future<int> deleteCatalogItem(String table, int id) async {
     _validateCatalogTable(table);
 
     return (await database).update(
       table,
-      {
-        'is_active': 0,
-        'updated_at': DateTime.now().toIso8601String(),
-      },
+      {'is_active': 0, 'updated_at': DateTime.now().toIso8601String()},
       where: 'id = ?',
       whereArgs: [id],
     );
@@ -1689,10 +1464,7 @@ class LocalDb {
 
     return (await database).update(
       table,
-      {
-        'is_active': 1,
-        'updated_at': DateTime.now().toIso8601String(),
-      },
+      {'is_active': 1, 'updated_at': DateTime.now().toIso8601String()},
       where: 'id = ?',
       whereArgs: [id],
     );
@@ -1704,18 +1476,14 @@ class LocalDb {
     String? phone,
     String? rfc,
     bool isActive = true,
-  }) async =>
-      (await database).insert(
-        'clients',
-        {
-          'name': name.trim(),
-          'email': email?.trim(),
-          'phone': phone?.trim(),
-          'rfc': rfc?.trim(),
-          'is_active': isActive ? 1 : 0,
-          'updated_at': DateTime.now().toIso8601String(),
-        },
-      );
+  }) async => (await database).insert('clients', {
+    'name': name.trim(),
+    'email': email?.trim(),
+    'phone': phone?.trim(),
+    'rfc': rfc?.trim(),
+    'is_active': isActive ? 1 : 0,
+    'updated_at': DateTime.now().toIso8601String(),
+  });
 
   Future<int> updateClient({
     required int id,
@@ -1724,35 +1492,28 @@ class LocalDb {
     String? phone,
     String? rfc,
     bool isActive = true,
-  }) async =>
-      (await database).update(
-        'clients',
-        {
-          'name': name.trim(),
-          'email': email?.trim(),
-          'phone': phone?.trim(),
-          'rfc': rfc?.trim(),
-          'is_active': isActive ? 1 : 0,
-          'updated_at': DateTime.now().toIso8601String(),
-        },
-        where: 'id = ?',
-        whereArgs: [id],
-      );
+  }) async => (await database).update(
+    'clients',
+    {
+      'name': name.trim(),
+      'email': email?.trim(),
+      'phone': phone?.trim(),
+      'rfc': rfc?.trim(),
+      'is_active': isActive ? 1 : 0,
+      'updated_at': DateTime.now().toIso8601String(),
+    },
+    where: 'id = ?',
+    whereArgs: [id],
+  );
 
-  Future<int> deleteClient(int id) async =>
-      (await database).update(
-        'clients',
-        {
-          'is_active': 0,
-          'updated_at': DateTime.now().toIso8601String(),
-        },
-        where: 'id = ?',
-        whereArgs: [id],
-      );
+  Future<int> deleteClient(int id) async => (await database).update(
+    'clients',
+    {'is_active': 0, 'updated_at': DateTime.now().toIso8601String()},
+    where: 'id = ?',
+    whereArgs: [id],
+  );
 
-  Future<void> syncCatalogs(
-    Map<String, dynamic> response,
-  ) async {
+  Future<void> syncCatalogs(Map<String, dynamic> response) async {
     final data = response['data'] is Map
         ? Map<String, dynamic>.from(response['data'])
         : response;
@@ -1763,42 +1524,23 @@ class LocalDb {
       if (data['empresa'] is Map) {
         await _upsertCompanyWithExecutor(
           txn,
-          Map<String, dynamic>.from(
-            data['empresa'],
-          ),
+          Map<String, dynamic>.from(data['empresa']),
         );
       }
 
-      for (final category in _asList(
-        data['categorias'],
-      )) {
-        await _upsertCategoryWithExecutor(
-          txn,
-          category,
-        );
+      for (final category in _asList(data['categorias'])) {
+        await _upsertCategoryWithExecutor(txn, category);
       }
 
-      for (final product in _asList(
-        data['productos'],
-      )) {
-        await _upsertProductWithExecutor(
-          txn,
-          product,
-        );
+      for (final product in _asList(data['productos'])) {
+        await _upsertProductWithExecutor(txn, product);
       }
 
-      for (final client in _asList(
-        data['clientes'],
-      )) {
-        await _upsertClientWithExecutor(
-          txn,
-          client,
-        );
+      for (final client in _asList(data['clientes'])) {
+        await _upsertClientWithExecutor(txn, client);
       }
 
-      for (final item in _asList(
-        data['impuestos'],
-      )) {
+      for (final item in _asList(data['impuestos'])) {
         await _upsertCatalogWithExecutor(
           txn,
           table: 'taxes',
@@ -1807,9 +1549,7 @@ class LocalDb {
         );
       }
 
-      for (final item in _asList(
-        data['formas_pago'],
-      )) {
+      for (final item in _asList(data['formas_pago'])) {
         await _upsertCatalogWithExecutor(
           txn,
           table: 'payment_methods',
@@ -1817,56 +1557,30 @@ class LocalDb {
         );
       }
 
-      for (final item in _asList(
-        data['unidades_medida'],
-      )) {
-        await _upsertCatalogWithExecutor(
-          txn,
-          table: 'units',
-          data: item,
-        );
+      for (final item in _asList(data['unidades_medida'])) {
+        await _upsertCatalogWithExecutor(txn, table: 'units', data: item);
       }
 
-      for (final item in _asList(
-        data['promociones'],
-      )) {
-        await _upsertCatalogWithExecutor(
-          txn,
-          table: 'promotions',
-          data: item,
-        );
+      for (final item in _asList(data['promociones'])) {
+        await _upsertCatalogWithExecutor(txn, table: 'promotions', data: item);
       }
 
-      for (final item in _asList(
-        data['cupones'],
-      )) {
-        await _upsertCatalogWithExecutor(
-          txn,
-          table: 'coupons',
-          data: item,
-        );
+      for (final item in _asList(data['cupones'])) {
+        await _upsertCatalogWithExecutor(txn, table: 'coupons', data: item);
       }
 
       if (data['versiones'] is Map) {
         for (final entry in (data['versiones'] as Map).entries) {
-          await txn.insert(
-            'catalog_sync',
-            {
-              'catalog': entry.key.toString(),
-              'version': entry.value?.toString(),
-              'synced_at':
-                  DateTime.now().toIso8601String(),
-            },
-            conflictAlgorithm:
-                ConflictAlgorithm.replace,
-          );
+          await txn.insert('catalog_sync', {
+            'catalog': entry.key.toString(),
+            'version': entry.value?.toString(),
+            'synced_at': DateTime.now().toIso8601String(),
+          }, conflictAlgorithm: ConflictAlgorithm.replace);
         }
       }
     });
 
-    await _processTombstones(
-      data['tombstones'],
-    );
+    await _processTombstones(data['tombstones']);
 
     notifySalesChanged();
   }
@@ -1881,51 +1595,29 @@ class LocalDb {
       return;
     }
 
-    final code =
-        _stringValue(
-          data,
-          ['code', 'codigo', 'sku'],
-        )?.trim() ??
-        '';
+    final code = _stringValue(data, ['code', 'codigo', 'sku'])?.trim() ?? '';
 
-    final name =
-        _stringValue(
-          data,
-          ['name', 'nombre'],
-        ) ??
-        '';
+    final name = _stringValue(data, ['name', 'nombre']) ?? '';
 
     final price = _toDouble(
-      data['price'] ??
-          data['precio'] ??
-          data['precio_venta'],
+      data['price'] ?? data['precio'] ?? data['precio_venta'],
     );
 
     final stock = _toDouble(
-      data['stock'] ??
-          data['existencia'] ??
-          data['cantidad'],
+      data['stock'] ?? data['existencia'] ?? data['cantidad'],
     );
 
     final active = _activeValue(data);
 
-    final inventariable =
-        _inventariableValue(data);
+    final inventariable = _inventariableValue(data);
 
     final updatedAt =
-        _stringValue(
-          data,
-          ['updated_at', 'updatedAt'],
-        ) ??
+        _stringValue(data, ['updated_at', 'updatedAt']) ??
         DateTime.now().toIso8601String();
 
     final json = jsonEncode(data);
 
-    final categoryId =
-        await _resolveLocalCategoryId(
-      executor,
-      data,
-    );
+    final categoryId = await _resolveLocalCategoryId(executor, data);
 
     final byServerId = await executor.query(
       'products',
@@ -1935,15 +1627,13 @@ class LocalDb {
     );
 
     if (byServerId.isNotEmpty) {
-      final localId =
-          _toInt(byServerId.first['id']);
+      final localId = _toInt(byServerId.first['id']);
 
       await executor.update(
         'products',
         {
           'server_id': serverId,
-          if (categoryId != null)
-            'category_id': categoryId,
+          if (categoryId != null) 'category_id': categoryId,
           'code': code,
           'name': name,
           'price': price,
@@ -1969,15 +1659,13 @@ class LocalDb {
       );
 
       if (byCode.isNotEmpty) {
-        final localId =
-            _toInt(byCode.first['id']);
+        final localId = _toInt(byCode.first['id']);
 
         await executor.update(
           'products',
           {
             'server_id': serverId,
-            if (categoryId != null)
-              'category_id': categoryId,
+            if (categoryId != null) 'category_id': categoryId,
             'code': code,
             'name': name,
             'price': price,
@@ -1995,22 +1683,18 @@ class LocalDb {
       }
     }
 
-    await executor.insert(
-      'products',
-      {
-        'server_id': serverId,
-        if (categoryId != null)
-          'category_id': categoryId,
-        'code': code,
-        'name': name,
-        'price': price,
-        'stock': stock,
-        'is_inventariable': inventariable,
-        'is_active': active,
-        'data_json': json,
-        'updated_at': updatedAt,
-      },
-    );
+    await executor.insert('products', {
+      'server_id': serverId,
+      if (categoryId != null) 'category_id': categoryId,
+      'code': code,
+      'name': name,
+      'price': price,
+      'stock': stock,
+      'is_inventariable': inventariable,
+      'is_active': active,
+      'data_json': json,
+      'updated_at': updatedAt,
+    });
   }
 
   Future<int?> _resolveLocalCategoryId(
@@ -2018,9 +1702,7 @@ class LocalDb {
     Map<String, dynamic> data,
   ) async {
     final categoryServerId = _toInt(
-      data['categoria_id'] ??
-          data['category_id'] ??
-          data['categoryId'],
+      data['categoria_id'] ?? data['category_id'] ?? data['categoryId'],
     );
 
     if (categoryServerId <= 0) {
@@ -2056,20 +1738,13 @@ class LocalDb {
     return null;
   }
 
-  Future<void> upsertProductFromApi(
-    Map<String, dynamic> data,
-  ) async {
-    await _upsertProductWithExecutor(
-      await database,
-      data,
-    );
+  Future<void> upsertProductFromApi(Map<String, dynamic> data) async {
+    await _upsertProductWithExecutor(await database, data);
 
     notifySalesChanged();
   }
 
-  Future<void> applySyncProductMappings(
-    dynamic mappings,
-  ) async {
+  Future<void> applySyncProductMappings(dynamic mappings) async {
     if (mappings is! List) {
       return;
     }
@@ -2086,11 +1761,9 @@ class LocalDb {
 
         final item = Map<String, dynamic>.from(raw);
 
-        final localId =
-            _toInt(item['producto_local_id']);
+        final localId = _toInt(item['producto_local_id']);
 
-        final serverId =
-            _toInt(item['producto_server_id']);
+        final serverId = _toInt(item['producto_server_id']);
 
         if (localId <= 0 || serverId <= 0) {
           continue;
@@ -2100,8 +1773,7 @@ class LocalDb {
           'products',
           {
             'server_id': serverId,
-            'updated_at':
-                DateTime.now().toIso8601String(),
+            'updated_at': DateTime.now().toIso8601String(),
           },
           where: 'id = ?',
           whereArgs: [localId],
@@ -2116,9 +1788,7 @@ class LocalDb {
     }
   }
 
-  Future<void> _processTombstones(
-    dynamic data,
-  ) async {
+  Future<void> _processTombstones(dynamic data) async {
     if (data is! Map) {
       return;
     }
@@ -2145,36 +1815,27 @@ class LocalDb {
         }
 
         for (final value in values) {
-          final id = _toInt(
-            value is Map ? value['id'] : value,
-          );
+          final id = _toInt(value is Map ? value['id'] : value);
 
           if (id <= 0) {
             continue;
           }
 
-          if (entry.key == 'productos' ||
-              entry.key == 'categorias') {
+          if (entry.key == 'productos' || entry.key == 'categorias') {
             await txn.delete(
               entry.value,
               where: 'server_id = ?',
               whereArgs: [id],
             );
           } else {
-            await txn.delete(
-              entry.value,
-              where: 'id = ?',
-              whereArgs: [id],
-            );
+            await txn.delete(entry.value, where: 'id = ?', whereArgs: [id]);
           }
         }
       }
     });
   }
 
-  Future<String?> getCatalogVersion(
-    String catalog,
-  ) async {
+  Future<String?> getCatalogVersion(String catalog) async {
     final rows = await (await database).query(
       'catalog_sync',
       where: 'catalog = ?',
@@ -2182,14 +1843,10 @@ class LocalDb {
       limit: 1,
     );
 
-    return rows.isEmpty
-        ? null
-        : rows.first['version']?.toString();
+    return rows.isEmpty ? null : rows.first['version']?.toString();
   }
 
-  Future<String?> getCatalogCursor(
-    String catalog,
-  ) async {
+  Future<String?> getCatalogCursor(String catalog) async {
     final rows = await (await database).query(
       'catalog_sync',
       where: 'catalog = ?',
@@ -2197,9 +1854,7 @@ class LocalDb {
       limit: 1,
     );
 
-    return rows.isEmpty
-        ? null
-        : rows.first['cursor']?.toString();
+    return rows.isEmpty ? null : rows.first['cursor']?.toString();
   }
 
   Future<void> setCatalogVersion(
@@ -2207,27 +1862,20 @@ class LocalDb {
     String? version, {
     String? cursor,
   }) async {
-    await (await database).insert(
-      'catalog_sync',
-      {
-        'catalog': catalog,
-        'version': version,
-        'cursor': cursor,
-        'synced_at': DateTime.now().toIso8601String(),
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    await (await database).insert('catalog_sync', {
+      'catalog': catalog,
+      'version': version,
+      'cursor': cursor,
+      'synced_at': DateTime.now().toIso8601String(),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   Future<Map<String, String?>> getCatalogVersions() async {
-    final rows = await (await database).query(
-      'catalog_sync',
-    );
+    final rows = await (await database).query('catalog_sync');
 
     return {
       for (final row in rows)
-        row['catalog'].toString():
-            row['version']?.toString(),
+        row['catalog'].toString(): row['version']?.toString(),
     };
   }
 
@@ -2268,68 +1916,46 @@ class LocalDb {
         return _toInt(existing.first['id']);
       }
 
-      final id = await txn.insert(
-        'sales',
-        {
-          'uuid_local': uuid,
-          'business_date':
-              businessDate ?? now.substring(0, 10),
-          'total': total,
-          'status': status,
-          'sync_status': syncStatus,
-          'payment_method': paymentMethod,
-          'cash_received': cashReceived,
-          'change_due': changeDue,
-          'mesa_id': tableId,
-          'mesa_nombre': tableName,
-          'cliente_id': clienteId,
-          'descuento_global': descuentoGlobal,
-          'impuesto_global': impuestoGlobal,
-          'notas': notas,
-          'created_at': now,
-          'updated_at': now,
-          'paid_at': status == 'paid' ? now : null,
-          'print_ticket': printTicket ? 1 : 0,
-        },
-      );
+      final id = await txn.insert('sales', {
+        'uuid_local': uuid,
+        'business_date': businessDate ?? now.substring(0, 10),
+        'total': total,
+        'status': status,
+        'sync_status': syncStatus,
+        'payment_method': paymentMethod,
+        'cash_received': cashReceived,
+        'change_due': changeDue,
+        'mesa_id': tableId,
+        'mesa_nombre': tableName,
+        'cliente_id': clienteId,
+        'descuento_global': descuentoGlobal,
+        'impuesto_global': impuestoGlobal,
+        'notas': notas,
+        'created_at': now,
+        'updated_at': now,
+        'paid_at': status == 'paid' ? now : null,
+        'print_ticket': printTicket ? 1 : 0,
+      });
 
       for (final item in items) {
-        await txn.insert(
-          'sale_items',
-          {
-            'sale_id': id,
-            'product_id': _toInt(
-              item['product_id'],
-            ),
-            'name': item['name'],
-            'quantity': _toDouble(
-              item['quantity'],
-            ),
-            'unit_price': _toDouble(
-              item['unit_price'],
-            ),
-            'total': _toDouble(
-              item['total'],
-            ),
-            'descuento': _toDouble(
-              item['descuento'],
-            ),
-          },
-        );
+        await txn.insert('sale_items', {
+          'sale_id': id,
+          'product_id': _toInt(item['product_id']),
+          'name': item['name'],
+          'quantity': _toDouble(item['quantity']),
+          'unit_price': _toDouble(item['unit_price']),
+          'total': _toDouble(item['total']),
+          'descuento': _toDouble(item['descuento']),
+        });
       }
 
       for (final payment in payments) {
-        await txn.insert(
-          'sale_payments',
-          {
-            'sale_id': id,
-            'method': payment['method'],
-            'amount': _toDouble(
-              payment['amount'],
-            ),
-            'referencia': payment['referencia'],
-          },
-        );
+        await txn.insert('sale_payments', {
+          'sale_id': id,
+          'method': payment['method'],
+          'amount': _toDouble(payment['amount']),
+          'referencia': payment['referencia'],
+        });
       }
 
       created = true;
@@ -2344,16 +1970,12 @@ class LocalDb {
     return saleId;
   }
 
-  Future<void> setSalePrintTicket(
-    int saleId,
-    bool printed,
-  ) async {
+  Future<void> setSalePrintTicket(int saleId, bool printed) async {
     final updated = await (await database).update(
       'sales',
       {
         'print_ticket': printed ? 1 : 0,
-        'updated_at':
-            DateTime.now().toIso8601String(),
+        'updated_at': DateTime.now().toIso8601String(),
       },
       where: 'id = ?',
       whereArgs: [saleId],
@@ -2373,22 +1995,15 @@ class LocalDb {
     final todayMonth = now.month;
     final todayDay = now.day;
 
-    final rows = await db.query(
-      'sales',
-      orderBy: 'created_at DESC',
-    );
+    final rows = await db.query('sales', orderBy: 'created_at DESC');
 
     final result = <Map<String, dynamic>>[];
 
     for (final row in rows) {
-      final createdAt =
-          row['created_at']?.toString();
+      final createdAt = row['created_at']?.toString();
 
-      if (createdAt != null &&
-          createdAt.trim().isNotEmpty) {
-        final parsed = DateTime.tryParse(
-          createdAt,
-        );
+      if (createdAt != null && createdAt.trim().isNotEmpty) {
+        final parsed = DateTime.tryParse(createdAt);
 
         if (parsed != null) {
           final local = parsed.toLocal();
@@ -2396,9 +2011,7 @@ class LocalDb {
           if (local.year == todayYear &&
               local.month == todayMonth &&
               local.day == todayDay) {
-            result.add(
-              Map<String, dynamic>.from(row),
-            );
+            result.add(Map<String, dynamic>.from(row));
           }
 
           continue;
@@ -2409,9 +2022,7 @@ class LocalDb {
           '${todayYear.toString().padLeft(4, '0')}-'
               '${todayMonth.toString().padLeft(2, '0')}-'
               '${todayDay.toString().padLeft(2, '0')}') {
-        result.add(
-          Map<String, dynamic>.from(row),
-        );
+        result.add(Map<String, dynamic>.from(row));
       }
     }
 
@@ -2449,23 +2060,16 @@ class LocalDb {
 
   Future<List<Map<String, dynamic>>> getPendingSales({
     bool includeFailed = true,
-  }) async =>
-      getSales(
-        syncStatus:
-            includeFailed ? null : 'pending',
-      ).then(
-        (rows) => rows
-            .where(
-              (row) =>
-                  row['sync_status'] == 'pending' ||
-                  row['sync_status'] == 'failed',
-            )
-            .toList(),
-      );
+  }) async => getSales(syncStatus: includeFailed ? null : 'pending').then(
+    (rows) => rows
+        .where(
+          (row) =>
+              row['sync_status'] == 'pending' || row['sync_status'] == 'failed',
+        )
+        .toList(),
+  );
 
-  Future<Map<String, dynamic>?> getSaleById(
-    int id,
-  ) async {
+  Future<Map<String, dynamic>?> getSaleById(int id) async {
     final rows = await (await database).query(
       'sales',
       where: 'id = ?',
@@ -2473,38 +2077,29 @@ class LocalDb {
       limit: 1,
     );
 
-    return rows.isEmpty
-        ? null
-        : Map<String, dynamic>.from(rows.first);
+    return rows.isEmpty ? null : Map<String, dynamic>.from(rows.first);
   }
 
-  Future<List<Map<String, dynamic>>> getSaleItemsBySaleId(
-    int id,
-  ) async =>
+  Future<List<Map<String, dynamic>>> getSaleItemsBySaleId(int id) async =>
       (await database).query(
         'sale_items',
         where: 'sale_id = ?',
         whereArgs: [id],
       );
 
-  Future<List<Map<String, dynamic>>> getSalePaymentsBySaleId(
-    int id,
-  ) async =>
+  Future<List<Map<String, dynamic>>> getSalePaymentsBySaleId(int id) async =>
       (await database).query(
         'sale_payments',
         where: 'sale_id = ?',
         whereArgs: [id],
       );
 
-  Future<void> markSaleSyncing(
-    int saleId,
-  ) async {
+  Future<void> markSaleSyncing(int saleId) async {
     final updated = await (await database).update(
       'sales',
       {
         'sync_status': 'syncing',
-        'updated_at':
-            DateTime.now().toIso8601String(),
+        'updated_at': DateTime.now().toIso8601String(),
       },
       where: 'id = ?',
       whereArgs: [saleId],
@@ -2519,43 +2114,26 @@ class LocalDb {
     int saleId, {
     Map<String, dynamic>? serverResponse,
   }) async {
-    final response =
-        serverResponse ?? const <String, dynamic>{};
+    final response = serverResponse ?? const <String, dynamic>{};
 
-    Map<String, dynamic> nested =
-        response['data'] is Map
-            ? Map<String, dynamic>.from(
-                response['data'],
-              )
-            : Map<String, dynamic>.from(
-                response,
-              );
+    Map<String, dynamic> nested = response['data'] is Map
+        ? Map<String, dynamic>.from(response['data'])
+        : Map<String, dynamic>.from(response);
 
     final processed = nested['procesadas'];
 
-    if (processed is List &&
-        processed.isNotEmpty &&
-        processed.first is Map) {
-      final first =
-          Map<String, dynamic>.from(
-            processed.first,
-          );
+    if (processed is List && processed.isNotEmpty && processed.first is Map) {
+      final first = Map<String, dynamic>.from(processed.first);
 
-      nested = {
-        ...nested,
-        ...first,
-      };
+      nested = {...nested, ...first};
     }
 
     final serverId = _nullableInt(
-      nested['server_id'] ??
-          nested['venta_id'] ??
-          nested['id'],
+      nested['server_id'] ?? nested['venta_id'] ?? nested['id'],
     );
 
     final serverFolio =
-        nested['folio']?.toString() ??
-        nested['server_folio']?.toString();
+        nested['folio']?.toString() ?? nested['server_folio']?.toString();
 
     final updated = await (await database).update(
       'sales',
@@ -2563,12 +2141,10 @@ class LocalDb {
         'sync_status': 'synced',
         'server_id': serverId,
         'server_folio': serverFolio,
-        'server_synced_at':
-            DateTime.now().toIso8601String(),
+        'server_synced_at': DateTime.now().toIso8601String(),
         'last_sync_error': null,
         'next_retry_at': null,
-        'updated_at':
-            DateTime.now().toIso8601String(),
+        'updated_at': DateTime.now().toIso8601String(),
       },
       where: 'id = ?',
       whereArgs: [saleId],
@@ -2588,14 +2164,10 @@ class LocalDb {
 
     final sale = await getSaleById(saleId);
 
-    final count =
-        attempts ??
-        (_toInt(sale?['sync_attempts']) + 1);
+    final count = attempts ?? (_toInt(sale?['sync_attempts']) + 1);
 
     final retry = DateTime.now().add(
-      Duration(
-        minutes: count.clamp(1, 30).toInt() * 2,
-      ),
+      Duration(minutes: count.clamp(1, 30).toInt() * 2),
     );
 
     final updated = await db.update(
@@ -2604,10 +2176,8 @@ class LocalDb {
         'sync_status': 'failed',
         'sync_attempts': count,
         'last_sync_error': error,
-        'next_retry_at':
-            retry.toIso8601String(),
-        'updated_at':
-            DateTime.now().toIso8601String(),
+        'next_retry_at': retry.toIso8601String(),
+        'updated_at': DateTime.now().toIso8601String(),
       },
       where: 'id = ?',
       whereArgs: [saleId],
@@ -2618,17 +2188,14 @@ class LocalDb {
     }
   }
 
-  Future<void> resetSaleForRetry(
-    int saleId,
-  ) async {
+  Future<void> resetSaleForRetry(int saleId) async {
     final updated = await (await database).update(
       'sales',
       {
         'sync_status': 'pending',
         'next_retry_at': null,
         'last_sync_error': null,
-        'updated_at':
-            DateTime.now().toIso8601String(),
+        'updated_at': DateTime.now().toIso8601String(),
       },
       where: 'id = ?',
       whereArgs: [saleId],
@@ -2643,14 +2210,10 @@ class LocalDb {
     int saleId,
     Map<String, dynamic> response,
   ) async {
-    await markSaleAsSynced(
-      saleId,
-      serverResponse: response,
-    );
+    await markSaleAsSynced(saleId, serverResponse: response);
   }
 
-  Future<List<Map<String, dynamic>>>
-      getPendingSalesReadyToSync({
+  Future<List<Map<String, dynamic>>> getPendingSalesReadyToSync({
     int? limit,
   }) async {
     final db = await database;
@@ -2663,8 +2226,7 @@ class LocalDb {
           "sync_status IN ('pending','failed') "
           "AND (next_retry_at IS NULL OR next_retry_at <= ?)",
       whereArgs: [now],
-      orderBy:
-          'business_date ASC, created_at ASC',
+      orderBy: 'business_date ASC, created_at ASC',
       limit: limit,
     );
   }
@@ -2674,8 +2236,7 @@ class LocalDb {
     String status, {
     String syncStatus = 'pending',
   }) async {
-    final now =
-        DateTime.now().toIso8601String();
+    final now = DateTime.now().toIso8601String();
 
     final updated = await (await database).update(
       'sales',
@@ -2700,8 +2261,7 @@ class LocalDb {
     required double cashReceived,
     required double changeDue,
   }) async {
-    final now =
-        DateTime.now().toIso8601String();
+    final now = DateTime.now().toIso8601String();
 
     final updated = await (await database).update(
       'sales',
@@ -2723,13 +2283,10 @@ class LocalDb {
     }
   }
 
-  Future<bool> cancelSale(
-    int saleId,
-  ) async {
+  Future<bool> cancelSale(int saleId) async {
     final db = await database;
 
-    final cancelled =
-        await db.transaction((txn) async {
+    final cancelled = await db.transaction((txn) async {
       final rows = await txn.query(
         'sales',
         where: 'id = ?',
@@ -2737,8 +2294,7 @@ class LocalDb {
         limit: 1,
       );
 
-      if (rows.isEmpty ||
-          rows.first['status'] == 'cancelled') {
+      if (rows.isEmpty || rows.first['status'] == 'cancelled') {
         return false;
       }
 
@@ -2747,8 +2303,7 @@ class LocalDb {
         {
           'status': 'cancelled',
           'sync_status': 'pending',
-          'updated_at':
-              DateTime.now().toIso8601String(),
+          'updated_at': DateTime.now().toIso8601String(),
         },
         where: 'id = ?',
         whereArgs: [saleId],
@@ -2764,21 +2319,14 @@ class LocalDb {
     return cancelled;
   }
 
-  Future<bool> deletePendingSale(
-    int saleId,
-  ) async {
+  Future<bool> deletePendingSale(int saleId) async {
     final db = await database;
 
-    final deleted =
-        await db.transaction((txn) async {
+    final deleted = await db.transaction((txn) async {
       final rows = await txn.query(
         'sales',
-        where:
-            'id = ? AND status = ?',
-        whereArgs: [
-          saleId,
-          'pending',
-        ],
+        where: 'id = ? AND status = ?',
+        whereArgs: [saleId, 'pending'],
         limit: 1,
       );
 
@@ -2786,11 +2334,7 @@ class LocalDb {
         return false;
       }
 
-      await txn.delete(
-        'sale_items',
-        where: 'sale_id = ?',
-        whereArgs: [saleId],
-      );
+      await txn.delete('sale_items', where: 'sale_id = ?', whereArgs: [saleId]);
 
       await txn.delete(
         'sale_payments',
@@ -2822,59 +2366,36 @@ class LocalDb {
   }) async {
     final db = await database;
 
-    final updated =
-        await db.transaction((txn) async {
+    final updated = await db.transaction((txn) async {
       final count = await txn.update(
         'sales',
         {
           'total': total,
           'mesa_id': tableId,
           'mesa_nombre': tableName,
-          'updated_at':
-              DateTime.now().toIso8601String(),
+          'updated_at': DateTime.now().toIso8601String(),
           'sync_status': 'pending',
         },
-        where:
-            'id = ? AND status = ?',
-        whereArgs: [
-          saleId,
-          'pending',
-        ],
+        where: 'id = ? AND status = ?',
+        whereArgs: [saleId, 'pending'],
       );
 
       if (count != 1) {
         return false;
       }
 
-      await txn.delete(
-        'sale_items',
-        where: 'sale_id = ?',
-        whereArgs: [saleId],
-      );
+      await txn.delete('sale_items', where: 'sale_id = ?', whereArgs: [saleId]);
 
       for (final item in items) {
-        await txn.insert(
-          'sale_items',
-          {
-            'sale_id': saleId,
-            'product_id': _toInt(
-              item['product_id'],
-            ),
-            'name': item['name'],
-            'quantity': _toDouble(
-              item['quantity'],
-            ),
-            'unit_price': _toDouble(
-              item['unit_price'],
-            ),
-            'total': _toDouble(
-              item['total'],
-            ),
-            'descuento': _toDouble(
-              item['descuento'],
-            ),
-          },
-        );
+        await txn.insert('sale_items', {
+          'sale_id': saleId,
+          'product_id': _toInt(item['product_id']),
+          'name': item['name'],
+          'quantity': _toDouble(item['quantity']),
+          'unit_price': _toDouble(item['unit_price']),
+          'total': _toDouble(item['total']),
+          'descuento': _toDouble(item['descuento']),
+        });
       }
 
       return true;
@@ -2896,16 +2417,11 @@ class LocalDb {
   }) async {
     final db = await database;
 
-    final paid =
-        await db.transaction((txn) async {
+    final paid = await db.transaction((txn) async {
       final rows = await txn.query(
         'sales',
-        where:
-            'id = ? AND status = ?',
-        whereArgs: [
-          saleId,
-          'pending',
-        ],
+        where: 'id = ? AND status = ?',
+        whereArgs: [saleId, 'pending'],
         limit: 1,
       );
 
@@ -2920,18 +2436,12 @@ class LocalDb {
       );
 
       for (final payment in payments) {
-        await txn.insert(
-          'sale_payments',
-          {
-            'sale_id': saleId,
-            'method': payment['method'],
-            'amount': _toDouble(
-              payment['amount'],
-            ),
-            'referencia':
-                payment['referencia'],
-          },
-        );
+        await txn.insert('sale_payments', {
+          'sale_id': saleId,
+          'method': payment['method'],
+          'amount': _toDouble(payment['amount']),
+          'referencia': payment['referencia'],
+        });
       }
 
       final updated = await txn.update(
@@ -2942,10 +2452,8 @@ class LocalDb {
           'payment_method': paymentMethod,
           'cash_received': cashReceived,
           'change_due': changeDue,
-          'paid_at':
-              DateTime.now().toIso8601String(),
-          'updated_at':
-              DateTime.now().toIso8601String(),
+          'paid_at': DateTime.now().toIso8601String(),
+          'updated_at': DateTime.now().toIso8601String(),
           'print_ticket': 0,
         },
         where: 'id = ?',
@@ -2972,45 +2480,25 @@ class LocalDb {
       items: items,
       payments: payments,
       total: _toDouble(sale['total']),
-      status:
-          sale['status']?.toString() ?? 'paid',
-      syncStatus:
-          sale['sync_status']?.toString() ??
-              'pending',
-      paymentMethod:
-          sale['payment_method']?.toString(),
-      cashReceived:
-          _toDouble(sale['cash_received']),
-      changeDue:
-          _toDouble(sale['change_due']),
-      tableId:
-          _nullableInt(sale['mesa_id']),
-      tableName:
-          sale['mesa_nombre']?.toString(),
-      clienteId:
-          _nullableInt(sale['cliente_id']),
-      descuentoGlobal:
-          _toDouble(
-            sale['descuento_global'],
-          ),
-      impuestoGlobal:
-          _toDouble(
-            sale['impuesto_global'],
-          ),
-      notas:
-          sale['notas']?.toString(),
+      status: sale['status']?.toString() ?? 'paid',
+      syncStatus: sale['sync_status']?.toString() ?? 'pending',
+      paymentMethod: sale['payment_method']?.toString(),
+      cashReceived: _toDouble(sale['cash_received']),
+      changeDue: _toDouble(sale['change_due']),
+      tableId: _nullableInt(sale['mesa_id']),
+      tableName: sale['mesa_nombre']?.toString(),
+      clienteId: _nullableInt(sale['cliente_id']),
+      descuentoGlobal: _toDouble(sale['descuento_global']),
+      impuestoGlobal: _toDouble(sale['impuesto_global']),
+      notas: sale['notas']?.toString(),
       businessDate:
           sale['business_date']?.toString() ??
-          sale['created_at']
-              ?.toString()
-              .substring(0, 10),
-      printTicket:
-          _toInt(sale['print_ticket']) != 0,
+          sale['created_at']?.toString().substring(0, 10),
+      printTicket: _toInt(sale['print_ticket']) != 0,
     );
   }
 
-  Future<bool> hasPendingSales() async =>
-      (await getPendingSales()).isNotEmpty;
+  Future<bool> hasPendingSales() async => (await getPendingSales()).isNotEmpty;
 
   Future<Map<String, int>> getSyncSummary() async {
     final rows = await (await database).rawQuery(
@@ -3021,14 +2509,11 @@ class LocalDb {
 
     return {
       for (final row in rows)
-        row['sync_status'].toString():
-            _toInt(row['total']),
+        row['sync_status'].toString(): _toInt(row['total']),
     };
   }
 
-  Future<Map<String, dynamic>?> getSyncStatus(
-    int saleId,
-  ) async {
+  Future<Map<String, dynamic>?> getSyncStatus(int saleId) async {
     final sale = await getSaleById(saleId);
 
     if (sale == null) {
@@ -3039,14 +2524,10 @@ class LocalDb {
       'sync_status': sale['sync_status'],
       'server_id': sale['server_id'],
       'server_folio': sale['server_folio'],
-      'server_synced_at':
-          sale['server_synced_at'],
-      'last_sync_error':
-          sale['last_sync_error'],
-      'business_date':
-          sale['business_date'],
-      'sync_attempts':
-          _toInt(sale['sync_attempts']),
+      'server_synced_at': sale['server_synced_at'],
+      'last_sync_error': sale['last_sync_error'],
+      'business_date': sale['business_date'],
+      'sync_attempts': _toInt(sale['sync_attempts']),
     };
   }
 
@@ -3055,9 +2536,7 @@ class LocalDb {
 
     Future<int> count(String table) async {
       return Sqflite.firstIntValue(
-            await db.rawQuery(
-              'SELECT COUNT(*) FROM $table',
-            ),
+            await db.rawQuery('SELECT COUNT(*) FROM $table'),
           ) ??
           0;
     }
@@ -3066,16 +2545,11 @@ class LocalDb {
       'productos': await count('products'),
       'clientes': await count('clients'),
       'impuestos': await count('taxes'),
-      'formas_pago':
-          await count('payment_methods'),
-      'unidades_medida':
-          await count('units'),
-      'categorias':
-          await count('categories'),
-      'promociones':
-          await count('promotions'),
-      'cupones':
-          await count('coupons'),
+      'formas_pago': await count('payment_methods'),
+      'unidades_medida': await count('units'),
+      'categorias': await count('categories'),
+      'promociones': await count('promotions'),
+      'cupones': await count('coupons'),
     };
   }
 
@@ -3112,5 +2586,823 @@ class LocalDb {
       await db.close();
       _database = null;
     }
+  }
+  // ============================================================
+  // CAJAS (offline-first)
+  // ============================================================
+
+  Future<void> _createCashTables(Database db) async {
+    await db.execute('''
+    CREATE TABLE IF NOT EXISTS cash_registers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      uuid TEXT NOT NULL UNIQUE,
+      server_id INTEGER,
+      fecha_comercial TEXT NOT NULL,
+      monto_apertura REAL NOT NULL DEFAULT 0,
+      monto_esperado REAL,
+      monto_declarado REAL,
+      diferencia REAL,
+      estado TEXT NOT NULL DEFAULT 'abierta',
+      abierta_at TEXT NOT NULL,
+      cerrada_at TEXT,
+      notas_apertura TEXT,
+      notas_cierre TEXT,
+      usuario_apertura_id INTEGER,
+      usuario_cierre_id INTEGER,
+      sync_status TEXT NOT NULL DEFAULT 'pending',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  ''');
+
+    await db.execute('''
+    CREATE TABLE IF NOT EXISTS cash_movements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      uuid TEXT NOT NULL UNIQUE,
+      server_id INTEGER,
+      cash_register_id INTEGER NOT NULL,
+      tipo TEXT NOT NULL,
+      concepto TEXT NOT NULL,
+      referencia TEXT,
+      monto REAL NOT NULL DEFAULT 0,
+      notas TEXT,
+      forma_pago TEXT,
+      registrado_at TEXT NOT NULL,
+      usuario_id INTEGER,
+      sync_status TEXT NOT NULL DEFAULT 'pending',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  ''');
+
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_cash_registers_fecha '
+      'ON cash_registers(fecha_comercial, estado)',
+    );
+
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_cash_movements_register '
+      'ON cash_movements(cash_register_id)',
+    );
+
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_cash_movements_fecha '
+      'ON cash_movements(registrado_at)',
+    );
+
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_cash_movements_sync '
+      'ON cash_movements(sync_status)',
+    );
+  }
+
+  /// Devuelve la caja abierta actual (fecha comercial = hoy)
+  /// o `null` si no existe.
+  Future<Map<String, dynamic>?> getCurrentCashRegisterLocal() async {
+    final db = await database;
+    final hoy = DateTime.now().toIso8601String().substring(0, 10);
+
+    final rows = await db.query(
+      'cash_registers',
+      where: "fecha_comercial = ? AND estado = 'abierta'",
+      whereArgs: [hoy],
+      orderBy: 'abierta_at DESC',
+      limit: 1,
+    );
+
+    return rows.isEmpty ? null : Map<String, dynamic>.from(rows.first);
+  }
+
+  /// Abre una caja para hoy. Si ya existe una abierta, la devuelve.
+  ///
+  /// No toca red. Solo SQLite + outbox.
+  Future<Map<String, dynamic>> openCashRegisterLocal({
+    required double montoApertura,
+    String? notas,
+    int? usuarioId,
+  }) async {
+    final db = await database;
+
+    return db.transaction((txn) async {
+      final hoy = DateTime.now().toIso8601String().substring(0, 10);
+      final now = DateTime.now().toIso8601String();
+
+      final existente = await txn.query(
+        'cash_registers',
+        where: 'fecha_comercial = ?',
+        whereArgs: [hoy],
+        limit: 1,
+      );
+
+      // ---------- CASO 1: no hay caja hoy ----------
+      if (existente.isEmpty) {
+        final uuid = 'caja_${DateTime.now().microsecondsSinceEpoch}';
+
+        final id = await txn.insert('cash_registers', {
+          'uuid': uuid,
+          'fecha_comercial': hoy,
+          'monto_apertura': montoApertura,
+          'monto_esperado': montoApertura,
+          'estado': 'abierta',
+          'abierta_at': now,
+          'notas_apertura': notas,
+          'usuario_apertura_id': usuarioId,
+          'sync_status': 'pending',
+          'created_at': now,
+          'updated_at': now,
+        });
+
+        await txn.insert('cash_movements', {
+          'uuid': 'mov_ap_${DateTime.now().microsecondsSinceEpoch}',
+          'cash_register_id': id,
+          'tipo': 'apertura',
+          'concepto': 'Apertura de caja',
+          'monto': montoApertura,
+          'registrado_at': now,
+          'usuario_id': usuarioId,
+          'sync_status': 'pending',
+          'created_at': now,
+          'updated_at': now,
+        });
+
+        await txn.insert('sync_queue', {
+          'uuid_local': uuid,
+          'empresa_id': null,
+          'usuario_id': usuarioId,
+          'business_date': hoy,
+          'entity_type': 'cash_register',
+          'entity_id_local': id,
+          'payload_json': jsonEncode({
+            'local_id': id,
+            'uuid': uuid,
+            'fecha_comercial': hoy,
+            'monto_apertura': montoApertura,
+            'notas': notas,
+            'reapertura': false,
+          }),
+          'status': 'pending',
+          'server_status': 'not_sent',
+          'attempts': 0,
+          'created_at': now,
+          'updated_at': now,
+        }, conflictAlgorithm: ConflictAlgorithm.replace);
+
+        final rows = await txn.query(
+          'cash_registers',
+          where: 'id = ?',
+          whereArgs: [id],
+          limit: 1,
+        );
+
+        notifySalesChanged();
+
+        return Map<String, dynamic>.from(rows.first);
+      }
+
+      // ---------- CASO 2: hay caja abierta ----------
+      final caja = Map<String, dynamic>.from(existente.first);
+
+      if (caja['estado'] == 'abierta') {
+        throw Exception(
+          'Ya existe una caja abierta para hoy. '
+          'Debes cerrarla antes de abrir otra.',
+        );
+      }
+
+      // ---------- CASO 3: hay caja cerrada → reabrir ----------
+      final cierrePrevio = caja['cerrada_at']?.toString() ?? 'sin fecha';
+      final declaradoPrevio = caja['monto_declarado'] ?? 0;
+      final diferenciaPrevia = caja['diferencia'] ?? 0;
+
+      final notaReapertura =
+          '[REAPERTURA $now] '
+          'Cierre previo: $cierrePrevio. '
+          'Monto declarado anterior: \$${declaradoPrevio.toString()}. '
+          'Diferencia anterior: \$${diferenciaPrevia.toString()}.';
+
+      final notasPrevias = (caja['notas_apertura'] ?? '').toString().trim();
+
+      final notasFinales = notasPrevias.isEmpty
+          ? notaReapertura
+          : '$notasPrevias\n\n$notaReapertura';
+
+      await txn.update(
+        'cash_registers',
+        {
+          'monto_apertura': montoApertura,
+          'monto_esperado': montoApertura,
+          'monto_declarado': null,
+          'diferencia': null,
+          'estado': 'abierta',
+          'abierta_at': now,
+          'cerrada_at': null,
+          'notas_apertura': notasFinales,
+          'notas_cierre': null,
+          'usuario_apertura_id': usuarioId,
+          'usuario_cierre_id': null,
+          'sync_status': 'pending',
+          'updated_at': now,
+        },
+        where: 'id = ?',
+        whereArgs: [caja['id']],
+      );
+
+      await txn.insert('cash_movements', {
+        'uuid': 'mov_reap_${DateTime.now().microsecondsSinceEpoch}',
+        'cash_register_id': caja['id'],
+        'tipo': 'apertura',
+        'concepto': 'Reapertura de caja',
+        'monto': montoApertura,
+        'registrado_at': now,
+        'usuario_id': usuarioId,
+        'sync_status': 'pending',
+        'created_at': now,
+        'updated_at': now,
+      });
+
+      await txn.insert('sync_queue', {
+        'uuid_local':
+            '${caja['uuid']}_reopen_${DateTime.now().microsecondsSinceEpoch}',
+        'empresa_id': null,
+        'usuario_id': usuarioId,
+        'business_date': hoy,
+        'entity_type': 'cash_register',
+        'entity_id_local': caja['id'],
+        'payload_json': jsonEncode({
+          'local_id': caja['id'],
+          'uuid': caja['uuid'],
+          'fecha_comercial': hoy,
+          'monto_apertura': montoApertura,
+          'notas': notas,
+          'reapertura': true,
+        }),
+        'status': 'pending',
+        'server_status': 'not_sent',
+        'attempts': 0,
+        'created_at': now,
+        'updated_at': now,
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+
+      final rows = await txn.query(
+        'cash_registers',
+        where: 'id = ?',
+        whereArgs: [caja['id']],
+        limit: 1,
+      );
+
+      notifySalesChanged();
+
+      return Map<String, dynamic>.from(rows.first);
+    });
+  }
+
+  /// Cierra una caja por ID. Calcula monto esperado y diferencia.
+  Future<Map<String, dynamic>> closeCashRegisterLocal({
+    required int cashRegisterId,
+    required double montoDeclarado,
+    String? notas,
+    int? usuarioId,
+  }) async {
+    final db = await database;
+
+    return db.transaction((txn) async {
+      final rows = await txn.query(
+        'cash_registers',
+        where: 'id = ?',
+        whereArgs: [cashRegisterId],
+        limit: 1,
+      );
+
+      if (rows.isEmpty) {
+        throw Exception('La caja no existe localmente.');
+      }
+
+      final caja = Map<String, dynamic>.from(rows.first);
+
+      if (caja['estado'] == 'cerrada') {
+        return caja;
+      }
+
+      final movimientos = await txn.query(
+        'cash_movements',
+        where: 'cash_register_id = ?',
+        whereArgs: [cashRegisterId],
+      );
+
+      double ingresos = 0;
+      double egresos = 0;
+      double ajustes = 0;
+
+      for (final m in movimientos) {
+        final tipo = m['tipo']?.toString();
+        final monto = _toDouble(m['monto']);
+
+        switch (tipo) {
+          case 'ingreso':
+            ingresos += monto;
+            break;
+          case 'egreso':
+          case 'retiro':
+          case 'devolucion':
+            egresos += monto;
+            break;
+          case 'ajuste':
+            ajustes += monto;
+            break;
+        }
+      }
+
+      final apertura = _toDouble(caja['monto_apertura']);
+      final esperado = apertura + ingresos + ajustes - egresos;
+      final diferencia = montoDeclarado - esperado;
+      final now = DateTime.now().toIso8601String();
+
+      await txn.update(
+        'cash_registers',
+        {
+          'estado': 'cerrada',
+          'monto_esperado': esperado,
+          'monto_declarado': montoDeclarado,
+          'diferencia': diferencia,
+          'cerrada_at': now,
+          'notas_cierre': notas,
+          'usuario_cierre_id': usuarioId,
+          'sync_status': 'pending',
+          'updated_at': now,
+        },
+        where: 'id = ?',
+        whereArgs: [cashRegisterId],
+      );
+
+      await txn.insert('cash_movements', {
+        'uuid': 'mov_ci_${DateTime.now().microsecondsSinceEpoch}',
+        'cash_register_id': cashRegisterId,
+        'tipo': 'cierre',
+        'concepto': 'Cierre de caja',
+        'monto': montoDeclarado,
+        'notas': notas,
+        'registrado_at': now,
+        'usuario_id': usuarioId,
+        'sync_status': 'pending',
+        'created_at': now,
+        'updated_at': now,
+      });
+
+      await txn.insert('sync_queue', {
+        'uuid_local': '${caja['uuid']}_cierre',
+        'empresa_id': null,
+        'usuario_id': usuarioId,
+        'business_date': caja['fecha_comercial'],
+        'entity_type': 'cash_register_close',
+        'entity_id_local': cashRegisterId,
+        'payload_json': jsonEncode({
+          'local_id': cashRegisterId,
+          'server_id': caja['server_id'],
+          'monto_declarado': montoDeclarado,
+          'monto_esperado': esperado,
+          'diferencia': diferencia,
+          'notas': notas,
+        }),
+        'status': 'pending',
+        'server_status': 'not_sent',
+        'attempts': 0,
+        'created_at': now,
+        'updated_at': now,
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+
+      final updated = await txn.query(
+        'cash_registers',
+        where: 'id = ?',
+        whereArgs: [cashRegisterId],
+        limit: 1,
+      );
+
+      notifySalesChanged();
+
+      return Map<String, dynamic>.from(updated.first);
+    });
+  }
+
+  /// Registra un movimiento manual (ingreso/egreso/retiro/ajuste).
+  Future<Map<String, dynamic>> addCashMovementLocal({
+    required int cashRegisterId,
+    required String tipo,
+    required String concepto,
+    required double monto,
+    String? referencia,
+    String? notas,
+    String? formaPago,
+    int? usuarioId,
+  }) async {
+    final db = await database;
+
+    return db.transaction((txn) async {
+      final now = DateTime.now().toIso8601String();
+      final uuid = 'mov_${DateTime.now().microsecondsSinceEpoch}';
+
+      final id = await txn.insert('cash_movements', {
+        'uuid': uuid,
+        'cash_register_id': cashRegisterId,
+        'tipo': tipo,
+        'concepto': concepto,
+        'referencia': referencia,
+        'monto': monto,
+        'notas': notas,
+        'forma_pago': formaPago,
+        'registrado_at': now,
+        'usuario_id': usuarioId,
+        'sync_status': 'pending',
+        'created_at': now,
+        'updated_at': now,
+      });
+
+      await txn.insert('sync_queue', {
+        'uuid_local': uuid,
+        'empresa_id': null,
+        'usuario_id': usuarioId,
+        'business_date': now.substring(0, 10),
+        'entity_type': 'cash_movement',
+        'entity_id_local': id,
+        'payload_json': jsonEncode({
+          'local_id': id,
+          'cash_register_local_id': cashRegisterId,
+          'tipo': tipo,
+          'concepto': concepto,
+          'monto': monto,
+          'referencia': referencia,
+          'notas': notas,
+          'forma_pago': formaPago,
+        }),
+        'status': 'pending',
+        'server_status': 'not_sent',
+        'attempts': 0,
+        'created_at': now,
+        'updated_at': now,
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+
+      final rows = await txn.query(
+        'cash_movements',
+        where: 'id = ?',
+        whereArgs: [id],
+        limit: 1,
+      );
+
+      notifySalesChanged();
+
+      return Map<String, dynamic>.from(rows.first);
+    });
+  }
+
+  /// Movimientos de caja filtrados por caja, rango y/o tipo.
+  Future<List<Map<String, dynamic>>> getCashMovementsLocal({
+    int? cashRegisterId,
+    DateTime? desde,
+    DateTime? hasta,
+    String? tipo,
+  }) async {
+    final db = await database;
+
+    final where = <String>[];
+    final args = <dynamic>[];
+
+    if (cashRegisterId != null && cashRegisterId > 0) {
+      where.add('cash_register_id = ?');
+      args.add(cashRegisterId);
+    }
+
+    if (desde != null) {
+      where.add('registrado_at >= ?');
+      args.add(desde.toIso8601String());
+    }
+
+    if (hasta != null) {
+      where.add('registrado_at <= ?');
+      args.add(hasta.toIso8601String());
+    }
+
+    if (tipo != null && tipo.trim().isNotEmpty && tipo != 'todos') {
+      where.add('tipo = ?');
+      args.add(tipo.trim());
+    }
+
+    return db.query(
+      'cash_movements',
+      where: where.isEmpty ? null : where.join(' AND '),
+      whereArgs: args.isEmpty ? null : args,
+      orderBy: 'registrado_at DESC',
+    );
+  }
+
+  Future<Map<String, dynamic>> getCashSummaryLocal({
+    required int cashRegisterId,
+  }) async {
+    final db = await database;
+
+    // ------------------------------------------------------------
+    // 1. Datos de la caja (para saber la fecha comercial)
+    // ------------------------------------------------------------
+    final cajaRows = await db.query(
+      'cash_registers',
+      where: 'id = ?',
+      whereArgs: [cashRegisterId],
+      limit: 1,
+    );
+
+    if (cajaRows.isEmpty) {
+      return {
+        'ingresos': 0.0,
+        'retiros_gastos': 0.0,
+        'ajustes': 0.0,
+        'ventas_efectivo': 0.0,
+        'ventas_total': 0.0,
+        'movimientos': 0,
+        'neto': 0.0,
+      };
+    }
+
+    final caja = Map<String, dynamic>.from(cajaRows.first);
+    final fechaComercial = caja['fecha_comercial']?.toString() ?? '';
+
+    // ------------------------------------------------------------
+    // 2. Movimientos manuales (ingreso, egreso, retiro, ajuste)
+    // ------------------------------------------------------------
+    final movimientos = await db.query(
+      'cash_movements',
+      where: 'cash_register_id = ?',
+      whereArgs: [cashRegisterId],
+    );
+
+    double ingresos = 0;
+    double egresos = 0;
+    double ajustes = 0;
+
+    for (final m in movimientos) {
+      final tipo = m['tipo']?.toString();
+      final monto = _toDouble(m['monto']);
+
+      switch (tipo) {
+        case 'ingreso':
+          ingresos += monto;
+          break;
+        case 'egreso':
+        case 'retiro':
+        case 'devolucion':
+          egresos += monto;
+          break;
+        case 'ajuste':
+          ajustes += monto;
+          break;
+      }
+    }
+
+    // ------------------------------------------------------------
+    // 3. Ventas en efectivo del día comercial (💡 ESTO FALTABA)
+    // ------------------------------------------------------------
+    //
+    // Se suman SOLO las ventas pagadas en Efectivo del día comercial
+    // de la caja. Si el sistema maneja ventas en otros métodos, esas
+    // no entran en la caja de efectivo.
+    //
+    // Se excluyen ventas canceladas.
+    // ------------------------------------------------------------
+    double ventasEfectivo = 0;
+    double ventasTotal = 0;
+
+    if (fechaComercial.isNotEmpty) {
+      final rows = await db.rawQuery(
+        '''
+      SELECT
+        COALESCE(SUM(
+          CASE
+            WHEN LOWER(p.method) LIKE '%efectivo%' THEN p.amount
+            ELSE 0
+          END
+        ), 0) AS ventas_efectivo,
+        COALESCE(SUM(p.amount), 0) AS ventas_total
+      FROM sales s
+      INNER JOIN sale_payments p ON p.sale_id = s.id
+      WHERE s.business_date = ?
+        AND LOWER(COALESCE(s.status, '')) NOT IN
+            ('cancelled','canceled','cancelado','cancelada','anulado','anulada')
+        AND LOWER(COALESCE(s.sync_status, '')) != 'cancelled'
+    ''',
+        [fechaComercial],
+      );
+
+      if (rows.isNotEmpty) {
+        ventasEfectivo = _toDouble(rows.first['ventas_efectivo']);
+        ventasTotal = _toDouble(rows.first['ventas_total']);
+      }
+    }
+
+    final neto = ingresos + ajustes + ventasEfectivo - egresos;
+
+    return {
+      'ingresos': ingresos,
+      'retiros_gastos': egresos,
+      'ajustes': ajustes,
+      'ventas_efectivo': ventasEfectivo,
+      'ventas_total': ventasTotal,
+      'movimientos': movimientos.length,
+      'neto': neto,
+    };
+  }
+
+  /// Historial de cajas (con o sin filtro de fecha).
+  Future<List<Map<String, dynamic>>> getCashRegistersLocal({
+    DateTime? desde,
+    DateTime? hasta,
+  }) async {
+    final db = await database;
+
+    final where = <String>[];
+    final args = <dynamic>[];
+
+    if (desde != null) {
+      where.add('fecha_comercial >= ?');
+      args.add(desde.toIso8601String().substring(0, 10));
+    }
+
+    if (hasta != null) {
+      where.add('fecha_comercial <= ?');
+      args.add(hasta.toIso8601String().substring(0, 10));
+    }
+
+    return db.query(
+      'cash_registers',
+      where: where.isEmpty ? null : where.join(' AND '),
+      whereArgs: args.isEmpty ? null : args,
+      orderBy: 'fecha_comercial DESC, abierta_at DESC',
+    );
+  }
+
+  // ============================================================
+  // TOP PRODUCTOS (local)
+  // ============================================================
+
+  Future<List<Map<String, dynamic>>> getTopProductsLocal({
+    required DateTime desde,
+    required DateTime hasta,
+    int limite = 10,
+  }) async {
+    final db = await database;
+
+    final rows = await db.rawQuery(
+      '''
+    SELECT
+      si.product_id AS product_id,
+      si.name AS name,
+      SUM(si.quantity) AS total_vendido,
+      SUM(si.total) AS total_monto
+    FROM sale_items si
+    INNER JOIN sales s ON s.id = si.sale_id
+    WHERE s.created_at >= ?
+      AND s.created_at <= ?
+      AND LOWER(COALESCE(s.status,'')) NOT IN
+          ('cancelled','canceled','cancelado','cancelada','anulado','anulada')
+    GROUP BY si.product_id, si.name
+    ORDER BY total_vendido DESC
+    LIMIT ?
+  ''',
+      [desde.toIso8601String(), hasta.toIso8601String(), limite],
+    );
+
+    return rows
+        .map(
+          (r) => {
+            'product_id': _toInt(r['product_id']),
+            'name': r['name']?.toString() ?? '',
+            'total_vendido': _toDouble(r['total_vendido']),
+            'total_monto': _toDouble(r['total_monto']),
+          },
+        )
+        .toList();
+  }
+
+  Future<Map<String, List<Map<String, dynamic>>>> getTopProductsByDayLocal({
+    required DateTime desde,
+    required DateTime hasta,
+    int limitePorDia = 5,
+  }) async {
+    final db = await database;
+
+    final rows = await db.rawQuery(
+      '''
+    SELECT
+      substr(s.created_at, 1, 10) AS fecha,
+      si.product_id AS product_id,
+      si.name AS name,
+      SUM(si.quantity) AS total_vendido,
+      SUM(si.total) AS total_monto
+    FROM sale_items si
+    INNER JOIN sales s ON s.id = si.sale_id
+    WHERE s.created_at >= ?
+      AND s.created_at <= ?
+      AND LOWER(COALESCE(s.status,'')) NOT IN
+          ('cancelled','canceled','cancelado','cancelada','anulado','anulada')
+    GROUP BY fecha, si.product_id, si.name
+    ORDER BY fecha ASC, total_vendido DESC
+  ''',
+      [desde.toIso8601String(), hasta.toIso8601String()],
+    );
+
+    final agrupado = <String, List<Map<String, dynamic>>>{};
+
+    for (final r in rows) {
+      final fecha = r['fecha']?.toString() ?? '';
+      if (fecha.isEmpty) continue;
+
+      agrupado.putIfAbsent(fecha, () => []);
+      agrupado[fecha]!.add({
+        'product_id': _toInt(r['product_id']),
+        'name': r['name']?.toString() ?? '',
+        'total_vendido': _toDouble(r['total_vendido']),
+        'total_monto': _toDouble(r['total_monto']),
+      });
+    }
+
+    final result = <String, List<Map<String, dynamic>>>{};
+
+    for (final entry in agrupado.entries) {
+      result[entry.key] = entry.value.take(limitePorDia).toList();
+    }
+
+    return result;
+  }
+
+  /// Devuelve las ventas del día comercial (fecha de la caja) agrupadas
+  /// por método de pago. Se usa para el desglose por tipo de pago.
+  Future<List<Map<String, dynamic>>> getSalesByPaymentMethodLocal({
+    required DateTime businessDate,
+  }) async {
+    final db = await database;
+
+    final fecha = businessDate.toIso8601String().substring(0, 10);
+
+    final rows = await db.rawQuery(
+      '''
+    SELECT
+      LOWER(COALESCE(p.method, 'efectivo')) AS method_key,
+      COALESCE(p.method, 'Efectivo')       AS method_label,
+      COUNT(DISTINCT s.id)                 AS tickets,
+      COALESCE(SUM(p.amount), 0)           AS total
+    FROM sales s
+    INNER JOIN sale_payments p ON p.sale_id = s.id
+    WHERE s.business_date = ?
+      AND LOWER(COALESCE(s.status, '')) NOT IN
+          ('cancelled','canceled','cancelado','cancelada','anulado','anulada')
+    GROUP BY method_key, method_label
+    ORDER BY total DESC
+  ''',
+      [fecha],
+    );
+
+    return rows
+        .map(
+          (r) => {
+            'method_key': r['method_key']?.toString() ?? '',
+            'method_label': r['method_label']?.toString() ?? '',
+            'tickets': _toInt(r['tickets']),
+            'total': _toDouble(r['total']),
+          },
+        )
+        .toList();
+  }
+
+  /// Devuelve los movimientos manuales de la caja agrupados por tipo
+  /// (ingreso, egreso, retiro, ajuste) y por método de pago.
+  Future<List<Map<String, dynamic>>> getMovementsByTypeAndMethodLocal({
+    required int cashRegisterId,
+  }) async {
+    final db = await database;
+
+    final rows = await db.rawQuery(
+      '''
+    SELECT
+      tipo AS tipo,
+      LOWER(COALESCE(forma_pago, 'sin especificar')) AS method_key,
+      COALESCE(forma_pago, 'Sin especificar')        AS method_label,
+      COUNT(*)                                       AS cantidad,
+      COALESCE(SUM(monto), 0)                        AS total
+    FROM cash_movements
+    WHERE cash_register_id = ?
+      AND tipo IN ('ingreso','egreso','retiro','ajuste')
+    GROUP BY tipo, method_key, method_label
+    ORDER BY tipo ASC, total DESC
+  ''',
+      [cashRegisterId],
+    );
+
+    return rows
+        .map(
+          (r) => {
+            'tipo': r['tipo']?.toString() ?? '',
+            'method_key': r['method_key']?.toString() ?? '',
+            'method_label': r['method_label']?.toString() ?? '',
+            'cantidad': _toInt(r['cantidad']),
+            'total': _toDouble(r['total']),
+          },
+        )
+        .toList();
   }
 }

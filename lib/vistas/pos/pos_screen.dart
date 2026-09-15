@@ -428,7 +428,7 @@ class PosScreenState extends State<PosScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Un cajero debe abrir la caja antes de registrar o cobrar ventas.'),
+            content: Text('Primero debes abrir la caja antes de registrar o cobrar ventas.'),
           ),
         );
       }

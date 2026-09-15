@@ -17,8 +17,7 @@ import '../storage/app_storage.dart';
 //
 class AuthenticationException implements Exception {
   const AuthenticationException([
-    this.message =
-        'La sesión ha expirado. Inicia sesión nuevamente.',
+    this.message = 'La sesión ha expirado. Inicia sesión nuevamente.',
   ]);
 
   final String message;
@@ -47,8 +46,7 @@ class ApiClient {
             final token = await AppStorage().getToken();
 
             if (token != null && token.trim().isNotEmpty) {
-              options.headers['Authorization'] =
-                  'Bearer ${token.trim()}';
+              options.headers['Authorization'] = 'Bearer ${token.trim()}';
             }
           } catch (e) {
             print('[API] Error obteniendo token: $e');
@@ -110,13 +108,11 @@ class ApiClient {
 
           if (value is List) {
             for (final item in value) {
-              if (item != null &&
-                  item.toString().trim().isNotEmpty) {
+              if (item != null && item.toString().trim().isNotEmpty) {
                 messages.add(item.toString().trim());
               }
             }
-          } else if (value != null &&
-              value.toString().trim().isNotEmpty) {
+          } else if (value != null && value.toString().trim().isNotEmpty) {
             messages.add(value.toString().trim());
           }
         }
@@ -127,17 +123,14 @@ class ApiClient {
       }
 
       final message =
-          payload['message'] ??
-          payload['error'] ??
-          payload['detail'];
+          payload['message'] ?? payload['error'] ?? payload['detail'];
 
       if (message is String && message.trim().isNotEmpty) {
         return message.trim();
       }
     }
 
-    if (payload is String &&
-        payload.trim().isNotEmpty) {
+    if (payload is String && payload.trim().isNotEmpty) {
       return payload.trim();
     }
 
@@ -160,14 +153,8 @@ class ApiClient {
   ///
   /// Para cualquier otro error se conserva el comportamiento
   /// anterior y se lanza DioException.
-  Never _throwDioError(
-    DioException error, {
-    required String fallback,
-  }) {
-    final message = parseApiError(
-      error.response?.data,
-      fallback: fallback,
-    );
+  Never _throwDioError(DioException error, {required String fallback}) {
+    final message = parseApiError(error.response?.data, fallback: fallback);
 
     // ==========================================================
     // CAMBIO AUTH:
@@ -205,27 +192,16 @@ class ApiClient {
     try {
       final response = await _dio.post(
         '/api/v1/login',
-        data: {
-          'identificador': identifier.trim(),
-          'password': password,
-        },
+        data: {'identificador': identifier.trim(), 'password': password},
       );
 
-      if (response.statusCode == 200 &&
-          response.data is Map) {
-        return Map<String, dynamic>.from(
-          response.data as Map,
-        );
+      if (response.statusCode == 200 && response.data is Map) {
+        return Map<String, dynamic>.from(response.data as Map);
       }
 
-      throw Exception(
-        'Respuesta inválida del servidor',
-      );
+      throw Exception('Respuesta inválida del servidor');
     } on DioException catch (e) {
-      _throwDioError(
-        e,
-        fallback: 'Error de autenticación',
-      );
+      _throwDioError(e, fallback: 'Error de autenticación');
     }
   }
 
@@ -233,21 +209,13 @@ class ApiClient {
     try {
       final response = await _dio.get('/api/v1/user');
 
-      if (response.statusCode == 200 &&
-          response.data is Map) {
-        return Map<String, dynamic>.from(
-          response.data as Map,
-        );
+      if (response.statusCode == 200 && response.data is Map) {
+        return Map<String, dynamic>.from(response.data as Map);
       }
 
-      throw Exception(
-        'No se pudo cargar el usuario',
-      );
+      throw Exception('No se pudo cargar el usuario');
     } on DioException catch (e) {
-      _throwDioError(
-        e,
-        fallback: 'No se pudo cargar el perfil',
-      );
+      _throwDioError(e, fallback: 'No se pudo cargar el perfil');
     }
   }
 
@@ -255,26 +223,15 @@ class ApiClient {
     Map<String, dynamic> payload,
   ) async {
     try {
-      final response = await _dio.patch(
-        '/api/v1/user/profile',
-        data: payload,
-      );
+      final response = await _dio.patch('/api/v1/user/profile', data: payload);
 
-      if (response.statusCode == 200 &&
-          response.data is Map) {
-        return Map<String, dynamic>.from(
-          response.data as Map,
-        );
+      if (response.statusCode == 200 && response.data is Map) {
+        return Map<String, dynamic>.from(response.data as Map);
       }
 
-      throw Exception(
-        'No se pudo actualizar el perfil',
-      );
+      throw Exception('No se pudo actualizar el perfil');
     } on DioException catch (e) {
-      _throwDioError(
-        e,
-        fallback: 'No se pudo actualizar el perfil',
-      );
+      _throwDioError(e, fallback: 'No se pudo actualizar el perfil');
     }
   }
 
@@ -292,50 +249,30 @@ class ApiClient {
         },
       );
 
-      if (response.statusCode == 200 &&
-          response.data is Map) {
-        return Map<String, dynamic>.from(
-          response.data as Map,
-        );
+      if (response.statusCode == 200 && response.data is Map) {
+        return Map<String, dynamic>.from(response.data as Map);
       }
 
-      throw Exception(
-        'No se pudo cambiar la contraseña',
-      );
+      throw Exception('No se pudo cambiar la contraseña');
     } on DioException catch (e) {
-      _throwDioError(
-        e,
-        fallback: 'No se pudo cambiar la contraseña',
-      );
+      _throwDioError(e, fallback: 'No se pudo cambiar la contraseña');
     }
   }
 
-  Future<Map<String, dynamic>> forgotPassword({
-    required String email,
-  }) async {
+  Future<Map<String, dynamic>> forgotPassword({required String email}) async {
     try {
       final response = await _dio.post(
         '/api/v1/password/forgot',
-        data: {
-          'email': email.trim(),
-        },
+        data: {'email': email.trim()},
       );
 
-      if (response.statusCode == 200 &&
-          response.data is Map) {
-        return Map<String, dynamic>.from(
-          response.data as Map,
-        );
+      if (response.statusCode == 200 && response.data is Map) {
+        return Map<String, dynamic>.from(response.data as Map);
       }
 
-      throw Exception(
-        'No se pudo solicitar el restablecimiento',
-      );
+      throw Exception('No se pudo solicitar el restablecimiento');
     } on DioException catch (e) {
-      _throwDioError(
-        e,
-        fallback: 'No se pudo recuperar la contraseña',
-      );
+      _throwDioError(e, fallback: 'No se pudo recuperar la contraseña');
     }
   }
 
@@ -347,52 +284,30 @@ class ApiClient {
     try {
       final response = await _dio.post(
         '/api/v1/password/reset',
-        data: {
-          'email': email.trim(),
-          'token': token,
-          'password': password,
-        },
+        data: {'email': email.trim(), 'token': token, 'password': password},
       );
 
-      if (response.statusCode == 200 &&
-          response.data is Map) {
-        return Map<String, dynamic>.from(
-          response.data as Map,
-        );
+      if (response.statusCode == 200 && response.data is Map) {
+        return Map<String, dynamic>.from(response.data as Map);
       }
 
-      throw Exception(
-        'No se pudo restablecer la contraseña',
-      );
+      throw Exception('No se pudo restablecer la contraseña');
     } on DioException catch (e) {
-      _throwDioError(
-        e,
-        fallback: 'No se pudo recuperar la contraseña',
-      );
+      _throwDioError(e, fallback: 'No se pudo recuperar la contraseña');
     }
   }
 
   Future<Map<String, dynamic>> getPermissions() async {
     try {
-      final response = await _dio.get(
-        '/api/v1/me/permissions',
-      );
+      final response = await _dio.get('/api/v1/me/permissions');
 
-      if (response.statusCode == 200 &&
-          response.data is Map) {
-        return Map<String, dynamic>.from(
-          response.data as Map,
-        );
+      if (response.statusCode == 200 && response.data is Map) {
+        return Map<String, dynamic>.from(response.data as Map);
       }
 
-      throw Exception(
-        'No se pudieron cargar los permisos',
-      );
+      throw Exception('No se pudieron cargar los permisos');
     } on DioException catch (e) {
-      _throwDioError(
-        e,
-        fallback: 'No se pudieron cargar los permisos',
-      );
+      _throwDioError(e, fallback: 'No se pudieron cargar los permisos');
     }
   }
 
@@ -402,32 +317,19 @@ class ApiClient {
 
   Future<Map<String, dynamic>> getOperationStatus() async {
     try {
-      final response = await _dio.get(
-        '/api/v1/operacion/estado',
-      );
+      final response = await _dio.get('/api/v1/operacion/estado');
 
-      if (response.statusCode == 200 &&
-          response.data is Map) {
-        final payload =
-            Map<String, dynamic>.from(
-          response.data as Map,
-        );
+      if (response.statusCode == 200 && response.data is Map) {
+        final payload = Map<String, dynamic>.from(response.data as Map);
 
         final data = payload['data'];
 
-        return data is Map
-            ? Map<String, dynamic>.from(data)
-            : payload;
+        return data is Map ? Map<String, dynamic>.from(data) : payload;
       }
 
-      throw Exception(
-        'No se pudo consultar el estado operativo',
-      );
+      throw Exception('No se pudo consultar el estado operativo');
     } on DioException catch (e) {
-      _throwDioError(
-        e,
-        fallback: 'No se pudo consultar el estado operativo',
-      );
+      _throwDioError(e, fallback: 'No se pudo consultar el estado operativo');
     }
   }
 
@@ -437,28 +339,17 @@ class ApiClient {
 
   Future<Map<String, dynamic>?> getCurrentCashRegister() async {
     try {
-      final response = await _dio.get(
-        '/api/v1/cajas/actual',
-      );
+      final response = await _dio.get('/api/v1/cajas/actual');
 
-      if (response.statusCode == 200 &&
-          response.data is Map) {
-        final data =
-            (response.data as Map)['data'];
+      if (response.statusCode == 200 && response.data is Map) {
+        final data = (response.data as Map)['data'];
 
-        return data is Map
-            ? Map<String, dynamic>.from(data)
-            : null;
+        return data is Map ? Map<String, dynamic>.from(data) : null;
       }
 
-      throw Exception(
-        'No se pudo consultar la caja actual',
-      );
+      throw Exception('No se pudo consultar la caja actual');
     } on DioException catch (e) {
-      _throwDioError(
-        e,
-        fallback: 'No se pudo consultar la caja actual',
-      );
+      _throwDioError(e, fallback: 'No se pudo consultar la caja actual');
     }
   }
 
@@ -477,45 +368,34 @@ class ApiClient {
     }
 
     if (date != null) {
-      queryParameters['fecha'] =
-          date.toIso8601String();
+      queryParameters['fecha'] = date.toIso8601String();
     }
 
     Future<Response<dynamic>> request(String path) {
       return _dio.get(
         path,
-        queryParameters:
-            queryParameters.isEmpty
-                ? null
-                : queryParameters,
+        queryParameters: queryParameters.isEmpty ? null : queryParameters,
       );
     }
 
     Response<dynamic> response;
 
     try {
-      response = await request(
-        '/api/v1/cajas/operaciones',
-      );
+      response = await request('/api/v1/cajas/operaciones');
     } on DioException catch (e) {
       // Algunas versiones del backend exponen la ruta singular.
       if (e.response?.statusCode == 404) {
-        response = await request(
-          '/api/v1/caja/operaciones',
-        );
+        response = await request('/api/v1/caja/operaciones');
       } else {
         _throwDioError(
           e,
-          fallback:
-              'No se pudieron consultar las operaciones de caja',
+          fallback: 'No se pudieron consultar las operaciones de caja',
         );
       }
     }
 
     if (response.statusCode != 200) {
-      throw Exception(
-        'No se pudieron consultar las operaciones de caja',
-      );
+      throw Exception('No se pudieron consultar las operaciones de caja');
     }
 
     dynamic payload = response.data;
@@ -542,10 +422,7 @@ class ApiClient {
 
     return payload
         .whereType<Map>()
-        .map(
-          (item) =>
-              Map<String, dynamic>.from(item),
-        )
+        .map((item) => Map<String, dynamic>.from(item))
         .toList();
   }
 
@@ -556,18 +433,15 @@ class ApiClient {
   Future<Map<String, dynamic>> openCashRegister({
     required double openingAmount,
     String? notes,
+    bool forzarReapertura = false, // 👈 NUEVO
   }) async {
-    return _postOperation(
-      '/api/v1/cajas/abrir',
-      {
-        'monto_apertura': openingAmount,
-        if (notes != null &&
-            notes.trim().isNotEmpty)
-          'notas': notes.trim(),
-      },
-    );
+    return _postOperation('/api/v1/cajas/abrir', {
+      'monto_apertura': openingAmount,
+      if (notes != null && notes.trim().isNotEmpty) 'notas': notes.trim(),
+      if (forzarReapertura) // 👈 NUEVO
+        'forzar_reapertura': true,
+    });
   }
-
   // ============================================================
   // CERRAR CAJA
   // ============================================================
@@ -577,16 +451,10 @@ class ApiClient {
     required double declaredAmount,
     String? notes,
   }) async {
-    return _postOperation(
-      '/api/v1/cajas/$cashRegisterId/cerrar',
-      {
-        'monto_cierre_declarado':
-            declaredAmount,
-        if (notes != null &&
-            notes.trim().isNotEmpty)
-          'notas': notes.trim(),
-      },
-    );
+    return _postOperation('/api/v1/cajas/$cashRegisterId/cerrar', {
+      'monto_cierre_declarado': declaredAmount,
+      if (notes != null && notes.trim().isNotEmpty) 'notas': notes.trim(),
+    });
   }
 
   // ============================================================
@@ -595,31 +463,20 @@ class ApiClient {
 
   Future<List<Map<String, dynamic>>> getTables() async {
     try {
-      final response = await _dio.get(
-        '/api/v1/mesas',
-      );
+      final response = await _dio.get('/api/v1/mesas');
 
-      final data =
-          response.data is Map
-              ? (response.data as Map)['data']
-              : null;
+      final data = response.data is Map ? (response.data as Map)['data'] : null;
 
       if (data is List) {
         return data
             .whereType<Map>()
-            .map(
-              (item) =>
-                  Map<String, dynamic>.from(item),
-            )
+            .map((item) => Map<String, dynamic>.from(item))
             .toList();
       }
 
       return const [];
     } on DioException catch (e) {
-      _throwDioError(
-        e,
-        fallback: 'No se pudieron consultar las mesas',
-      );
+      _throwDioError(e, fallback: 'No se pudieron consultar las mesas');
     }
   }
 
@@ -632,26 +489,16 @@ class ApiClient {
   }) {
     final payload = <String, dynamic>{
       'nombre': name.trim(),
-      if (capacity != null)
-        'capacidad': capacity,
-      if (notes != null &&
-          notes.trim().isNotEmpty)
-        'notas': notes.trim(),
-      if (active != null)
-        'activo': active,
+      if (capacity != null) 'capacidad': capacity,
+      if (notes != null && notes.trim().isNotEmpty) 'notas': notes.trim(),
+      if (active != null) 'activo': active,
     };
 
     if (id == null) {
-      return _postOperation(
-        '/api/v1/mesas',
-        payload,
-      );
+      return _postOperation('/api/v1/mesas', payload);
     }
 
-    return _putOperation(
-      '/api/v1/mesas/$id',
-      payload,
-    );
+    return _putOperation('/api/v1/mesas/$id', payload);
   }
 
   // ============================================================
@@ -663,26 +510,15 @@ class ApiClient {
     Map<String, dynamic> payload,
   ) async {
     try {
-      final response = await _dio.post(
-        path,
-        data: payload,
-      );
+      final response = await _dio.post(path, data: payload);
 
       if (response.data is Map) {
-        return Map<String, dynamic>.from(
-          response.data as Map,
-        );
+        return Map<String, dynamic>.from(response.data as Map);
       }
 
-      throw Exception(
-        'Respuesta inválida del servidor',
-      );
+      throw Exception('Respuesta inválida del servidor');
     } on DioException catch (e) {
-      _throwDioError(
-        e,
-        fallback:
-            'No se pudo completar la operación',
-      );
+      _throwDioError(e, fallback: 'No se pudo completar la operación');
     }
   }
 
@@ -691,26 +527,15 @@ class ApiClient {
     Map<String, dynamic> payload,
   ) async {
     try {
-      final response = await _dio.put(
-        path,
-        data: payload,
-      );
+      final response = await _dio.put(path, data: payload);
 
       if (response.data is Map) {
-        return Map<String, dynamic>.from(
-          response.data as Map,
-        );
+        return Map<String, dynamic>.from(response.data as Map);
       }
 
-      throw Exception(
-        'Respuesta inválida del servidor',
-      );
+      throw Exception('Respuesta inválida del servidor');
     } on DioException catch (e) {
-      _throwDioError(
-        e,
-        fallback:
-            'No se pudo completar la operación',
-      );
+      _throwDioError(e, fallback: 'No se pudo completar la operación');
     }
   }
 
@@ -727,8 +552,7 @@ class ApiClient {
     DateTime? hasta,
   }) async {
     try {
-      final queryParameters =
-          <String, dynamic>{};
+      final queryParameters = <String, dynamic>{};
 
       if (year != null) {
         queryParameters['year'] = year;
@@ -738,50 +562,36 @@ class ApiClient {
         queryParameters['month'] = month;
       }
 
-      if (fecha != null &&
-          fecha.trim().isNotEmpty) {
-        queryParameters['fecha'] =
-            fecha.trim();
+      if (fecha != null && fecha.trim().isNotEmpty) {
+        queryParameters['fecha'] = fecha.trim();
       }
 
       if (date != null) {
-        queryParameters['fecha'] =
-            date.toIso8601String();
+        queryParameters['fecha'] = date.toIso8601String();
       }
 
       if (desde != null) {
-        queryParameters['desde'] =
-            desde.toIso8601String();
+        queryParameters['desde'] = desde.toIso8601String();
       }
 
       if (hasta != null) {
-        queryParameters['hasta'] =
-            hasta.toIso8601String();
+        queryParameters['hasta'] = hasta.toIso8601String();
       }
 
       final response = await _dio.get(
         '/api/v1/estadisticas/mes',
-        queryParameters:
-            queryParameters.isEmpty
-                ? null
-                : queryParameters,
+        queryParameters: queryParameters.isEmpty ? null : queryParameters,
       );
 
-      if (response.statusCode == 200 &&
-          response.data is Map) {
-        return Map<String, dynamic>.from(
-          response.data as Map,
-        );
+      if (response.statusCode == 200 && response.data is Map) {
+        return Map<String, dynamic>.from(response.data as Map);
       }
 
-      throw Exception(
-        'No se pudieron obtener las estadísticas del mes',
-      );
+      throw Exception('No se pudieron obtener las estadísticas del mes');
     } on DioException catch (e) {
       _throwDioError(
         e,
-        fallback:
-            'No se pudieron obtener las estadísticas del mes',
+        fallback: 'No se pudieron obtener las estadísticas del mes',
       );
     }
   }
@@ -793,20 +603,14 @@ class ApiClient {
   Future<Map<String, dynamic>> createCategory(
     Map<String, dynamic> payload,
   ) async {
-    return _postOperation(
-      '/api/v1/categorias',
-      payload,
-    );
+    return _postOperation('/api/v1/categorias', payload);
   }
 
   Future<Map<String, dynamic>> updateCategory(
     int serverId,
     Map<String, dynamic> payload,
   ) async {
-    return _putOperation(
-      '/api/v1/categorias/$serverId',
-      payload,
-    );
+    return _putOperation('/api/v1/categorias/$serverId', payload);
   }
 
   // ============================================================
@@ -816,183 +620,107 @@ class ApiClient {
   Future<Map<String, dynamic>> createProduct(
     Map<String, dynamic> payload,
   ) async {
-    return _postOperation(
-      '/api/v1/productos',
-      payload,
-    );
+    return _postOperation('/api/v1/productos', payload);
   }
 
   Future<Map<String, dynamic>> updateProduct(
     int serverId,
     Map<String, dynamic> payload,
   ) async {
-    return _putOperation(
-      '/api/v1/productos/$serverId',
-      payload,
-    );
+    return _putOperation('/api/v1/productos/$serverId', payload);
   }
 
   // ============================================================
   // CATÁLOGO
   // ============================================================
 
-  Future<Map<String, dynamic>> getCatalog({
-    String? desde,
-  }) async {
+  Future<Map<String, dynamic>> getCatalog({String? desde}) async {
     try {
       final response = await _dio.get(
         '/api/v1/catalogos',
-        queryParameters:
-            desde == null
-                ? null
-                : {'desde': desde},
+        queryParameters: desde == null ? null : {'desde': desde},
       );
 
-      if (response.statusCode == 200 &&
-          response.data is Map) {
-        return Map<String, dynamic>.from(
-          response.data as Map,
-        );
+      if (response.statusCode == 200 && response.data is Map) {
+        return Map<String, dynamic>.from(response.data as Map);
       }
 
-      throw Exception(
-        'Respuesta inválida del catálogo',
-      );
+      throw Exception('Respuesta inválida del catálogo');
     } on DioException catch (e) {
-      _throwDioError(
-        e,
-        fallback:
-            'No se pudo descargar el catálogo',
-      );
+      _throwDioError(e, fallback: 'No se pudo descargar el catálogo');
     }
   }
 
-  Future<Map<String, dynamic>> getCatalogs({
-    DateTime? desde,
-  }) async {
-    return getCatalog(
-      desde: desde?.toIso8601String(),
-    );
+  Future<Map<String, dynamic>> getCatalogs({DateTime? desde}) async {
+    return getCatalog(desde: desde?.toIso8601String());
   }
 
   // ============================================================
   // SINCRONIZACIÓN OFFLINE
   // ============================================================
 
-  Future<Map<String, dynamic>> syncOffline(
-    Map<String, dynamic> payload,
-  ) async {
+  Future<Map<String, dynamic>> syncOffline(Map<String, dynamic> payload) async {
     try {
-      final response = await _dio.post(
-        '/api/v1/sync/offline',
-        data: payload,
-      );
+      final response = await _dio.post('/api/v1/sync/offline', data: payload);
 
-      if (response.statusCode == 200 &&
-          response.data is Map) {
-        return Map<String, dynamic>.from(
-          response.data as Map,
-        );
+      if (response.statusCode == 200 && response.data is Map) {
+        return Map<String, dynamic>.from(response.data as Map);
       }
 
-      throw Exception(
-        'No se pudo sincronizar la venta fuera de línea',
-      );
+      throw Exception('No se pudo sincronizar la venta fuera de línea');
     } on DioException catch (e) {
       _throwDioError(
         e,
-        fallback:
-            'No se pudo sincronizar la venta fuera de línea',
+        fallback: 'No se pudo sincronizar la venta fuera de línea',
       );
     }
   }
 
-  Future<Map<String, dynamic>> syncPull({
-    String? cursor,
-  }) async {
+  Future<Map<String, dynamic>> syncPull({String? cursor}) async {
     try {
       final response = await _dio.get(
         '/api/v1/sync/pull',
-        queryParameters:
-            cursor == null ||
-                    cursor.trim().isEmpty
-                ? null
-                : {'cursor': cursor.trim()},
+        queryParameters: cursor == null || cursor.trim().isEmpty
+            ? null
+            : {'cursor': cursor.trim()},
       );
 
-      if (response.statusCode == 200 &&
-          response.data is Map) {
-        return Map<String, dynamic>.from(
-          response.data as Map,
-        );
+      if (response.statusCode == 200 && response.data is Map) {
+        return Map<String, dynamic>.from(response.data as Map);
       }
 
-      throw Exception(
-        'No se pudieron obtener los cambios',
-      );
+      throw Exception('No se pudieron obtener los cambios');
     } on DioException catch (e) {
-      _throwDioError(
-        e,
-        fallback:
-            'No se pudieron obtener los cambios',
-      );
+      _throwDioError(e, fallback: 'No se pudieron obtener los cambios');
     }
   }
 
-  Future<Map<String, dynamic>> sync(
-    Map<String, dynamic> payload,
-  ) async {
+  Future<Map<String, dynamic>> sync(Map<String, dynamic> payload) async {
     try {
-      final response = await _dio.post(
-        '/api/v1/sync',
-        data: payload,
-      );
+      final response = await _dio.post('/api/v1/sync', data: payload);
 
-      if (response.statusCode == 200 &&
-          response.data is Map) {
-        return Map<String, dynamic>.from(
-          response.data as Map,
-        );
+      if (response.statusCode == 200 && response.data is Map) {
+        return Map<String, dynamic>.from(response.data as Map);
       }
 
-      throw Exception(
-        'No se pudo completar la sincronización',
-      );
+      throw Exception('No se pudo completar la sincronización');
     } on DioException catch (e) {
-      _throwDioError(
-        e,
-        fallback:
-            'No se pudo completar la sincronización',
-      );
+      _throwDioError(e, fallback: 'No se pudo completar la sincronización');
     }
   }
 
-  Future<Map<String, dynamic>> createSale(
-    Map<String, dynamic> payload,
-  ) async {
+  Future<Map<String, dynamic>> createSale(Map<String, dynamic> payload) async {
     try {
-      final response = await _dio.post(
-        '/api/v1/ventas',
-        data: payload,
-      );
+      final response = await _dio.post('/api/v1/ventas', data: payload);
 
-      if ((response.statusCode == 200 ||
-              response.statusCode == 201) &&
+      if ((response.statusCode == 200 || response.statusCode == 201) &&
           response.data is Map) {
-        return Map<String, dynamic>.from(
-          response.data as Map,
-        );
+        return Map<String, dynamic>.from(response.data as Map);
       }
 
-      throw Exception(
-        'No se pudo sincronizar la venta',
-      );
+      throw Exception('No se pudo sincronizar la venta');
     } on DioException catch (e) {
-      _throwDioError(
-        e,
-        fallback:
-            'No se pudo sincronizar la venta',
-      );
+      _throwDioError(e, fallback: 'No se pudo sincronizar la venta');
     }
   }
 
@@ -1006,55 +734,33 @@ class ApiClient {
         data: payload,
       );
 
-      if (response.statusCode == 200 &&
-          response.data is Map) {
-        return Map<String, dynamic>.from(
-          response.data as Map,
-        );
+      if (response.statusCode == 200 && response.data is Map) {
+        return Map<String, dynamic>.from(response.data as Map);
       }
 
-      throw Exception(
-        'No se pudo procesar la devolución',
-      );
+      throw Exception('No se pudo procesar la devolución');
     } on DioException catch (e) {
-      _throwDioError(
-        e,
-        fallback:
-            'No se pudo procesar la devolución',
-      );
+      _throwDioError(e, fallback: 'No se pudo procesar la devolución');
     }
   }
 
-  Future<Map<String, dynamic>> cancelSale(
-    int saleId, {
-    String? reason,
-  }) async {
+  Future<Map<String, dynamic>> cancelSale(int saleId, {String? reason}) async {
     try {
       final response = await _dio.post(
         '/api/v1/ventas/$saleId/anular',
         data: {
-          if (reason != null &&
-              reason.trim().isNotEmpty)
+          if (reason != null && reason.trim().isNotEmpty)
             'motivo': reason.trim(),
         },
       );
 
-      if (response.statusCode == 200 &&
-          response.data is Map) {
-        return Map<String, dynamic>.from(
-          response.data as Map,
-        );
+      if (response.statusCode == 200 && response.data is Map) {
+        return Map<String, dynamic>.from(response.data as Map);
       }
 
-      throw Exception(
-        'No se pudo cancelar la venta',
-      );
+      throw Exception('No se pudo cancelar la venta');
     } on DioException catch (e) {
-      _throwDioError(
-        e,
-        fallback:
-            'No se pudo cancelar la venta',
-      );
+      _throwDioError(e, fallback: 'No se pudo cancelar la venta');
     }
   }
 
@@ -1064,29 +770,19 @@ class ApiClient {
 
   Future<Map<String, dynamic>> getCompanyConfig() async {
     try {
-      final response = await _dio.get(
-        '/api/v1/admin/empresa/config',
-      );
+      final response = await _dio.get('/api/v1/admin/empresa/config');
 
-      if (response.statusCode == 200 &&
-          response.data is Map) {
-        print(
-          '[COMPANY CONFIG] response.data = ${response.data}',
-        );
+      if (response.statusCode == 200 && response.data is Map) {
+        print('[COMPANY CONFIG] response.data = ${response.data}');
 
-        return Map<String, dynamic>.from(
-          response.data as Map,
-        );
+        return Map<String, dynamic>.from(response.data as Map);
       }
 
-      throw Exception(
-        'No se pudo cargar la configuración de empresa',
-      );
+      throw Exception('No se pudo cargar la configuración de empresa');
     } on DioException catch (e) {
       _throwDioError(
         e,
-        fallback:
-            'No se pudo cargar la configuración de empresa',
+        fallback: 'No se pudo cargar la configuración de empresa',
       );
     }
   }
@@ -1100,21 +796,15 @@ class ApiClient {
         data: payload,
       );
 
-      if (response.statusCode == 200 &&
-          response.data is Map) {
-        return Map<String, dynamic>.from(
-          response.data as Map,
-        );
+      if (response.statusCode == 200 && response.data is Map) {
+        return Map<String, dynamic>.from(response.data as Map);
       }
 
-      throw Exception(
-        'No se pudo actualizar la configuración de empresa',
-      );
+      throw Exception('No se pudo actualizar la configuración de empresa');
     } on DioException catch (e) {
       _throwDioError(
         e,
-        fallback:
-            'No se pudo actualizar la configuración de empresa',
+        fallback: 'No se pudo actualizar la configuración de empresa',
       );
     }
   }
@@ -1125,25 +815,17 @@ class ApiClient {
 
   Future<Map<String, dynamic>> getTicketConfig() async {
     try {
-      final response = await _dio.get(
-        '/api/v1/ticket/config',
-      );
+      final response = await _dio.get('/api/v1/ticket/config');
 
-      if (response.statusCode == 200 &&
-          response.data is Map) {
-        return Map<String, dynamic>.from(
-          response.data as Map,
-        );
+      if (response.statusCode == 200 && response.data is Map) {
+        return Map<String, dynamic>.from(response.data as Map);
       }
 
-      throw Exception(
-        'No se pudo cargar la configuración del ticket',
-      );
+      throw Exception('No se pudo cargar la configuración del ticket');
     } on DioException catch (e) {
       _throwDioError(
         e,
-        fallback:
-            'No se pudo cargar la configuración del ticket',
+        fallback: 'No se pudo cargar la configuración del ticket',
       );
     }
   }
@@ -1152,26 +834,17 @@ class ApiClient {
     Map<String, dynamic> payload,
   ) async {
     try {
-      final response = await _dio.put(
-        '/api/v1/ticket/config',
-        data: payload,
-      );
+      final response = await _dio.put('/api/v1/ticket/config', data: payload);
 
-      if (response.statusCode == 200 &&
-          response.data is Map) {
-        return Map<String, dynamic>.from(
-          response.data as Map,
-        );
+      if (response.statusCode == 200 && response.data is Map) {
+        return Map<String, dynamic>.from(response.data as Map);
       }
 
-      throw Exception(
-        'No se pudo actualizar la configuración del ticket',
-      );
+      throw Exception('No se pudo actualizar la configuración del ticket');
     } on DioException catch (e) {
       _throwDioError(
         e,
-        fallback:
-            'No se pudo actualizar la configuración del ticket',
+        fallback: 'No se pudo actualizar la configuración del ticket',
       );
     }
   }
@@ -1189,68 +862,41 @@ class ApiClient {
         data: payload,
       );
 
-      if (response.statusCode == 200 &&
-          response.data is Map) {
-        return Map<String, dynamic>.from(
-          response.data as Map,
-        );
+      if (response.statusCode == 200 && response.data is Map) {
+        return Map<String, dynamic>.from(response.data as Map);
       }
 
-      throw Exception(
-        'No se pudo compartir el reporte',
-      );
+      throw Exception('No se pudo compartir el reporte');
     } on DioException catch (e) {
-      _throwDioError(
-        e,
-        fallback:
-            'No se pudo compartir el reporte',
-      );
+      _throwDioError(e, fallback: 'No se pudo compartir el reporte');
     }
   }
 
   Future<Map<String, dynamic>> getCompanyLogo() async {
     try {
-      final response = await _dio.get(
-        '/api/v1/empresa/logo',
-      );
+      final response = await _dio.get('/api/v1/empresa/logo');
 
-      if (response.statusCode == 200 &&
-          response.data is Map) {
-        return Map<String, dynamic>.from(
-          response.data as Map,
-        );
+      if (response.statusCode == 200 && response.data is Map) {
+        return Map<String, dynamic>.from(response.data as Map);
       }
 
-      throw Exception(
-        'No se pudo obtener el logo de la empresa',
-      );
+      throw Exception('No se pudo obtener el logo de la empresa');
     } on DioException catch (e) {
-      _throwDioError(
-        e,
-        fallback:
-            'No se pudo obtener el logo de la empresa',
-      );
+      _throwDioError(e, fallback: 'No se pudo obtener el logo de la empresa');
     }
   }
 
-  Future<List<int>?> downloadCompanyLogo({
-    String? logoUrl,
-  }) async {
-    final normalizedUrl =
-        logoUrl?.trim();
+  Future<List<int>?> downloadCompanyLogo({String? logoUrl}) async {
+    final normalizedUrl = logoUrl?.trim();
 
-    if (normalizedUrl == null ||
-        normalizedUrl.isEmpty) {
+    if (normalizedUrl == null || normalizedUrl.isEmpty) {
       return null;
     }
 
     try {
-      final response =
-          await _dio.get<List<int>>(
+      final response = await _dio.get<List<int>>(
         normalizedUrl,
-        options: Options(
-          responseType: ResponseType.bytes,
-        ),
+        options: Options(responseType: ResponseType.bytes),
       );
 
       if (response.statusCode == 200 &&
@@ -1261,26 +907,17 @@ class ApiClient {
 
       return null;
     } on DioException catch (e) {
-      _throwDioError(
-        e,
-        fallback:
-            'No se pudo descargar el logo de la empresa',
-      );
+      _throwDioError(e, fallback: 'No se pudo descargar el logo de la empresa');
     }
   }
 
-  Future<Map<String, dynamic>> uploadCompanyLogo(
-    File logoFile,
-  ) async {
+  Future<Map<String, dynamic>> uploadCompanyLogo(File logoFile) async {
     try {
       if (!await logoFile.exists()) {
-        throw Exception(
-          'El archivo del logo no existe.',
-        );
+        throw Exception('El archivo del logo no existe.');
       }
 
-      final formData =
-          FormData.fromMap({
+      final formData = FormData.fromMap({
         'logo': await MultipartFile.fromFile(
           logoFile.path,
           filename: 'logo.webp',
@@ -1290,29 +927,49 @@ class ApiClient {
       final response = await _dio.post(
         '/api/v1/empresa/logo',
         data: formData,
-        options: Options(
-          contentType:
-              'multipart/form-data',
-        ),
+        options: Options(contentType: 'multipart/form-data'),
       );
 
-      if ((response.statusCode == 200 ||
-              response.statusCode == 201) &&
+      if ((response.statusCode == 200 || response.statusCode == 201) &&
           response.data is Map) {
-        return Map<String, dynamic>.from(
-          response.data as Map,
-        );
+        return Map<String, dynamic>.from(response.data as Map);
       }
 
-      throw Exception(
-        'No se pudo actualizar el logo de la empresa',
-      );
+      throw Exception('No se pudo actualizar el logo de la empresa');
     } on DioException catch (e) {
       _throwDioError(
         e,
-        fallback:
-            'No se pudo actualizar el logo de la empresa',
+        fallback: 'No se pudo actualizar el logo de la empresa',
       );
     }
+  }
+
+  // ============================================================
+  // REGISTRAR MOVIMIENTO DE CAJA
+  // ============================================================
+
+  Future<Map<String, dynamic>> registerCashMovement({
+    int? cashRegisterId,
+    required String tipo,
+    required String concepto,
+    required double monto,
+    String? referencia,
+    String? notas,
+    String? formaPago,
+  }) async {
+    final path = cashRegisterId != null && cashRegisterId > 0
+        ? '/api/v1/cajas/$cashRegisterId/movimientos'
+        : '/api/v1/cajas/movimientos';
+
+    return _postOperation(path, {
+      'tipo': tipo,
+      'concepto': concepto.trim(),
+      'monto': monto,
+      if (referencia != null && referencia.trim().isNotEmpty)
+        'referencia': referencia.trim(),
+      if (notas != null && notas.trim().isNotEmpty) 'notas': notas.trim(),
+      if (formaPago != null && formaPago.trim().isNotEmpty)
+        'forma_pago': formaPago.trim(),
+    });
   }
 }
