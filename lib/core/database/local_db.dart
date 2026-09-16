@@ -3289,6 +3289,11 @@ class LocalDb {
     double egresos = 0;
     double ajustes = 0;
 
+    // Desglose adicional sin romper la lógica existente.
+    double retirosParciales = 0;
+    double egresosOperativos = 0;
+    double devoluciones = 0;
+
     for (final m in movimientos) {
       final tipo = m['tipo']?.toString();
       final monto = _toDouble(m['monto']);
@@ -3298,9 +3303,16 @@ class LocalDb {
           ingresos += monto;
           break;
         case 'egreso':
+          egresos += monto;
+          egresosOperativos += monto;
+          break;
         case 'retiro':
+          egresos += monto;
+          retirosParciales += monto;
+          break;
         case 'devolucion':
           egresos += monto;
+          devoluciones += monto;
           break;
         case 'ajuste':
           ajustes += monto;
@@ -3351,6 +3363,12 @@ class LocalDb {
       'ventas_total': ventasTotal,
       'movimientos': movimientos.length,
       'neto': neto,
+      // ============================================================
+      // DESGLOSE NUEVO
+      // ============================================================
+      'retiros_parciales': retirosParciales,
+      'egresos_operativos': egresosOperativos,
+      'devoluciones': devoluciones,
     };
   }
 

@@ -22,10 +22,8 @@ class _OperationScreenState extends State<OperationScreen> {
   bool _canOperateCash = false;
   bool _tablesEnabled = false;
 
-  /// Caja abierta en local (SQLite). Es la fuente de verdad offline-first.
   Map<String, dynamic>? _cashRegister;
-
-  /// Estado devuelto por el backend (para permisos, mesas, etc).
+  Map<String, dynamic> _cashSummary = const {};
   Map<String, dynamic>? _remoteCashRegister;
 
   List<Map<String, dynamic>> _tables = const [];
@@ -37,9 +35,8 @@ class _OperationScreenState extends State<OperationScreen> {
 
   StreamSubscription<void>? _cashSub;
   StreamSubscription<void>? _operationSub;
+  StreamSubscription<void>? _salesSub;
 
-  /// Evita que un stream dispare una recarga mientras ya hay una
-  /// recarga en curso.
   bool _isReloading = false;
 
   @override
@@ -48,6 +45,7 @@ class _OperationScreenState extends State<OperationScreen> {
 
     _cashSub = LocalDb.cashChanges.listen((_) => _reloadFromStream());
     _operationSub = LocalDb.operationChanges.listen((_) => _reloadFromStream());
+    _salesSub = LocalDb.salesChanges.listen((_) => _reloadFromStream());
 
     _load();
   }
@@ -59,6 +57,9 @@ class _OperationScreenState extends State<OperationScreen> {
 
     _operationSub?.cancel();
     _operationSub = null;
+
+    _salesSub?.cancel();
+    _salesSub = null;
 
     super.dispose();
   }
@@ -83,6 +84,16 @@ class _OperationScreenState extends State<OperationScreen> {
     try {
       final localCash = await _cash.getCurrentCash();
 
+      Map<String, dynamic> summary = const {};
+
+      if (localCash != null && localCash['id'] is num) {
+        try {
+          summary = await _cash.getSummary(localCash['id'] as int);
+        } catch (_) {
+          summary = const {};
+        }
+      }
+
       Map<String, dynamic>? remoteCash;
       Map<String, dynamic> state = const {};
       List<Map<String, dynamic>> tables = const [];
@@ -96,7 +107,7 @@ class _OperationScreenState extends State<OperationScreen> {
             ? await _api.getTables()
             : const <Map<String, dynamic>>[];
       } catch (_) {
-        // Offline: usamos solo lo local.
+        // Offline.
       }
 
       final tablesEnabled = state['mesas_activas'] == true;
@@ -113,6 +124,7 @@ class _OperationScreenState extends State<OperationScreen> {
 
       setState(() {
         _cashRegister = localCash;
+        _cashSummary = summary;
         _remoteCashRegister = remoteCash;
         _canOperateCash = state['puede_operar_caja'] == true;
         _tablesEnabled = tablesEnabled;
@@ -179,6 +191,46 @@ class _OperationScreenState extends State<OperationScreen> {
       _snack('Caja cerrada correctamente.');
     } catch (error) {
       _snack('Error al cerrar caja: $error', error: true);
+    }
+  }
+
+  // ============================================================
+  // RETIRO PARCIAL
+  // ============================================================
+
+  Future<void> _retiroParcialDialog() async {
+    final cashRegister = _cashRegister;
+    if (cashRegister == null) {
+      _snack('No hay caja abierta.', error: true);
+      return;
+    }
+
+    final result = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (_) => const _RetiroParcialDialog(),
+    );
+
+    if (result == null) return;
+
+    try {
+      await _cash.addMovement(
+        cashRegisterId: cashRegister['id'] as int,
+        tipo: 'retiro',
+        concepto: result['concepto'] as String,
+        monto: result['monto'] as double,
+        referencia: result['referencia'] as String?,
+        notas: result['notas'] as String?,
+        formaPago: 'Efectivo',
+      );
+
+      await _load(silent: true);
+
+      _snack(
+        'Retiro de \$${(result['monto'] as double).toStringAsFixed(2)} '
+        'registrado correctamente.',
+      );
+    } catch (error) {
+      _snack('Error al registrar retiro: $error', error: true);
     }
   }
 
@@ -274,9 +326,22 @@ class _OperationScreenState extends State<OperationScreen> {
     final abierta = caja != null;
 
     final apertura = _d(caja?['monto_apertura']);
-    final esperado = _d(caja?['monto_esperado']);
     final declarado = _d(caja?['monto_declarado']);
     final diferencia = _d(caja?['diferencia']);
+
+    final ventasEfectivo = _d(_cashSummary['ventas_efectivo']);
+    final ingresos = _d(_cashSummary['ingresos']);
+    final egresos = _d(_cashSummary['retiros_gastos']);
+    final ajustes = _d(_cashSummary['ajustes']);
+
+    // Retiros parciales del día (solo tipo "retiro").
+    final retirosParciales = _d(_cashSummary['retiros_parciales']);
+    final egresosOperativos = _d(_cashSummary['egresos_operativos']);
+
+    // Monto esperado en vivo.
+    final esperadoEnVivo = abierta
+        ? (apertura + ventasEfectivo + ingresos + ajustes - egresos)
+        : _d(caja?['monto_esperado']);
 
     return Card(
       child: Padding(
@@ -332,7 +397,58 @@ class _OperationScreenState extends State<OperationScreen> {
               const SizedBox(height: 12),
               const Divider(height: 1),
               const SizedBox(height: 12),
-              _kv('Monto esperado', '\$${esperado.toStringAsFixed(2)}', cs: cs),
+
+              _kv(
+                'Ventas en efectivo',
+                '\$${ventasEfectivo.toStringAsFixed(2)}',
+                cs: cs,
+                color: Colors.green.shade700,
+              ),
+              _kv(
+                'Ingresos manuales',
+                '\$${ingresos.toStringAsFixed(2)}',
+                cs: cs,
+              ),
+              if (egresosOperativos != 0)
+                _kv(
+                  'Egresos operativos',
+                  '\$${egresosOperativos.toStringAsFixed(2)}',
+                  cs: cs,
+                  color: Colors.red.shade700,
+                ),
+              if (ajustes != 0)
+                _kv(
+                  'Ajustes',
+                  '\$${ajustes.toStringAsFixed(2)}',
+                  cs: cs,
+                  color: Colors.blue.shade700,
+                ),
+
+              // ============================================================
+              // RETIROS PARCIALES DEL DÍA
+              // ============================================================
+              //
+              // Se muestra siempre (aunque sea $0.00) para que el cajero
+              // vea que existe la opción de retirar efectivo parcial.
+              //
+              _kv(
+                'Retiros parciales del día',
+                '\$${retirosParciales.toStringAsFixed(2)}',
+                cs: cs,
+                color: retirosParciales > 0
+                    ? Colors.orange.shade800
+                    : cs.onSurfaceVariant,
+                bold: retirosParciales > 0,
+              ),
+
+              const Divider(height: 16),
+
+              _kv(
+                'Monto esperado',
+                '\$${esperadoEnVivo.toStringAsFixed(2)}',
+                cs: cs,
+                bold: true,
+              ),
               _kv(
                 'Monto declarado',
                 '\$${declarado.toStringAsFixed(2)}',
@@ -348,6 +464,30 @@ class _OperationScreenState extends State<OperationScreen> {
                           : Colors.red.shade700),
                 cs: cs,
               ),
+
+              // ============================================================
+              // ACCIONES DE CAJA
+              // ============================================================
+              //
+              // El retiro parcial solo se habilita cuando la caja está
+              // abierta y el usuario puede operarla.
+              //
+              if (_canOperateCash) ...[
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: _retiroParcialDialog,
+                    icon: const Icon(Icons.savings_outlined, size: 18),
+                    label: const Text('Registrar retiro parcial'),
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size(0, 46),
+                      foregroundColor: Colors.orange.shade800,
+                      side: BorderSide(color: Colors.orange.shade300),
+                    ),
+                  ),
+                ),
+              ],
             ],
 
             const SizedBox(height: 8),
@@ -432,7 +572,13 @@ class _OperationScreenState extends State<OperationScreen> {
   // UTILIDADES
   // ============================================================
 
-  Widget _kv(String k, String v, {Color? color, required ColorScheme cs}) {
+  Widget _kv(
+    String k,
+    String v, {
+    Color? color,
+    bool bold = false,
+    required ColorScheme cs,
+  }) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 3),
       child: Row(
@@ -442,7 +588,10 @@ class _OperationScreenState extends State<OperationScreen> {
           ),
           Text(
             v,
-            style: TextStyle(fontWeight: FontWeight.w700, color: color),
+            style: TextStyle(
+              fontWeight: bold ? FontWeight.w800 : FontWeight.w700,
+              color: color,
+            ),
           ),
         ],
       ),
@@ -501,6 +650,174 @@ class _AmountDialogState extends State<_AmountDialog> {
       ),
     ],
   );
+}
+
+// ============================================================
+// DIÁLOGO RETIRO PARCIAL
+// ============================================================
+
+class _RetiroParcialDialog extends StatefulWidget {
+  const _RetiroParcialDialog();
+
+  @override
+  State<_RetiroParcialDialog> createState() => _RetiroParcialDialogState();
+}
+
+class _RetiroParcialDialogState extends State<_RetiroParcialDialog> {
+  final _concepto = TextEditingController(text: 'Retiro parcial de caja');
+  final _monto = TextEditingController();
+  final _referencia = TextEditingController();
+  final _notas = TextEditingController();
+
+  String? _error;
+
+  @override
+  void dispose() {
+    _concepto.dispose();
+    _monto.dispose();
+    _referencia.dispose();
+    _notas.dispose();
+    super.dispose();
+  }
+
+  void _confirmar() {
+    final concepto = _concepto.text.trim();
+    final monto = double.tryParse(_monto.text.replaceAll(',', '.'));
+
+    if (concepto.isEmpty) {
+      setState(() => _error = 'Ingresa un concepto.');
+      return;
+    }
+
+    if (monto == null || monto <= 0) {
+      setState(() => _error = 'Ingresa un monto válido mayor a cero.');
+      return;
+    }
+
+    Navigator.pop(context, {
+      'concepto': concepto,
+      'monto': monto,
+      'referencia': _referencia.text.trim().isEmpty
+          ? null
+          : _referencia.text.trim(),
+      'notas': _notas.text.trim().isEmpty ? null : _notas.text.trim(),
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Row(
+        children: [
+          Icon(Icons.savings_outlined, size: 22),
+          SizedBox(width: 8),
+          Text('Retiro parcial'),
+        ],
+      ),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              'Retira efectivo de la caja sin cerrarla. '
+              'El monto se descuenta del esperado.',
+              style: TextStyle(fontSize: 12),
+            ),
+            const SizedBox(height: 16),
+
+            TextField(
+              controller: _concepto,
+              autofocus: true,
+              textCapitalization: TextCapitalization.sentences,
+              decoration: const InputDecoration(
+                labelText: 'Concepto *',
+                hintText: 'Retiro parcial de caja',
+                prefixIcon: Icon(Icons.description_outlined),
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+
+            TextField(
+              controller: _monto,
+              keyboardType: const TextInputType.numberWithOptions(
+                decimal: true,
+              ),
+              decoration: const InputDecoration(
+                labelText: 'Monto *',
+                hintText: '0.00',
+                prefixText: '\$ ',
+                prefixIcon: Icon(Icons.attach_money),
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+
+            TextField(
+              controller: _referencia,
+              decoration: const InputDecoration(
+                labelText: 'Referencia (opcional)',
+                prefixIcon: Icon(Icons.tag),
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+
+            TextField(
+              controller: _notas,
+              minLines: 1,
+              maxLines: 3,
+              decoration: const InputDecoration(
+                labelText: 'Notas (opcional)',
+                prefixIcon: Icon(Icons.notes_outlined),
+                border: OutlineInputBorder(),
+                alignLabelWithHint: true,
+              ),
+            ),
+
+            if (_error != null) ...[
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Colors.red.withAlpha(20),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.red.withAlpha(80)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.error_outline, color: Colors.red, size: 18),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        _error!,
+                        style: const TextStyle(
+                          color: Colors.red,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton.icon(
+          onPressed: _confirmar,
+          icon: const Icon(Icons.check, size: 18),
+          label: const Text('Registrar retiro'),
+        ),
+      ],
+    );
+  }
 }
 
 // ============================================================

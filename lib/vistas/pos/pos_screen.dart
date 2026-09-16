@@ -15,6 +15,7 @@ import '../operacion/operation_screen.dart';
 import 'cart_screen.dart';
 import '../ventas/sale_detail_screen.dart';
 import '../widgets/app_scaffold.dart';
+import '../../core/services/cash_service.dart';
 
 class PosScreen extends StatefulWidget {
   const PosScreen({super.key, this.onCartChanged});
@@ -27,6 +28,7 @@ class PosScreen extends StatefulWidget {
 
 class PosScreenState extends State<PosScreen> {
   final LocalDb _db = LocalDb();
+  final CashService _cash = CashService();
   final TextEditingController _searchController = TextEditingController();
   final ValueNotifier<List<CartItem>> _cartNotifier = ValueNotifier([]);
   final PrinterService _printerService = PrinterService();
@@ -80,16 +82,6 @@ class PosScreenState extends State<PosScreen> {
   @override
   void initState() {
     super.initState();
-
-    // ============================================================
-    // TIEMPO REAL DESDE SQLITE
-    // ============================================================
-    //
-    // Cada vez que SQLite muta una tabla relevante, LocalDb emite
-    // un evento y aquí recargamos lo necesario. No hace falta que
-    // el usuario presione "Actualizar".
-    //
-    // ============================================================
 
     _salesChangesSubscription = LocalDb.salesChanges.listen((_) {
       _handleSalesChanged();
@@ -292,12 +284,6 @@ class PosScreenState extends State<PosScreen> {
     }
   }
 
-  /// Devuelve `true` si la empresa maneja cajas y hay una caja
-  /// abierta en SQLite local para el día comercial en curso.
-  ///
-  /// Se consulta `cash_registers` directamente, no el backend,
-  /// porque el POS opera offline-first. El backend puede estar
-  /// caído y la caja igual está abierta localmente.
   Future<bool> _hasOpenCashRegisterLocal() async {
     try {
       final caja = await _db.getCurrentCashRegisterLocal();
@@ -309,14 +295,12 @@ class PosScreenState extends State<PosScreen> {
   }
 
   Future<void> _loadOperationState() async {
-    // 1) Estado guardado (último conocido en el dispositivo).
     final savedState = await AppStorage().getOperationState();
 
     Map<String, dynamic> state = savedState is Map
         ? Map<String, dynamic>.from(savedState)
         : <String, dynamic>{};
 
-    // 2) Intentar refrescar desde el servidor.
     try {
       final remote = await ApiClient().getOperationStatus();
       debugPrint('🟢 OperationStatus remoto: $remote');
@@ -327,7 +311,6 @@ class PosScreenState extends State<PosScreen> {
         _tables = await ApiClient().getTables();
       }
     } catch (error) {
-      // Offline: se conserva `state` (último estado guardado).
       debugPrint('⚠️ No se pudo refrescar estado de operación: $error');
     }
 
@@ -335,16 +318,6 @@ class PosScreenState extends State<PosScreen> {
 
     final cajasActivas = state['cajas_activas'] == true;
     final mesasActivas = state['mesas_activas'] == true;
-
-    // ============================================================
-    // CAJA ABIERTA → SQLite es la fuente de verdad
-    // ============================================================
-    //
-    // 1. Si NO hay cajas activas en la empresa → no aplica.
-    // 2. Si SÍ hay cajas activas → consultamos `cash_registers` local.
-    //    La caja debe estar abierta para poder vender.
-    //
-    // ============================================================
 
     final cajaAbierta = cajasActivas
         ? await _hasOpenCashRegisterLocal()
@@ -357,7 +330,6 @@ class PosScreenState extends State<PosScreen> {
       _mesasActivas = mesasActivas;
       _cajaAbierta = cajaAbierta;
 
-      // Si la empresa no tiene cajas o mesas activas, limpiar la mesa.
       if (!cajasActivas || !mesasActivas) {
         _selectedTableId = null;
         _selectedTableName = null;
@@ -387,20 +359,15 @@ class PosScreenState extends State<PosScreen> {
       _cartNotifier.value.fold(0, (sum, item) => sum + item.subtotal);
 
   bool _canAddProduct(Product product) {
-    // Los productos no inventariables no dependen del stock.
     if (!product.isInventoriable) {
       return true;
     }
 
-    // Los productos inventariables requieren existencia disponible.
     return product.stock > 0;
   }
 
-  /// ¿Podemos operar (agregar / cobrar / guardar)? Falla cerrado si la
-  /// empresa usa cajas y no hay caja abierta en SQLite local.
   bool get _puedeOperar => !_cajasActivas || _cajaAbierta;
 
-  /// ¿Debemos mostrar el aviso de "caja cerrada"?
   bool get _debeAvisarCajaCerrada => _cajasActivas && !_cajaAbierta;
 
   void _addToCart(Product product) {
@@ -531,8 +498,6 @@ class PosScreenState extends State<PosScreen> {
   // ============================================================
 
   Future<bool> _canOperateSale() async {
-    // Reconsultar estado: la caja pudo abrirse/cerrarse mientras
-    // el usuario armaba el carrito.
     await _loadOperationState();
 
     if (_cajasActivas && !_cajaAbierta) {
@@ -551,12 +516,9 @@ class PosScreenState extends State<PosScreen> {
     return true;
   }
 
-  /// Devuelve el `tableId` a enviar a `saveSale`.
-  /// Solo aplica si la empresa tiene cajas Y mesas activas.
   int? get _tableIdForSale =>
       (_cajasActivas && _mesasActivas) ? _selectedTableId : null;
 
-  /// Devuelve el `tableName` a enviar a `saveSale`.
   String? get _tableNameForSale =>
       (_cajasActivas && _mesasActivas) ? _selectedTableName : null;
 
@@ -880,8 +842,6 @@ class PosScreenState extends State<PosScreen> {
         'metodoPago': _paymentMethodLabel(payments),
         'subtotal': total,
         'total': total,
-        // Aquí se conserva el efectivo REAL entregado.
-        // El cambio se maneja por separado y nunca se descuenta del pago.
         'recibido': cashAmount,
         'cambio': change,
         'items': saleItems,
@@ -909,6 +869,53 @@ class PosScreenState extends State<PosScreen> {
       barrierDismissible: false,
       builder: (_) => _PaymentDialog(total: _total),
     );
+  }
+
+  // ============================================================
+  // ABRIR CAJA DIRECTAMENTE DESDE EL POS
+  // ============================================================
+  //
+  // El banner de "Caja cerrada" solo necesita abrir la caja.
+  // NO navegamos a OperationScreen porque esa pantalla es un tab
+  // del AppScaffold, no una ruta independiente.
+  //
+  // Al abrir la caja, LocalDb emite `cashChanges` y el listener
+  // `_handleCashChanged()` recarga el estado de operación sin que
+  // el usuario tenga que hacer nada.
+  //
+  Future<void> _openCashDialog() async {
+    if (!mounted) return;
+
+    final amount = await showDialog<double>(
+      context: context,
+      builder: (_) => const _OpenCashDialog(),
+    );
+
+    if (amount == null) return;
+
+    try {
+      await _cash.openCash(montoApertura: amount);
+
+      await _loadOperationState();
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Caja abierta correctamente.'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error al abrir caja: $error'),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    }
   }
 
   // ============================================================
@@ -1016,12 +1023,9 @@ class PosScreenState extends State<PosScreen> {
   // ============================================================
 
   Future<void> _openOperation() async {
-    await Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const OperationScreen()),
-    );
+    await Navigator.of(context)
+        .push(MaterialPageRoute(builder: (_) => const OperationScreen()));
 
-    // La OperationScreen pudo abrir/cerrar la caja. Forzamos una
-    // recarga del estado por si el stream no llegó a dispararse.
     await _loadOperationState();
   }
 
@@ -1231,10 +1235,7 @@ class PosScreenState extends State<PosScreen> {
       decoration: BoxDecoration(
         color: colorScheme.error.withAlpha(20),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: colorScheme.error.withAlpha(90),
-          width: 1,
-        ),
+        border: Border.all(color: colorScheme.error.withAlpha(90), width: 1),
       ),
       child: Row(
         children: [
@@ -1245,11 +1246,7 @@ class PosScreenState extends State<PosScreen> {
               color: colorScheme.error.withAlpha(30),
               borderRadius: BorderRadius.circular(11),
             ),
-            child: Icon(
-              Icons.lock_outline,
-              color: colorScheme.error,
-              size: 22,
-            ),
+            child: Icon(Icons.lock_outline, color: colorScheme.error, size: 22),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -1279,14 +1276,11 @@ class PosScreenState extends State<PosScreen> {
           ),
           const SizedBox(width: 8),
           FilledButton(
-            onPressed: _openOperation,
+            onPressed: _openCashDialog,
             style: FilledButton.styleFrom(
               backgroundColor: colorScheme.error,
               foregroundColor: colorScheme.onError,
-              padding: const EdgeInsets.symmetric(
-                horizontal: 14,
-                vertical: 10,
-              ),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               minimumSize: Size.zero,
               tapTargetSize: MaterialTapTargetSize.shrinkWrap,
               shape: RoundedRectangleBorder(
@@ -1937,6 +1931,101 @@ class PosScreenState extends State<PosScreen> {
             ),
           ),
           child: const Text('Agregar'),
+        ),
+      ],
+    );
+  }
+}
+
+// ============================================================
+// DIÁLOGO ABRIR CAJA
+// ============================================================
+
+class _OpenCashDialog extends StatefulWidget {
+  const _OpenCashDialog();
+
+  @override
+  State<_OpenCashDialog> createState() => _OpenCashDialogState();
+}
+
+class _OpenCashDialogState extends State<_OpenCashDialog> {
+  final _monto = TextEditingController(text: '0.00');
+  final _notas = TextEditingController();
+
+  @override
+  void dispose() {
+    _monto.dispose();
+    _notas.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Row(
+        children: [
+          Icon(Icons.lock_open, size: 22),
+          SizedBox(width: 8),
+          Text('Abrir caja'),
+        ],
+      ),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              'Ingresa el monto con el que inicias el turno.',
+              style: TextStyle(fontSize: 12),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _monto,
+              autofocus: true,
+              keyboardType: const TextInputType.numberWithOptions(
+                decimal: true,
+              ),
+              decoration: const InputDecoration(
+                labelText: 'Monto de apertura *',
+                prefixText: '\$ ',
+                prefixIcon: Icon(Icons.attach_money),
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _notas,
+              minLines: 1,
+              maxLines: 3,
+              decoration: const InputDecoration(
+                labelText: 'Notas (opcional)',
+                prefixIcon: Icon(Icons.notes_outlined),
+                border: OutlineInputBorder(),
+                alignLabelWithHint: true,
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton.icon(
+          onPressed: () {
+            final monto = double.tryParse(
+              _monto.text.replaceAll(',', '.'),
+            );
+
+            if (monto == null || monto < 0) {
+              return;
+            }
+
+            Navigator.pop(context, monto);
+          },
+          icon: const Icon(Icons.lock_open, size: 18),
+          label: const Text('Abrir caja'),
         ),
       ],
     );
