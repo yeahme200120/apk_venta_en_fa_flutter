@@ -89,7 +89,6 @@ class _HomeShellState extends State<HomeShell>
 
   Future<void> _loadOperationState() async {
     final cached = await AppStorage().getOperationState();
-    final rolLocal = await AppStorage().getRol();
     final cajeroLocal = await AppStorage().isCajero();
 
     if (mounted) {
@@ -121,8 +120,6 @@ class _HomeShellState extends State<HomeShell>
   // ============================================================
 
   bool get _showCajaTab => _cajasActivas && _esCajero;
-
-  int get _cajaTabIndex => _showCajaTab ? 2 : -1;
 
   List<Widget> _buildPages() {
     return [

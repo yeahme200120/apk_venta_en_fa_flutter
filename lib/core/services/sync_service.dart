@@ -1794,10 +1794,16 @@ class SyncService {
         defaultValue: true,
       );
 
+      // CORREGIDO: use_null_aware_elements - se resuelve el mapa nullable
+      // primero y se aplica spread null-aware con sintaxis válida de Dart.
       final rawData = payload['data'];
 
+      final Map<String, dynamic>? rawDataMap = rawData is Map
+          ? Map<String, dynamic>.from(rawData)
+          : null;
+
       final serverPayload = <String, dynamic>{
-        if (rawData is Map) ...Map<String, dynamic>.from(rawData),
+        ...?rawDataMap,
         if (empresaId > 0) 'empresa_id': empresaId,
         'codigo': codigo,
         'nombre': nombre,
@@ -1903,9 +1909,15 @@ class SyncService {
       }
 
       try {
+        final ubicacion = _extractUbicacion(payload);
+
         final response = await _apiClient.openCashRegister(
           openingAmount: _toDouble(payload['monto_apertura']),
           notes: payload['notas']?.toString(),
+          latitude: ubicacion?['lat'] as double?,
+          longitude: ubicacion?['lng'] as double?,
+          accuracy: ubicacion?['accuracy'] as double?,
+          locationProvider: ubicacion?['provider'] as String?,
         );
 
         final serverId = _extractServerId(response);
@@ -1950,6 +1962,19 @@ class SyncService {
           try {
             final remota = await _apiClient.getCurrentCashRegister();
             final serverId = _toInt(remota?['id']);
+            final montoRemoto = _toDouble(remota?['monto_apertura']);
+            final montoLocal = _toDouble(payload['monto_apertura']);
+
+            // 🛡️ GUARDA: si los montos no coinciden, NO vincular.
+            // La caja remota es de otra sesión/otro intento.
+            if ((montoRemoto - montoLocal).abs() > 0.01) {
+              throw Exception(
+                'Existe una caja abierta en el servidor con monto '
+                '\$${montoRemoto.toStringAsFixed(2)}, pero intentaste abrir '
+                'con \$${montoLocal.toStringAsFixed(2)}. '
+                'Ciérrala desde el panel web antes de continuar.',
+              );
+            }
 
             if (serverId > 0) {
               final db = await _historyDb.database;
@@ -2005,16 +2030,25 @@ class SyncService {
         jsonDecode(item['payload_json']?.toString() ?? '{}'),
       );
 
-      final serverId = _toInt(payload['server_id']);
+      final serverId = _toInt(payload['local_id'] ?? item['entity_id_local']);
 
       if (serverId <= 0) {
-        throw Exception('La caja aún no tiene server_id. Esperando apertura.');
+        throw const FormatException('Cierre sin local_id válido.');
       }
 
-      final response = await _apiClient.closeCashRegister(
+      final ubicacion = _extractUbicacion(payload);
+
+      // CORREGIDO: unused_local_variable - se conserva la llamada al servidor
+      // (efecto secundario necesario para cerrar la caja) pero se descarta
+      // el resultado porque no se utiliza.
+      await _apiClient.closeCashRegister(
         cashRegisterId: serverId,
         declaredAmount: _toDouble(payload['monto_declarado']),
         notes: payload['notas']?.toString(),
+        latitude: ubicacion?['lat'] as double?,
+        longitude: ubicacion?['lng'] as double?,
+        accuracy: ubicacion?['accuracy'] as double?,
+        locationProvider: ubicacion?['provider'] as String?,
       );
 
       await _historyDb.markSyncQueueSynced(
@@ -2075,6 +2109,8 @@ class SyncService {
         );
       }
 
+      final ubicacion = _extractUbicacion(payload);
+
       final response = await _apiClient.registerCashMovement(
         cashRegisterId: serverCashId,
         tipo: payload['tipo']?.toString() ?? 'ingreso',
@@ -2082,6 +2118,10 @@ class SyncService {
         monto: _toDouble(payload['monto']),
         referencia: payload['referencia']?.toString(),
         notas: payload['notas']?.toString(),
+        latitude: ubicacion?['lat'] as double?,
+        longitude: ubicacion?['lng'] as double?,
+        accuracy: ubicacion?['accuracy'] as double?,
+        locationProvider: ubicacion?['provider'] as String?,
       );
 
       final serverId = _extractServerId(response);
@@ -3076,6 +3116,81 @@ class SyncService {
 
   bool _isCash(String method) {
     return method.trim().toLowerCase() == 'efectivo';
+  }
+
+  // ============================================================
+  // UBICACIÓN
+  // ============================================================
+
+  /// Extrae la ubicación GPS desde el payload del outbox / sync queue.
+  ///
+  /// Acepta:
+  ///   - "ubicacion" como Map con lat/lng/accuracy (formato estándar)
+  ///   - "ubicacion" como String JSON serializado
+  ///   - Campos sueltos: latitud/longitud o lat/lng
+  ///
+  /// Devuelve null si no hay datos válidos, para que el ApiClient
+  /// simplemente omita el campo del request.
+  Map<String, dynamic>? _extractUbicacion(Map<String, dynamic> payload) {
+    dynamic raw = payload['ubicacion'];
+
+    // Caso 1: viene como String JSON.
+    if (raw is String && raw.trim().isNotEmpty) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map) {
+          raw = Map<String, dynamic>.from(decoded);
+        }
+      } catch (_) {
+        return null;
+      }
+    }
+
+    // Caso 2: viene como Map.
+    if (raw is Map) {
+      final map = Map<String, dynamic>.from(raw);
+
+      final lat = _toDouble(map['lat'] ?? map['latitud'] ?? map['latitude']);
+
+      final lng = _toDouble(
+        map['lng'] ?? map['longitud'] ?? map['longitude'] ?? map['lon'],
+      );
+
+      // Sin coordenadas válidas no se envía nada.
+      if (lat == 0.0 && lng == 0.0) {
+        return null;
+      }
+
+      return {
+        'lat': lat,
+        'lng': lng,
+        if (map['accuracy'] != null) 'accuracy': _toDouble(map['accuracy']),
+        if (map['timestamp'] != null) 'timestamp': map['timestamp'].toString(),
+      };
+    }
+
+    // Caso 3: campos sueltos en el payload.
+    final lat = _toDouble(
+      payload['lat'] ?? payload['latitud'] ?? payload['latitude'],
+    );
+
+    final lng = _toDouble(
+      payload['lng'] ??
+          payload['longitud'] ??
+          payload['longitude'] ??
+          payload['lon'],
+    );
+
+    if (lat == 0.0 && lng == 0.0) {
+      return null;
+    }
+
+    return {
+      'lat': lat,
+      'lng': lng,
+      if (payload['accuracy'] != null)
+        'accuracy': _toDouble(payload['accuracy']),
+    };
   }
 
   // ============================================================

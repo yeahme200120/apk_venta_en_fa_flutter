@@ -1,8 +1,11 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 
 import '../../core/services/auth_service.dart';
+// 🆕 UBICACIÓN
+import '../../core/services/location_service.dart';
 import '../auth/login_screen.dart';
 import '../home_shell.dart';
 
@@ -27,8 +30,58 @@ class _SplashScreenState
   void initState() {
     super.initState();
 
+    // 🆕 UBICACIÓN:
+    // Se solicita el permiso de ubicación en cuanto
+    // arranca el splash. No bloquea el flujo normal.
+    // Si el usuario rechaza, la app sigue funcionando
+    // pero el registro (que exige ubicación) fallará.
+    _solicitarPermisoUbicacion();
+
     _verificarSesion();
   }
+
+  // ============================================================
+  // 🆕 UBICACIÓN: PERMISO AL INICIO
+  // ============================================================
+
+  Future<void> _solicitarPermisoUbicacion() async {
+    try {
+      final service = LocationService();
+
+      // 1. Servicio habilitado.
+      final enabled = await service.isLocationServiceEnabled();
+
+      if (!enabled) {
+        debugPrint(
+          '📍 Splash: servicio de ubicación deshabilitado.',
+        );
+        return;
+      }
+
+      // 2. Permiso actual.
+      var permission = await service.checkPermission();
+
+      // 3. Solicitar si aún no fue decidido.
+      if (permission == LocationPermission.denied) {
+        permission = await service.requestPermission();
+      }
+
+      // 4. Log del resultado.
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        debugPrint('📍 Splash: permiso denegado.');
+      } else if (permission == LocationPermission.whileInUse ||
+          permission == LocationPermission.always) {
+        debugPrint('📍 Splash: permiso concedido.');
+      }
+    } catch (e) {
+      debugPrint('📍 Splash: error solicitando permiso: $e');
+    }
+  }
+
+  // ============================================================
+  // VERIFICAR SESIÓN
+  // ============================================================
 
   void _verificarSesion() {
     _timer = Timer(

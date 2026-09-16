@@ -24,26 +24,23 @@ class WhatsAppService {
 
     final directory = await getTemporaryDirectory();
 
-    final file = File(
-      '${directory.path}/$normalizedFileName',
-    );
+    final file = File('${directory.path}/$normalizedFileName');
 
-    await file.writeAsBytes(
-      bytes,
-      flush: true,
-    );
+    await file.writeAsBytes(bytes, flush: true);
 
     try {
-      final result = await Share.shareXFiles(
-        [
-          XFile(
-            file.path,
-            mimeType: 'application/pdf',
-            name: normalizedFileName,
-          ),
-        ],
-        text: text,
-        subject: normalizedFileName,
+      final result = await SharePlus.instance.share(
+        ShareParams(
+          files: [
+            XFile(
+              file.path,
+              mimeType: 'application/pdf',
+              name: normalizedFileName,
+            ),
+          ],
+          text: text,
+          subject: normalizedFileName,
+        ),
       );
 
       return result.status != ShareResultStatus.unavailable;
@@ -67,9 +64,6 @@ class WhatsAppService {
       value = '$value.pdf';
     }
 
-    return value.replaceAll(
-      RegExp(r'[\\/:*?"<>|]'),
-      '_',
-    );
+    return value.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
   }
 }

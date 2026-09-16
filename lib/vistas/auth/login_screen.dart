@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/services/auth_service.dart';
 import '../home_shell.dart';
+import 'register_screen.dart';
 import 'forgot_password_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -14,8 +15,7 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   final TextEditingController _identificadorController =
       TextEditingController();
-  final TextEditingController _passwordController =
-      TextEditingController();
+  final TextEditingController _passwordController = TextEditingController();
 
   final AuthService _authService = AuthService();
 
@@ -32,6 +32,24 @@ class _LoginScreenState extends State<LoginScreen> {
     _identificadorController.dispose();
     _passwordController.dispose();
     super.dispose();
+  }
+
+  // ============================================================
+  // IR A REGISTRO
+  // ============================================================
+
+  Future<void> _irARegistro() async {
+    final registrado = await Navigator.of(context)
+        .push<bool>(MaterialPageRoute(builder: (_) => const RegisterScreen()));
+
+    // Si RegisterScreen devolvió true, el usuario ya está logueado
+    // (AuthService.saveOnlineSession). Navegamos directo al POS.
+    if (registrado == true && mounted) {
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const HomeShell()),
+        (route) => false,
+      );
+    }
   }
 
   // ============================================================
@@ -52,7 +70,9 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     if (identificador.isEmpty) {
-      setState(() => _errorIdentificador = 'Ingresa tu número de usuario o correo.');
+      setState(
+        () => _errorIdentificador = 'Ingresa tu número de usuario o correo.',
+      );
       return;
     }
 
@@ -64,10 +84,7 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() => _cargando = true);
 
     try {
-      await _authService.login(
-        identifier: identificador,
-        password: password,
-      );
+      await _authService.login(identifier: identificador, password: password);
 
       if (!mounted) return;
 
@@ -91,12 +108,23 @@ class _LoginScreenState extends State<LoginScreen> {
           rawLower.contains('usuario no encontrado') ||
           rawLower.contains('inactivo') ||
           rawLower.contains('empresa')) {
-        setState(() => _errorIdentificador = raw.isEmpty ? 'Número de usuario o correo incorrectos.' : raw);
+        setState(
+          () => _errorIdentificador = raw.isEmpty
+              ? 'Número de usuario o correo incorrectos.'
+              : raw,
+        );
       } else if (rawLower.contains('contraseña') ||
           rawLower.contains('password')) {
-        setState(() => _errorPassword = raw.isEmpty ? 'Número de usuario o contraseña incorrectos.' : raw);
+        setState(
+          () => _errorPassword = raw.isEmpty
+              ? 'Número de usuario o contraseña incorrectos.'
+              : raw,
+        );
       } else {
-        setState(() => _errorGeneral = raw.isEmpty ? 'No se pudo iniciar sesión.' : raw);
+        setState(
+          () =>
+              _errorGeneral = raw.isEmpty ? 'No se pudo iniciar sesión.' : raw,
+        );
       }
     } finally {
       if (mounted) setState(() => _cargando = false);
@@ -116,7 +144,8 @@ class _LoginScreenState extends State<LoginScreen> {
           padding: const EdgeInsets.symmetric(horizontal: 24),
           child: ConstrainedBox(
             constraints: BoxConstraints(
-              minHeight: MediaQuery.of(context).size.height -
+              minHeight:
+                  MediaQuery.of(context).size.height -
                   MediaQuery.of(context).padding.top -
                   MediaQuery.of(context).padding.bottom,
             ),
@@ -128,7 +157,6 @@ class _LoginScreenState extends State<LoginScreen> {
                 // ======================================================
                 // LOGO
                 // ======================================================
-
                 Center(
                   child: SizedBox(
                     width: 110,
@@ -145,7 +173,6 @@ class _LoginScreenState extends State<LoginScreen> {
                 // ======================================================
                 // NÚMERO DE USUARIO / CORREO
                 // ======================================================
-
                 const Text(
                   'Número de usuario o correo',
                   style: TextStyle(fontSize: 13, color: Color(0xFF444444)),
@@ -181,7 +208,6 @@ class _LoginScreenState extends State<LoginScreen> {
                 // ======================================================
                 // CONTRASEÑA
                 // ======================================================
-
                 const Text(
                   'Contraseña',
                   style: TextStyle(fontSize: 13, color: Color(0xFF444444)),
@@ -205,7 +231,9 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                     onPressed: _cargando
                         ? null
-                        : () => setState(() => _mostrarPassword = !_mostrarPassword),
+                        : () => setState(
+                            () => _mostrarPassword = !_mostrarPassword,
+                          ),
                   ),
                   errorText: _errorPassword,
                   onChanged: (_) {
@@ -220,7 +248,6 @@ class _LoginScreenState extends State<LoginScreen> {
                 // ======================================================
                 // OLVIDÉ CONTRASEÑA
                 // ======================================================
-
                 Align(
                   alignment: Alignment.centerRight,
                   child: GestureDetector(
@@ -235,10 +262,7 @@ class _LoginScreenState extends State<LoginScreen> {
                           },
                     child: const Text(
                       '¿Olvidaste tu contraseña?',
-                      style: TextStyle(
-                        fontSize: 13,
-                        color: Colors.blue,
-                      ),
+                      style: TextStyle(fontSize: 13, color: Colors.blue),
                     ),
                   ),
                 ),
@@ -246,12 +270,14 @@ class _LoginScreenState extends State<LoginScreen> {
                 // ======================================================
                 // ERROR GENERAL
                 // ======================================================
-
                 if (_errorGeneral != null) ...[
                   const SizedBox(height: 12),
                   Container(
                     width: double.infinity,
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
                     decoration: BoxDecoration(
                       color: Colors.red.shade50,
                       borderRadius: BorderRadius.circular(6),
@@ -259,7 +285,10 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                     child: Text(
                       _errorGeneral!,
-                      style: TextStyle(fontSize: 13, color: Colors.red.shade700),
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: Colors.red.shade700,
+                      ),
                     ),
                   ),
                 ],
@@ -269,7 +298,6 @@ class _LoginScreenState extends State<LoginScreen> {
                 // ======================================================
                 // BOTÓN ACCEDER
                 // ======================================================
-
                 Center(
                   child: FractionallySizedBox(
                     widthFactor: 0.78,
@@ -298,7 +326,10 @@ class _LoginScreenState extends State<LoginScreen> {
                               )
                             : const Text(
                                 'ACCEDER',
-                                style: TextStyle(fontSize: 13, letterSpacing: 1),
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  letterSpacing: 1,
+                                ),
                               ),
                       ),
                     ),
@@ -310,7 +341,6 @@ class _LoginScreenState extends State<LoginScreen> {
                 // ======================================================
                 // REGISTRO
                 // ======================================================
-
                 Center(
                   child: RichText(
                     textAlign: TextAlign.center,
@@ -320,17 +350,22 @@ class _LoginScreenState extends State<LoginScreen> {
                         color: Color(0xFF444444),
                       ),
                       children: [
-                        const TextSpan(text: '¿No tienes un número de usuario? '),
+                        const TextSpan(
+                          text: '¿No tienes un número de usuario? ',
+                        ),
                         WidgetSpan(
                           alignment: PlaceholderAlignment.baseline,
                           baseline: TextBaseline.alphabetic,
                           child: GestureDetector(
                             onTap: _cargando ? null : () {},
-                            child: const Text(
-                              'Da click aquí',
-                              style: TextStyle(
-                                fontSize: 13,
-                                color: Colors.blue,
+                            child: GestureDetector(
+                              onTap: _cargando ? null : _irARegistro,
+                              child: const Text(
+                                'Da click aquí',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: Colors.blue,
+                                ),
                               ),
                             ),
                           ),

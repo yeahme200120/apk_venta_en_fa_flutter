@@ -69,6 +69,137 @@ class SettingsScreen extends StatelessWidget {
   }
 
   // ============================================================
+  // CAMBIAR CONTRASEÑA
+  // ============================================================
+  //
+  // [PASSWORD] Abre un diálogo para cambiar la contraseña del
+  // usuario autenticado.
+  //
+  // Esta operación REQUIERE INTERNET (el endpoint es online).
+  // Si no hay red, se muestra aviso y se cancela.
+  //
+  // Si el backend responde OK, limpiamos el flag local
+  // `requiere_cambio_password`.
+  // ============================================================
+
+  Future<void> _cambiarPassword(BuildContext context) async {
+    final networkMonitor = NetworkMonitor();
+
+    if (!networkMonitor.isOnline) {
+      if (!context.mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Necesitas conexión a Internet para cambiar tu contraseña.',
+          ),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+
+      return;
+    }
+
+    final result = await showDialog<Map<String, dynamic>>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const _ChangePasswordDialog(),
+    );
+
+    if (result == null || !context.mounted) return;
+
+    // Diálogo de progreso.
+    NavigatorState? progressNavigator;
+
+    unawaited(
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) {
+          progressNavigator = Navigator.of(ctx, rootNavigator: true);
+
+          return const AlertDialog(
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 16),
+                Text('Actualizando contraseña...'),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+
+    await Future.delayed(const Duration(milliseconds: 120));
+
+    try {
+      await ApiClient().changePassword(
+        currentPassword: result['actual'] as String,
+        newPassword: result['nueva'] as String,
+      );
+
+      // [PASSWORD] Limpiar el flag local.
+      await AppStorage().setRequiresPasswordChange(false);
+
+      if (progressNavigator != null && progressNavigator!.canPop()) {
+        progressNavigator!.pop();
+      }
+
+      if (!context.mounted) return;
+
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.check_circle_outline, color: Colors.green),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Contraseña actualizada',
+                  style: TextStyle(fontSize: 16),
+                ),
+              ),
+            ],
+          ),
+          content: const Text(
+            'Tu contraseña se cambió correctamente. '
+            'Las sesiones anteriores fueron cerradas por seguridad.',
+            style: TextStyle(fontSize: 13),
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Entendido'),
+            ),
+          ],
+        ),
+      );
+    } catch (error) {
+      if (progressNavigator != null && progressNavigator!.canPop()) {
+        progressNavigator!.pop();
+      }
+
+      if (!context.mounted) return;
+
+      final raw = error.toString().replaceFirst('Exception: ', '').trim();
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            raw.isEmpty
+                ? 'No fue posible cambiar la contraseña.'
+                : raw,
+          ),
+          backgroundColor: Colors.red.shade700,
+        ),
+      );
+    }
+  }
+
+  // ============================================================
   // DESCARGAR CATÁLOGO
   // ============================================================
 
@@ -241,10 +372,7 @@ class SettingsScreen extends StatelessWidget {
     // ============================================================
     // DIÁLOGO DE PROGRESO
     // ============================================================
-    //
-    // Guardamos el Navigator del diálogo para cerrarlo después.
-    // NUNCA pasamos el Future que devuelve showDialog() a pop().
-    //
+
     NavigatorState? progressNavigator;
 
     unawaited(
@@ -268,14 +396,12 @@ class SettingsScreen extends StatelessWidget {
       ),
     );
 
-    // Pequeño delay para que el diálogo se monte antes de cerrarlo.
     await Future.delayed(const Duration(milliseconds: 120));
 
     try {
       final companyId = await AppStorage().getEmpresaId() ?? 0;
       final userId = await AppStorage().getUserId() ?? 0;
 
-      // ⚠️ Usamos la fecha comercial del servidor, no DateTime.now().
       final String? rawBusinessDate =
           await AppStorage().getServerBusinessDate();
 
@@ -292,7 +418,6 @@ class SettingsScreen extends StatelessWidget {
         businessDate: businessDate,
       );
 
-      // Si algo falló, avisamos pero seguimos con la limpieza.
       if (syncResult.failed > 0 && context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -305,20 +430,14 @@ class SettingsScreen extends StatelessWidget {
         );
       }
 
-      // Borrar base diaria.
       await PosDatabaseService().deleteDatabaseFile(
         companyId: companyId,
         userId: userId,
         businessDate: businessDate,
       );
 
-      // ❌ NO hacemos saveBusinessDate(nowIso) ni
-      //    saveServerBusinessDate(nowIso).
-      //
-      // La fecha comercial la manda el servidor.
       await AppStorage().saveOperationState({});
 
-      // Cerrar el diálogo de progreso.
       if (progressNavigator != null && progressNavigator!.canPop()) {
         progressNavigator!.pop();
       }
@@ -342,7 +461,6 @@ class SettingsScreen extends StatelessWidget {
         ),
       );
     } catch (error) {
-      // Cerrar el diálogo de progreso aunque haya error.
       if (progressNavigator != null && progressNavigator!.canPop()) {
         progressNavigator!.pop();
       }
@@ -364,19 +482,14 @@ class SettingsScreen extends StatelessWidget {
 
   Future<void> _showDeviceInfo(BuildContext context) async {
     final String os = Platform.operatingSystem;
-
     final String osVersion = Platform.operatingSystemVersion;
-
     final String dartVersion = Platform.version;
 
     final userId = await AppStorage().getUserId();
-
     final companyId = await AppStorage().getEmpresaId();
-
     final lastOnlineAt = await AppStorage().getLastOnlineAt();
 
     final networkMonitor = NetworkMonitor();
-
     final String networkStatus = networkMonitor.isOnline
         ? 'En línea'
         : 'Sin conexión';
@@ -1050,6 +1163,91 @@ class SettingsScreen extends StatelessWidget {
   }
 
   // ============================================================
+  // [PASSWORD] BANNER PERSISTENTE
+  // ============================================================
+  //
+  // Si el usuario tiene el flag `requiere_cambio_password` activo,
+  // mostramos un banner rojo al inicio de la pantalla.
+  //
+  // El banner se carga desde AppStorage.
+  // ============================================================
+
+  Widget _buildRequierePasswordChangeBanner(
+    BuildContext context,
+    VoidCallback onCambiar,
+  ) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: colorScheme.error.withAlpha(20),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: colorScheme.error.withAlpha(90), width: 1),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: colorScheme.error.withAlpha(30),
+              borderRadius: BorderRadius.circular(11),
+            ),
+            child: Icon(
+              Icons.lock_reset_outlined,
+              color: colorScheme.error,
+              size: 22,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Cambia tu contraseña',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 14,
+                    color: colorScheme.error,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'Estás usando la contraseña genérica. '
+                  'Por seguridad, cámbiala ahora.',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: colorScheme.onSurfaceVariant,
+                    height: 1.25,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          FilledButton(
+            onPressed: onCambiar,
+            style: FilledButton.styleFrom(
+              backgroundColor: colorScheme.error,
+              foregroundColor: colorScheme.onError,
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
+            child: const Text('Cambiar'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ============================================================
   // BUILD
   // ============================================================
 
@@ -1057,100 +1255,348 @@ class SettingsScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return AppScaffold(
       title: 'Administración y configuración',
-      body: ListView(
-        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-        padding: const EdgeInsets.all(16),
+      body: FutureBuilder<bool>(
+        future: AppStorage().getRequiresPasswordChange(),
+        builder: (context, snapshot) {
+          final requiereCambio = snapshot.data == true;
+
+          return ListView(
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+            padding: const EdgeInsets.all(16),
+            children: [
+              // [PASSWORD] Banner persistente si requiere cambio.
+              if (requiereCambio)
+                _buildRequierePasswordChangeBanner(
+                  context,
+                  () => _cambiarPassword(context),
+                ),
+
+              const _SectionTitle('Empresa'),
+              _SettingTile(
+                title: 'Empresa actual',
+                subtitle:
+                    'Consulta los datos del negocio activo en esta sesión.',
+                icon: Icons.business_outlined,
+                onTap: () => _showCompanyInfo(context),
+              ),
+              _SettingTile(
+                title: 'Usuario actual',
+                subtitle: 'Perfil y datos de acceso del usuario en sesión.',
+                icon: Icons.person_outline,
+                onTap: () => _showCurrentUser(context),
+              ),
+              _SettingTile(
+                title: 'Cambiar contraseña',
+                subtitle:
+                    'Actualiza tu contraseña periódicamente por seguridad. '
+                    'Requiere Internet.',
+                icon: Icons.lock_reset_outlined,
+                onTap: () => _cambiarPassword(context),
+              ),
+              _SettingTile(
+                title: 'Colores y branding',
+                subtitle: 'Configuración visual de la empresa.',
+                icon: Icons.palette_outlined,
+                onTap: () => _editBranding(context),
+              ),
+              _SettingTile(
+                title: 'Logo de empresa',
+                subtitle: 'Selecciona, recorta y actualiza el logo.',
+                icon: Icons.image_outlined,
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const CompanyLogoScreen()),
+                ),
+              ),
+              _SettingTile(
+                title: 'Ticket y formato',
+                subtitle: 'Papel, encabezado, pie y QR.',
+                icon: Icons.receipt_long_outlined,
+                onTap: () => _editTicket(context),
+              ),
+              const SizedBox(height: 16),
+              const _SectionTitle('Dispositivo'),
+              _SettingTile(
+                title: 'Dispositivo actual',
+                subtitle:
+                    'Sistema operativo, versión de app, red y datos de instalación.',
+                icon: Icons.devices_outlined,
+                onTap: () => _showDeviceInfo(context),
+              ),
+              _SettingTile(
+                title: 'Impresoras',
+                subtitle: 'Bluetooth, USB y red.',
+                icon: Icons.print_outlined,
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const PrinterSettingsScreen(),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              const _SectionTitle('Sistema'),
+              _SettingTile(
+                title: 'Administrar catálogo',
+                subtitle:
+                    'Crear, editar o desactivar categorías, productos y formas de pago.',
+                icon: Icons.inventory_2_outlined,
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const CatalogAdminScreen(),
+                  ),
+                ),
+              ),
+              _SettingTile(
+                title: 'Limpiar datos del día',
+                subtitle:
+                    'Elimina las ventas y datos de la jornada actual de este dispositivo. '
+                    'La sesión permanece activa. Requiere Internet.',
+                icon: Icons.cleaning_services_outlined,
+                onTap: () => _limpiarDia(context),
+              ),
+              _SettingTile(
+                title: 'Sincronizar ahora',
+                subtitle: 'Reintento manual de ventas pendientes y fallidas.',
+                icon: Icons.sync_outlined,
+                onTap: () => _syncNow(context),
+              ),
+              _SettingTile(
+                title: 'Descargar catálogo ahora',
+                subtitle: 'Obtiene el inventario más reciente desde la API.',
+                icon: Icons.cloud_download_outlined,
+                onTap: () => _downloadCatalog(context),
+              ),
+              _SettingTile(
+                title: 'Cerrar sesión',
+                subtitle:
+                    'Borra la sesión local y los datos del día del dispositivo.',
+                icon: Icons.logout,
+                onTap: () => _logout(context),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+// ============================================================
+// [PASSWORD] DIÁLOGO CAMBIAR CONTRASEÑA
+// ============================================================
+
+class _ChangePasswordDialog extends StatefulWidget {
+  const _ChangePasswordDialog();
+
+  @override
+  State<_ChangePasswordDialog> createState() => _ChangePasswordDialogState();
+}
+
+class _ChangePasswordDialogState extends State<_ChangePasswordDialog> {
+  final _actualController = TextEditingController();
+  final _nuevaController = TextEditingController();
+  final _confirmarController = TextEditingController();
+
+  bool _mostrarActual = false;
+  bool _mostrarNueva = false;
+  bool _mostrarConfirmar = false;
+
+  String? _errorActual;
+  String? _errorNueva;
+  String? _errorConfirmar;
+
+  @override
+  void dispose() {
+    _actualController.dispose();
+    _nuevaController.dispose();
+    _confirmarController.dispose();
+    super.dispose();
+  }
+
+  String? _validarPassword(String value) {
+    if (value.isEmpty) return 'Ingresa una contraseña.';
+    if (value.length < 8) {
+      return 'Debe tener al menos 8 caracteres.';
+    }
+
+    final tieneMayuscula = value.contains(RegExp(r'[A-Z]'));
+    final tieneMinuscula = value.contains(RegExp(r'[a-z]'));
+    final tieneNumero = value.contains(RegExp(r'[0-9]'));
+
+    if (!tieneMayuscula || !tieneMinuscula || !tieneNumero) {
+      return 'Debe incluir mayúscula, minúscula y número.';
+    }
+
+    return null;
+  }
+
+  void _confirmar() {
+    final actual = _actualController.text;
+    final nueva = _nuevaController.text;
+    final confirmar = _confirmarController.text;
+
+    setState(() {
+      _errorActual = null;
+      _errorNueva = null;
+      _errorConfirmar = null;
+    });
+
+    if (actual.isEmpty) {
+      setState(() => _errorActual = 'Ingresa tu contraseña actual.');
+      return;
+    }
+
+    final errorNueva = _validarPassword(nueva);
+
+    if (errorNueva != null) {
+      setState(() => _errorNueva = errorNueva);
+      return;
+    }
+
+    if (nueva == actual) {
+      setState(
+        () => _errorNueva =
+            'La nueva contraseña debe ser diferente a la actual.',
+      );
+      return;
+    }
+
+    if (confirmar.isEmpty) {
+      setState(() => _errorConfirmar = 'Confirma tu contraseña.');
+      return;
+    }
+
+    if (nueva != confirmar) {
+      setState(() => _errorConfirmar = 'Las contraseñas no coinciden.');
+      return;
+    }
+
+    Navigator.of(context, rootNavigator: true).pop(<String, dynamic>{
+      'actual': actual,
+      'nueva': nueva,
+    });
+  }
+
+  Widget _passwordField({
+    required TextEditingController controller,
+    required String label,
+    required bool obscureText,
+    required VoidCallback onToggle,
+    String? errorText,
+    required ValueChanged<String> onChanged,
+    TextInputAction textInputAction = TextInputAction.next,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        TextField(
+          controller: controller,
+          obscureText: obscureText,
+          textInputAction: textInputAction,
+          onChanged: onChanged,
+          decoration: InputDecoration(
+            labelText: label,
+            prefixIcon: const Icon(Icons.lock_outline),
+            suffixIcon: IconButton(
+              icon: Icon(
+                obscureText
+                    ? Icons.visibility_outlined
+                    : Icons.visibility_off_outlined,
+                size: 20,
+              ),
+              onPressed: onToggle,
+            ),
+            border: const OutlineInputBorder(),
+            errorText: errorText,
+          ),
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Row(
         children: [
-          const _SectionTitle('Empresa'),
-          _SettingTile(
-            title: 'Empresa actual',
-            subtitle: 'Consulta los datos del negocio activo en esta sesión.',
-            icon: Icons.business_outlined,
-            onTap: () => _showCompanyInfo(context),
-          ),
-          _SettingTile(
-            title: 'Usuario actual',
-            subtitle: 'Perfil y datos de acceso del usuario en sesión.',
-            icon: Icons.person_outline,
-            onTap: () => _showCurrentUser(context),
-          ),
-          _SettingTile(
-            title: 'Colores y branding',
-            subtitle: 'Configuración visual de la empresa.',
-            icon: Icons.palette_outlined,
-            onTap: () => _editBranding(context),
-          ),
-          _SettingTile(
-            title: 'Logo de empresa',
-            subtitle: 'Selecciona, recorta y actualiza el logo.',
-            icon: Icons.image_outlined,
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const CompanyLogoScreen()),
-            ),
-          ),
-          _SettingTile(
-            title: 'Ticket y formato',
-            subtitle: 'Papel, encabezado, pie y QR.',
-            icon: Icons.receipt_long_outlined,
-            onTap: () => _editTicket(context),
-          ),
-          const SizedBox(height: 16),
-          const _SectionTitle('Dispositivo'),
-          _SettingTile(
-            title: 'Dispositivo actual',
-            subtitle:
-                'Sistema operativo, versión de app, red y datos de instalación.',
-            icon: Icons.devices_outlined,
-            onTap: () => _showDeviceInfo(context),
-          ),
-          _SettingTile(
-            title: 'Impresoras',
-            subtitle: 'Bluetooth, USB y red.',
-            icon: Icons.print_outlined,
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const PrinterSettingsScreen()),
-            ),
-          ),
-          const SizedBox(height: 16),
-          const _SectionTitle('Sistema'),
-          _SettingTile(
-            title: 'Administrar catálogo',
-            subtitle:
-                'Crear, editar o desactivar categorías, productos y formas de pago.',
-            icon: Icons.inventory_2_outlined,
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const CatalogAdminScreen()),
-            ),
-          ),
-          _SettingTile(
-            title: 'Limpiar datos del día',
-            subtitle:
-                'Elimina las ventas y datos de la jornada actual de este dispositivo. '
-                'La sesión permanece activa. Requiere Internet.',
-            icon: Icons.cleaning_services_outlined,
-            onTap: () => _limpiarDia(context),
-          ),
-          _SettingTile(
-            title: 'Sincronizar ahora',
-            subtitle: 'Reintento manual de ventas pendientes y fallidas.',
-            icon: Icons.sync_outlined,
-            onTap: () => _syncNow(context),
-          ),
-          _SettingTile(
-            title: 'Descargar catálogo ahora',
-            subtitle: 'Obtiene el inventario más reciente desde la API.',
-            icon: Icons.cloud_download_outlined,
-            onTap: () => _downloadCatalog(context),
-          ),
-          _SettingTile(
-            title: 'Cerrar sesión',
-            subtitle:
-                'Borra la sesión local y los datos del día del dispositivo.',
-            icon: Icons.logout,
-            onTap: () => _logout(context),
-          ),
+          Icon(Icons.lock_reset_outlined, size: 22),
+          SizedBox(width: 8),
+          Text('Cambiar contraseña'),
         ],
       ),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              'Ingresa tu contraseña actual y la nueva contraseña.',
+              style: TextStyle(fontSize: 12),
+            ),
+            const SizedBox(height: 16),
+            _passwordField(
+              controller: _actualController,
+              label: 'Contraseña actual',
+              obscureText: !_mostrarActual,
+              onToggle: () =>
+                  setState(() => _mostrarActual = !_mostrarActual),
+              errorText: _errorActual,
+              onChanged: (_) {
+                if (_errorActual != null) {
+                  setState(() => _errorActual = null);
+                }
+              },
+            ),
+            const SizedBox(height: 14),
+            _passwordField(
+              controller: _nuevaController,
+              label: 'Nueva contraseña',
+              obscureText: !_mostrarNueva,
+              onToggle: () => setState(() => _mostrarNueva = !_mostrarNueva),
+              errorText: _errorNueva,
+              onChanged: (_) {
+                if (_errorNueva != null) {
+                  setState(() => _errorNueva = null);
+                }
+              },
+            ),
+            const SizedBox(height: 6),
+            const Padding(
+              padding: EdgeInsets.only(left: 4),
+              child: Text(
+                'Mín. 8 caracteres, con mayúscula, minúscula y número.',
+                style: TextStyle(fontSize: 11, color: Color(0xFF888888)),
+              ),
+            ),
+            const SizedBox(height: 14),
+            _passwordField(
+              controller: _confirmarController,
+              label: 'Confirmar nueva contraseña',
+              obscureText: !_mostrarConfirmar,
+              onToggle: () =>
+                  setState(() => _mostrarConfirmar = !_mostrarConfirmar),
+              errorText: _errorConfirmar,
+              textInputAction: TextInputAction.done,
+              onChanged: (_) {
+                if (_errorConfirmar != null) {
+                  setState(() => _errorConfirmar = null);
+                }
+              },
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () =>
+              Navigator.of(context, rootNavigator: true).pop(),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton.icon(
+          onPressed: _confirmar,
+          icon: const Icon(Icons.check, size: 18),
+          label: const Text('Actualizar contraseña'),
+        ),
+      ],
     );
   }
 }
@@ -1550,9 +1996,7 @@ class _TicketConfigDialog extends StatefulWidget {
 
 class _TicketConfigDialogState extends State<_TicketConfigDialog> {
   late final TextEditingController _header;
-
   late final TextEditingController _footer;
-
   late final TextEditingController _qrContent;
 
   late String _paper;
@@ -1749,13 +2193,9 @@ class _TicketConfigDialogState extends State<_TicketConfigDialog> {
     );
 
     _showLogo = _readBool(const ['mostrar_logo'], fallback: false);
-
     _showAddress = _readBool(const ['mostrar_direccion'], fallback: true);
-
     _showPhone = _readBool(const ['mostrar_telefono'], fallback: true);
-
     _showEmail = _readBool(const ['mostrar_email'], fallback: false);
-
     _showSeller = _readBool(const ['mostrar_vendedor'], fallback: true);
 
     _showPaymentMethod = _readBool(const [
@@ -1763,11 +2203,8 @@ class _TicketConfigDialogState extends State<_TicketConfigDialog> {
     ], fallback: true);
 
     _showChange = _readBool(const ['mostrar_cambio'], fallback: true);
-
     _showFolio = _readBool(const ['mostrar_folio'], fallback: true);
-
     _showDate = _readBool(const ['mostrar_fecha'], fallback: true);
-
     _cutTicket = _readBool(const ['cortar_ticket'], fallback: true);
 
     _showBusinessName = _readBool(const [

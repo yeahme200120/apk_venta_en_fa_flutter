@@ -5,6 +5,9 @@ import 'package:flutter/material.dart';
 import '../../core/database/local_db.dart';
 import '../../core/services/cash_service.dart';
 import '../../core/storage/app_storage.dart';
+// [LICENCIA-OFFLINE] Import para evaluar el estado de licencia
+// desde el snapshot local (offline-first).
+import '../../core/services/license_service.dart';
 import '../widgets/app_scaffold.dart';
 
 class CashManagementScreen extends StatefulWidget {
@@ -26,6 +29,10 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
   List<Map<String, dynamic>> _ventasPorMetodo = const [];
   List<Map<String, dynamic>> _movimientosPorTipoMetodo = const [];
   List<Map<String, dynamic>> _movimientos = const [];
+
+  // [LICENCIA-OFFLINE] Estado de licencia leído desde el snapshot local.
+  // Nunca se consulta al servidor desde aquí.
+  LicenseState? _licenseState;
 
   // ============================================================
   // FECHA COMERCIAL (AUTORIZADA POR EL SERVIDOR)
@@ -213,6 +220,16 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
         );
       }
 
+      // [LICENCIA-OFFLINE] Evaluamos la licencia desde el snapshot local.
+      // No se consulta al servidor. El POS sigue funcionando offline.
+      LicenseState? licencia;
+      try {
+        licencia = await LicenseService().evaluate();
+      } catch (e) {
+        debugPrint('⚠️ No se pudo evaluar la licencia local: $e');
+        licencia = _licenseState;
+      }
+
       if (!mounted) return;
 
       setState(() {
@@ -222,6 +239,7 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
         _movimientos = movimientos;
         _ventasPorMetodo = ventasPorMetodo;
         _movimientosPorTipoMetodo = movimientosPorTipoMetodo;
+        _licenseState = licencia;
         _loading = false;
       });
     } catch (error) {
@@ -267,6 +285,16 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
   // ============================================================
 
   Future<void> _abrirCaja() async {
+    // [LICENCIA-OFFLINE] Abrir caja es una operación NUEVA.
+    // Se bloquea si la licencia está explícitamente vencida
+    // (status == LicenseStatus.bloqueada).
+    //
+    // NO bloquea sinSnapshot ni enGracia.
+    if (_licenseState?.status == LicenseStatus.bloqueada) {
+      _snack(_licenseState!.mensaje, error: true);
+      return;
+    }
+
     final monto = await showDialog<double>(
       context: context,
       builder: (_) => const _AmountDialog(
@@ -295,6 +323,12 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
   }
 
   Future<void> _cerrarCaja() async {
+    // [LICENCIA-OFFLINE] Cerrar caja SIEMPRE se permite, incluso si la
+    // licencia está vencida. Bloquear el cierre dejaría datos huérfanos
+    // (efectivo sin cuadrar, turno sin cerrar).
+    //
+    // No hay check de licencia aquí a propósito.
+
     if (!_cajaAbierta) {
       _snack('No hay caja abierta para cerrar.', error: true);
       return;
@@ -331,6 +365,10 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
   }
 
   Future<void> _registrarMovimiento() async {
+    // [LICENCIA-OFFLINE] Registrar movimiento SIEMPRE se permite.
+    // Es una operación sobre una caja YA ABIERTA. Bloquearla dejaría
+    // movimientos sin poder registrarse en el turno actual.
+
     if (!_cajaAbierta) {
       _snack('Abre la caja antes de registrar movimientos.', error: true);
       return;
@@ -389,17 +427,35 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
       );
     }
 
+    // [LICENCIA-OFFLINE] El FAB respeta el estado de la licencia:
+    //   - Si la caja está abierta → siempre permite registrar
+    //     movimientos (operación existente).
+    //   - Si la caja está cerrada → solo permite abrir si la
+    //     licencia NO está bloqueada.
+    final licenciaBloqueada =
+        _licenseState?.status == LicenseStatus.bloqueada;
+
     final fab = _cajaAbierta
         ? FloatingActionButton.extended(
             onPressed: _registrarMovimiento,
             icon: const Icon(Icons.add),
             label: const Text('Movimiento'),
           )
-        : FloatingActionButton.extended(
-            onPressed: _abrirCaja,
-            icon: const Icon(Icons.lock_open),
-            label: const Text('Abrir caja'),
-          );
+        : licenciaBloqueada
+            ? FloatingActionButton.extended(
+                onPressed: () {
+                  _snack(_licenseState!.mensaje, error: true);
+                },
+                backgroundColor: cs.error,
+                foregroundColor: cs.onError,
+                icon: const Icon(Icons.block),
+                label: const Text('Licencia vencida'),
+              )
+            : FloatingActionButton.extended(
+                onPressed: _abrirCaja,
+                icon: const Icon(Icons.lock_open),
+                label: const Text('Abrir caja'),
+              );
 
     return AppScaffold(
       title: 'Movimientos',
@@ -409,6 +465,23 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
         child: ListView(
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 100),
           children: [
+            // [LICENCIA-OFFLINE] Banners de licencia.
+            // Orden de prioridad:
+            //   1. bloqueada   → SÍ bloquea apertura de caja nueva.
+            //   2. sinSnapshot → NO bloquea, solo avisa.
+            //   3. enGracia    → NO bloquea, solo avisa.
+            if (_licenseState?.status == LicenseStatus.bloqueada) ...[
+              _buildLicenciaBloqueadaBanner(context),
+              const SizedBox(height: 12),
+            ] else if (_licenseState?.status ==
+                LicenseStatus.sinSnapshot) ...[
+              _buildLicenciaSinSnapshotBanner(context),
+              const SizedBox(height: 12),
+            ] else if (_licenseState?.debeAvisarGracia == true) ...[
+              _buildLicenciaGraciaBanner(context),
+              const SizedBox(height: 12),
+            ],
+
             Row(
               children: [
                 Expanded(
@@ -441,15 +514,33 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
             SizedBox(
               width: double.infinity,
               child: FilledButton.icon(
-                onPressed: _cajaAbierta ? _registrarMovimiento : _abrirCaja,
+                onPressed: _cajaAbierta
+                    ? _registrarMovimiento
+                    : (licenciaBloqueada
+                        ? () => _snack(_licenseState!.mensaje, error: true)
+                        : _abrirCaja),
                 icon: Icon(
-                  _cajaAbierta ? Icons.add : Icons.lock_open,
+                  _cajaAbierta
+                      ? Icons.add
+                      : (licenciaBloqueada ? Icons.block : Icons.lock_open),
                   size: 18,
                 ),
                 label: Text(
-                  _cajaAbierta ? 'Registrar movimiento' : 'Abrir caja',
+                  _cajaAbierta
+                      ? 'Registrar movimiento'
+                      : (licenciaBloqueada
+                          ? 'Licencia vencida'
+                          : 'Abrir caja'),
                 ),
-                style: FilledButton.styleFrom(minimumSize: const Size(0, 48)),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size(0, 48),
+                  backgroundColor: licenciaBloqueada && !_cajaAbierta
+                      ? cs.error
+                      : null,
+                  foregroundColor: licenciaBloqueada && !_cajaAbierta
+                      ? cs.onError
+                      : null,
+                ),
               ),
             ),
 
@@ -500,6 +591,188 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
   }
 
   // ============================================================
+  // [LICENCIA-OFFLINE] BANNERS DE LICENCIA
+  // ============================================================
+  //
+  // Mismos 3 banners que POS y OperationScreen.
+  // ============================================================
+
+  Widget _buildLicenciaBloqueadaBanner(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final mensaje = _licenseState?.mensaje ??
+        'Tu licencia está vencida. Inicia sesión con Internet para '
+            'reactivar.';
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: colorScheme.error.withAlpha(20),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: colorScheme.error.withAlpha(90), width: 1),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: colorScheme.error.withAlpha(30),
+              borderRadius: BorderRadius.circular(11),
+            ),
+            child: Icon(Icons.block, color: colorScheme.error, size: 22),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Licencia vencida',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 14,
+                    color: colorScheme.error,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '$mensaje\n'
+                  'Puedes cerrar la caja y registrar movimientos en cajas '
+                  'ya abiertas. No se pueden abrir cajas nuevas.',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: colorScheme.onSurfaceVariant,
+                    height: 1.25,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLicenciaSinSnapshotBanner(BuildContext context) {
+    const amber = Color(0xFFB45309);
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: amber.withAlpha(20),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: amber.withAlpha(90), width: 1),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: amber.withAlpha(30),
+              borderRadius: BorderRadius.circular(11),
+            ),
+            child: const Icon(
+              Icons.warning_amber_rounded,
+              color: amber,
+              size: 22,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Sin información de licencia',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 14,
+                    color: amber,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'Conéctate a Internet e inicia sesión para validar tu '
+                  'licencia. Mientras tanto puedes seguir operando.',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: colorScheme.onSurfaceVariant,
+                    height: 1.25,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLicenciaGraciaBanner(BuildContext context) {
+    final orange = Colors.orange.shade800;
+    final colorScheme = Theme.of(context).colorScheme;
+
+    final mensaje = _licenseState?.mensaje ??
+        'Tu licencia está vencida. Regulariza antes de que se bloquee.';
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: orange.withAlpha(20),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: orange.withAlpha(90), width: 1),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: orange.withAlpha(30),
+              borderRadius: BorderRadius.circular(11),
+            ),
+            child: Icon(
+              Icons.warning_amber_rounded,
+              color: orange,
+              size: 22,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Licencia en periodo de gracia',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 14,
+                    color: orange,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  mensaje,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: colorScheme.onSurfaceVariant,
+                    height: 1.25,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ============================================================
   // CAJA ACTUAL
   // ============================================================
 
@@ -545,7 +818,9 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
                   child: Text(
                     abierta
                         ? 'Caja abierta'
-                        : (_caja == null ? 'Sin caja abierta' : 'Caja cerrada'),
+                        : (_caja == null
+                            ? 'Sin caja abierta'
+                            : 'Caja cerrada'),
                     style: const TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.w600,
@@ -817,7 +1092,9 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
                         child: Row(
                           children: [
                             Icon(
-                              _iconMetodo(m['method_label']?.toString() ?? ''),
+                              _iconMetodo(
+                                m['method_label']?.toString() ?? '',
+                              ),
                               size: 14,
                               color: cs.onSurfaceVariant,
                             ),

@@ -851,7 +851,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
                 vertical: 8,
               ),
               itemCount: _catalogs.length,
-              separatorBuilder: (_, __) => const SizedBox(width: 8),
+              separatorBuilder: (_, _) => const SizedBox(width: 8),
               itemBuilder: (context, index) {
                 final catalog = _catalogs[index];
 
@@ -960,7 +960,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
     return ListView.separated(
       padding: const EdgeInsets.all(12),
       itemCount: _filteredItems.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 8),
+      separatorBuilder: (_, _) => const SizedBox(height: 8),
       itemBuilder: (_, i) => _buildItemCard(
         _filteredItems[i],
         compact: true,

@@ -1,9 +1,20 @@
 import '../database/local_db.dart';
+// 🆕 UBICACIÓN
+import 'location_service.dart';
 
 /// Fachada offline-first para caja.
 ///
 /// Todo se escribe primero en SQLite y se encola en sync_queue.
 /// No bloquea la UI por red. El SyncService sube después.
+///
+/// 🆕 UBICACIÓN:
+/// Las operaciones de caja capturan la ubicación GPS (si está
+/// disponible) y la adjuntan al payload del sync_queue para
+/// que el backend la reciba en la auditoría.
+///
+/// Si la ubicación no está disponible, la operación se ejecuta
+/// igual (offline-first). El backend guardará null en los
+/// campos de ubicación.
 class CashService {
   final LocalDb _db = LocalDb();
 
@@ -26,10 +37,18 @@ class CashService {
   Future<Map<String, dynamic>> openCash({
     required double montoApertura,
     String? notas,
-  }) {
+  }) async {
+    // 🆕 UBICACIÓN (opcional — no bloquea)
+    final location = await LocationService().getCurrentLocation();
+
     return _db.openCashRegisterLocal(
       montoApertura: montoApertura,
       notas: notas,
+      // 🆕 UBICACIÓN
+      latitude: location?.latitude,
+      longitude: location?.longitude,
+      accuracy: location?.accuracy,
+      locationProvider: location?.provider,
     );
   }
 
@@ -41,11 +60,19 @@ class CashService {
     required int cashRegisterId,
     required double montoDeclarado,
     String? notas,
-  }) {
+  }) async {
+    // 🆕 UBICACIÓN (opcional — no bloquea)
+    final location = await LocationService().getCurrentLocation();
+
     return _db.closeCashRegisterLocal(
       cashRegisterId: cashRegisterId,
       montoDeclarado: montoDeclarado,
       notas: notas,
+      // 🆕 UBICACIÓN
+      latitude: location?.latitude,
+      longitude: location?.longitude,
+      accuracy: location?.accuracy,
+      locationProvider: location?.provider,
     );
   }
 
@@ -61,7 +88,10 @@ class CashService {
     String? referencia,
     String? notas,
     String? formaPago,
-  }) {
+  }) async {
+    // 🆕 UBICACIÓN (opcional — no bloquea)
+    final location = await LocationService().getCurrentLocation();
+
     return _db.addCashMovementLocal(
       cashRegisterId: cashRegisterId,
       tipo: tipo,
@@ -70,6 +100,11 @@ class CashService {
       referencia: referencia,
       notas: notas,
       formaPago: formaPago,
+      // 🆕 UBICACIÓN
+      latitude: location?.latitude,
+      longitude: location?.longitude,
+      accuracy: location?.accuracy,
+      locationProvider: location?.provider,
     );
   }
 

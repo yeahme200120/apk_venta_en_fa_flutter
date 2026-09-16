@@ -42,7 +42,6 @@ class _CompanyLogoScreenState
   File? _localLogo;
 
   String? _currentLogoUrl;
-  String? _currentLogoPath;
 
   Uint8List? _currentLogoBytes;
 
@@ -364,7 +363,6 @@ class _CompanyLogoScreenState
 
       setState(() {
         _currentLogoUrl = logoUrl;
-        _currentLogoPath = logoPath;
       });
 
       return;
@@ -374,7 +372,6 @@ class _CompanyLogoScreenState
 
     setState(() {
       _currentLogoUrl = logoUrl;
-      _currentLogoPath = logoPath;
       _currentLogoBytes = logoBytes;
     });
   }
@@ -724,7 +721,6 @@ class _CompanyLogoScreenState
           if (mounted) {
             setState(() {
               _currentLogoUrl = remoteUrl;
-              _currentLogoPath = remotePath;
             });
           }
         }

@@ -14,7 +14,7 @@ class LocalDb {
   LocalDb._internal();
 
   static Database? _database;
-  static const int _databaseVersion = 13;
+  static const int _databaseVersion = 14;
 
   // ============================================================
   // STREAMS DE CAMBIOS EN TIEMPO REAL
@@ -572,6 +572,27 @@ class LocalDb {
     }
     if (oldVersion < 13) {
       await _createCashTables(db);
+    }
+    if (oldVersion < 14) {
+      await _addColumnIfNotExists(db, 'cash_registers', 'latitude', 'REAL');
+      await _addColumnIfNotExists(db, 'cash_registers', 'longitude', 'REAL');
+      await _addColumnIfNotExists(db, 'cash_registers', 'accuracy', 'REAL');
+      await _addColumnIfNotExists(
+        db,
+        'cash_registers',
+        'location_provider',
+        'TEXT',
+      );
+
+      await _addColumnIfNotExists(db, 'cash_movements', 'latitude', 'REAL');
+      await _addColumnIfNotExists(db, 'cash_movements', 'longitude', 'REAL');
+      await _addColumnIfNotExists(db, 'cash_movements', 'accuracy', 'REAL');
+      await _addColumnIfNotExists(
+        db,
+        'cash_movements',
+        'location_provider',
+        'TEXT',
+      );
     }
   }
 
@@ -2699,6 +2720,10 @@ class LocalDb {
       usuario_apertura_id INTEGER,
       usuario_cierre_id INTEGER,
       sync_status TEXT NOT NULL DEFAULT 'pending',
+      latitude REAL,
+      longitude REAL,
+      accuracy REAL,
+      location_provider TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )
@@ -2719,6 +2744,10 @@ class LocalDb {
       registrado_at TEXT NOT NULL,
       usuario_id INTEGER,
       sync_status TEXT NOT NULL DEFAULT 'pending',
+      latitude REAL,
+      longitude REAL,
+      accuracy REAL,
+      location_provider TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )
@@ -2743,6 +2772,35 @@ class LocalDb {
       'CREATE INDEX IF NOT EXISTS idx_cash_movements_sync '
       'ON cash_movements(sync_status)',
     );
+  }
+
+  /// Construye el bloque `ubicacion` que espera SyncService.
+  ///
+  /// Devuelve null si no hay coordenadas válidas.
+  /// NO se incluye el bloque en el payload si no hay ubicación,
+  /// así el backend recibe ausencia del campo (que es distinto
+  /// de enviar un objeto con nulls).
+  Map<String, dynamic>? _buildUbicacionJson({
+    required double? latitude,
+    required double? longitude,
+    double? accuracy,
+    String? locationProvider,
+  }) {
+    if (latitude == null && longitude == null) {
+      return null;
+    }
+
+    if (latitude == null || longitude == null) {
+      return null;
+    }
+
+    return {
+      'lat': latitude,
+      'lng': longitude,
+      if (accuracy != null) 'accuracy': accuracy,
+      if (locationProvider != null && locationProvider.trim().isNotEmpty)
+        'provider': locationProvider.trim(),
+    };
   }
 
   /// Devuelve la caja abierta actual usando la fecha comercial
@@ -2780,6 +2838,11 @@ class LocalDb {
     required double montoApertura,
     String? notas,
     int? usuarioId,
+    // 🆕 UBICACIÓN (opcional)
+    double? latitude,
+    double? longitude,
+    double? accuracy,
+    String? locationProvider,
   }) async {
     final db = await database;
 
@@ -2792,6 +2855,13 @@ class LocalDb {
         'Inicia sesión nuevamente.',
       );
     }
+
+    final ubicacion = _buildUbicacionJson(
+      latitude: latitude,
+      longitude: longitude,
+      accuracy: accuracy,
+      locationProvider: locationProvider,
+    );
 
     return db.transaction((txn) async {
       final hoy = hoyKey;
@@ -2818,6 +2888,10 @@ class LocalDb {
           'notas_apertura': notas,
           'usuario_apertura_id': usuarioId,
           'sync_status': 'pending',
+          'latitude': latitude,
+          'longitude': longitude,
+          'accuracy': accuracy,
+          'location_provider': locationProvider,
           'created_at': now,
           'updated_at': now,
         });
@@ -2831,6 +2905,10 @@ class LocalDb {
           'registrado_at': now,
           'usuario_id': usuarioId,
           'sync_status': 'pending',
+          'latitude': latitude,
+          'longitude': longitude,
+          'accuracy': accuracy,
+          'location_provider': locationProvider,
           'created_at': now,
           'updated_at': now,
         });
@@ -2849,6 +2927,7 @@ class LocalDb {
             'monto_apertura': montoApertura,
             'notas': notas,
             'reapertura': false,
+            if (ubicacion != null) 'ubicacion': ubicacion,
           }),
           'status': 'pending',
           'server_status': 'not_sent',
@@ -2912,6 +2991,10 @@ class LocalDb {
           'usuario_apertura_id': usuarioId,
           'usuario_cierre_id': null,
           'sync_status': 'pending',
+          'latitude': latitude,
+          'longitude': longitude,
+          'accuracy': accuracy,
+          'location_provider': locationProvider,
           'updated_at': now,
         },
         where: 'id = ?',
@@ -2927,6 +3010,10 @@ class LocalDb {
         'registrado_at': now,
         'usuario_id': usuarioId,
         'sync_status': 'pending',
+        'latitude': latitude,
+        'longitude': longitude,
+        'accuracy': accuracy,
+        'location_provider': locationProvider,
         'created_at': now,
         'updated_at': now,
       });
@@ -2946,6 +3033,7 @@ class LocalDb {
           'monto_apertura': montoApertura,
           'notas': notas,
           'reapertura': true,
+          if (ubicacion != null) 'ubicacion': ubicacion,
         }),
         'status': 'pending',
         'server_status': 'not_sent',
@@ -2974,8 +3062,20 @@ class LocalDb {
     required double montoDeclarado,
     String? notas,
     int? usuarioId,
+    // 🆕 UBICACIÓN (opcional)
+    double? latitude,
+    double? longitude,
+    double? accuracy,
+    String? locationProvider,
   }) async {
     final db = await database;
+
+    final ubicacion = _buildUbicacionJson(
+      latitude: latitude,
+      longitude: longitude,
+      accuracy: accuracy,
+      locationProvider: locationProvider,
+    );
 
     return db.transaction((txn) async {
       final rows = await txn.query(
@@ -3040,6 +3140,10 @@ class LocalDb {
           'notas_cierre': notas,
           'usuario_cierre_id': usuarioId,
           'sync_status': 'pending',
+          'latitude': latitude,
+          'longitude': longitude,
+          'accuracy': accuracy,
+          'location_provider': locationProvider,
           'updated_at': now,
         },
         where: 'id = ?',
@@ -3056,6 +3160,10 @@ class LocalDb {
         'registrado_at': now,
         'usuario_id': usuarioId,
         'sync_status': 'pending',
+        'latitude': latitude,
+        'longitude': longitude,
+        'accuracy': accuracy,
+        'location_provider': locationProvider,
         'created_at': now,
         'updated_at': now,
       });
@@ -3069,11 +3177,11 @@ class LocalDb {
         'entity_id_local': cashRegisterId,
         'payload_json': jsonEncode({
           'local_id': cashRegisterId,
-          'server_id': caja['server_id'],
           'monto_declarado': montoDeclarado,
           'monto_esperado': esperado,
           'diferencia': diferencia,
           'notas': notas,
+          if (ubicacion != null) 'ubicacion': ubicacion,
         }),
         'status': 'pending',
         'server_status': 'not_sent',
@@ -3146,8 +3254,20 @@ class LocalDb {
     String? notas,
     String? formaPago,
     int? usuarioId,
+    // 🆕 UBICACIÓN (opcional)
+    double? latitude,
+    double? longitude,
+    double? accuracy,
+    String? locationProvider,
   }) async {
     final db = await database;
+
+    final ubicacion = _buildUbicacionJson(
+      latitude: latitude,
+      longitude: longitude,
+      accuracy: accuracy,
+      locationProvider: locationProvider,
+    );
 
     return db.transaction((txn) async {
       final now = DateTime.now().toIso8601String();
@@ -3165,6 +3285,10 @@ class LocalDb {
         'registrado_at': now,
         'usuario_id': usuarioId,
         'sync_status': 'pending',
+        'latitude': latitude,
+        'longitude': longitude,
+        'accuracy': accuracy,
+        'location_provider': locationProvider,
         'created_at': now,
         'updated_at': now,
       });
@@ -3185,6 +3309,7 @@ class LocalDb {
           'referencia': referencia,
           'notas': notas,
           'forma_pago': formaPago,
+          if (ubicacion != null) 'ubicacion': ubicacion,
         }),
         'status': 'pending',
         'server_status': 'not_sent',

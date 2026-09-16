@@ -5,6 +5,12 @@ import 'package:flutter/material.dart';
 import '../../core/database/local_db.dart';
 import '../../core/network/api_client.dart';
 import '../../core/services/cash_service.dart';
+// [LICENCIA-OFFLINE] Import para evaluar el estado de licencia desde
+// el snapshot local (offline-first).
+import '../../core/services/license_service.dart';
+// 🆕 SYNC: import del SyncService global para el botón de sincronización.
+import '../../core/services/sync_service.dart';
+import '../../core/storage/app_storage.dart';
 
 class OperationScreen extends StatefulWidget {
   const OperationScreen({super.key});
@@ -17,6 +23,8 @@ class _OperationScreenState extends State<OperationScreen> {
   final ApiClient _api = ApiClient();
   final LocalDb _localDb = LocalDb();
   final CashService _cash = CashService();
+  // 🆕 SYNC: instancia única del coordinador de sincronización.
+  final SyncService _sync = SyncService();
 
   bool _loading = true;
   bool _canOperateCash = false;
@@ -24,10 +32,13 @@ class _OperationScreenState extends State<OperationScreen> {
 
   Map<String, dynamic>? _cashRegister;
   Map<String, dynamic> _cashSummary = const {};
-  Map<String, dynamic>? _remoteCashRegister;
 
   List<Map<String, dynamic>> _tables = const [];
   Map<int, int> _pendingByTable = const {};
+
+  // [LICENCIA-OFFLINE] Estado de licencia leído desde el snapshot local.
+  // Nunca se consulta al servidor desde aquí.
+  LicenseState? _licenseState;
 
   // ============================================================
   // TIEMPO REAL
@@ -38,6 +49,9 @@ class _OperationScreenState extends State<OperationScreen> {
   StreamSubscription<void>? _salesSub;
 
   bool _isReloading = false;
+
+  // 🆕 SYNC: bandera para deshabilitar los botones mientras corre.
+  bool _isSyncing = false;
 
   @override
   void initState() {
@@ -94,13 +108,15 @@ class _OperationScreenState extends State<OperationScreen> {
         }
       }
 
-      Map<String, dynamic>? remoteCash;
       Map<String, dynamic> state = const {};
       List<Map<String, dynamic>> tables = const [];
 
       try {
         state = await _api.getOperationStatus();
-        remoteCash = await _api.getCurrentCashRegister();
+        // CORREGIDO: eliminada variable local 'remoteCash' que no se usaba.
+        // Se conserva la llamada porque el efecto secundario (caché/estado
+        // del servidor) sigue siendo necesario.
+        await _api.getCurrentCashRegister();
 
         final tablesEnabled = state['mesas_activas'] == true;
         tables = tablesEnabled
@@ -122,14 +138,26 @@ class _OperationScreenState extends State<OperationScreen> {
 
       if (!mounted) return;
 
+      // [LICENCIA-OFFLINE] Evaluamos la licencia desde el snapshot local.
+      // No se consulta al servidor. El POS sigue funcionando offline.
+      LicenseState? licencia;
+      try {
+        licencia = await LicenseService().evaluate();
+      } catch (e) {
+        debugPrint('⚠️ No se pudo evaluar la licencia local: $e');
+        licencia = _licenseState;
+      }
+
+      if (!mounted) return;
+
       setState(() {
         _cashRegister = localCash;
         _cashSummary = summary;
-        _remoteCashRegister = remoteCash;
         _canOperateCash = state['puede_operar_caja'] == true;
         _tablesEnabled = tablesEnabled;
         _tables = tables;
         _pendingByTable = pendingByTable;
+        _licenseState = licencia;
         _loading = false;
       });
     } catch (error) {
@@ -143,10 +171,84 @@ class _OperationScreenState extends State<OperationScreen> {
   }
 
   // ============================================================
+  // 🆕 SINCRONIZACIÓN GLOBAL MANUAL
+  // ============================================================
+  //
+  // Ejecuta el flujo completo de SyncService.syncManual():
+  //
+  //   1. Sync Queue       (categorías, productos, cajas, movimientos)
+  //   2. Ventas históricas pendientes
+  //   3. Outbox del día
+  //
+  // Muestra el spinner EN EL BOTÓN y deshabilita mientras corre.
+  // Al terminar, recarga la pantalla para reflejar cambios.
+  // ============================================================
+
+  Future<void> _runGlobalSync() async {
+    if (_isSyncing) return;
+
+    setState(() => _isSyncing = true);
+
+    try {
+      final storage = AppStorage();
+
+      final companyId = await storage.getEmpresaId() ?? 0;
+      final userId = await storage.getUserId() ?? 0;
+
+      if (companyId <= 0 || userId <= 0) {
+        _snack('No hay empresa o usuario activo.', error: true);
+        return;
+      }
+
+      final businessDateKey = await storage.getServerBusinessDateKey();
+      final businessDate = businessDateKey != null && businessDateKey.isNotEmpty
+          ? (DateTime.tryParse(businessDateKey) ?? DateTime.now())
+          : DateTime.now();
+
+      final result = await _sync.syncManual(
+        companyId: companyId,
+        userId: userId,
+        businessDate: businessDate,
+      );
+
+      if (!mounted) return;
+
+      _snack(
+        'Sincronización completada: '
+        '${result.synced} sincronizadas, '
+        '${result.failed} fallidas, '
+        '${result.skipped} omitidas.',
+        error: result.failed > 0,
+      );
+
+      await _load(silent: true);
+    } catch (e) {
+      _snack('Error al sincronizar: $e', error: true);
+    } finally {
+      if (mounted) {
+        setState(() => _isSyncing = false);
+      }
+    }
+  }
+
+  // ============================================================
   // ABRIR / REABRIR CAJA
   // ============================================================
 
   Future<void> _openCashDialog() async {
+    // [LICENCIA-OFFLINE] Abrir caja es una operación NUEVA.
+    // Se bloquea si la licencia está explícitamente vencida
+    // (status == LicenseStatus.bloqueada).
+    //
+    // NO bloquea sinSnapshot ni enGracia.
+    if (_licenseState?.status == LicenseStatus.bloqueada) {
+      _snack(
+        _licenseState!.mensaje,
+        error: true,
+      );
+      return;
+    }
+
     final amount = await _amountDialog(
       title: 'Abrir caja',
       label: 'Monto de apertura',
@@ -172,6 +274,12 @@ class _OperationScreenState extends State<OperationScreen> {
   }
 
   Future<void> _closeCashDialog() async {
+    // [LICENCIA-OFFLINE] Cerrar caja SIEMPRE se permite, incluso si la
+    // licencia está vencida. Si bloqueáramos el cierre, el usuario
+    // quedaría con datos huérfanos (efectivo sin cuadrar, turno sin cerrar).
+    //
+    // No hay check de licencia aquí a propósito.
+
     final cashRegister = _cashRegister;
     if (cashRegister == null) return;
 
@@ -199,6 +307,10 @@ class _OperationScreenState extends State<OperationScreen> {
   // ============================================================
 
   Future<void> _retiroParcialDialog() async {
+    // [LICENCIA-OFFLINE] Retiro parcial SIEMPRE se permite.
+    // Es una operación sobre una caja YA ABIERTA. Bloquearla dejaría
+    // efectivo sin poder retirarse del turno.
+
     final cashRegister = _cashRegister;
     if (cashRegister == null) {
       _snack('No hay caja abierta.', error: true);
@@ -249,6 +361,9 @@ class _OperationScreenState extends State<OperationScreen> {
   // ============================================================
 
   Future<void> _editTable([Map<String, dynamic>? table]) async {
+    // [LICENCIA-OFFLINE] Editar mesas SIEMPRE se permite.
+    // No es una operación que consuma licencia; es configuración.
+
     final result = await showDialog<Map<String, dynamic>>(
       context: context,
       builder: (_) => _TableEditorDialog(table: table),
@@ -300,6 +415,21 @@ class _OperationScreenState extends State<OperationScreen> {
         child: ListView(
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 100),
           children: [
+            // [LICENCIA-OFFLINE] Banners de licencia.
+            // Orden de prioridad:
+            //   1. bloqueada   → SÍ bloquea nuevas aperturas.
+            //   2. sinSnapshot → NO bloquea, solo avisa.
+            //   3. enGracia    → NO bloquea, solo avisa.
+            if (_licenseState?.status == LicenseStatus.bloqueada) ...[
+              _buildLicenciaBloqueadaBanner(context),
+              const SizedBox(height: 12),
+            ] else if (_licenseState?.status == LicenseStatus.sinSnapshot) ...[
+              _buildLicenciaSinSnapshotBanner(context),
+              const SizedBox(height: 12),
+            ] else if (_licenseState?.debeAvisarGracia == true) ...[
+              _buildLicenciaGraciaBanner(context),
+              const SizedBox(height: 12),
+            ],
             _buildCashCard(cs),
             if (_tablesEnabled) ...[
               const SizedBox(height: 20),
@@ -379,6 +509,34 @@ class _OperationScreenState extends State<OperationScreen> {
                       ),
                     ],
                   ),
+                ),
+                // 🆕 SYNC: botón de sincronización global.
+                IconButton(
+                  onPressed: (_isSyncing || _isReloading)
+                      ? null
+                      : _runGlobalSync,
+                  tooltip: 'Sincronizar todo',
+                  icon: _isSyncing
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.cloud_sync_outlined),
+                ),
+                // 🆕 SYNC: botón de refresh con preload.
+                IconButton(
+                  onPressed: (_isReloading || _isSyncing)
+                      ? null
+                      : () => _load(),
+                  tooltip: 'Actualizar',
+                  icon: _isReloading
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.refresh),
                 ),
                 if (_canOperateCash)
                   FilledButton(
@@ -505,6 +663,192 @@ class _OperationScreenState extends State<OperationScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  // ============================================================
+  // [LICENCIA-OFFLINE] BANNERS DE LICENCIA
+  // ============================================================
+  //
+  // Mismos 3 banners que el POS. Coherencia visual y lógica.
+  //
+  //   1. bloqueada    → rojo, SÍ bloquea nuevas aperturas de caja.
+  //   2. sinSnapshot  → ámbar, NO bloquea (offline-first).
+  //   3. enGracia     → naranja, NO bloquea.
+  // ============================================================
+
+  Widget _buildLicenciaBloqueadaBanner(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final mensaje = _licenseState?.mensaje ??
+        'Tu licencia está vencida. Inicia sesión con Internet para '
+            'reactivar.';
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: colorScheme.error.withAlpha(20),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: colorScheme.error.withAlpha(90), width: 1),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: colorScheme.error.withAlpha(30),
+              borderRadius: BorderRadius.circular(11),
+            ),
+            child: Icon(Icons.block, color: colorScheme.error, size: 22),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Licencia vencida',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 14,
+                    color: colorScheme.error,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '$mensaje\n'
+                  'Puedes cerrar la caja, registrar movimientos y '
+                  'sincronizar pendientes.',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: colorScheme.onSurfaceVariant,
+                    height: 1.25,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLicenciaSinSnapshotBanner(BuildContext context) {
+    const amber = Color(0xFFB45309);
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: amber.withAlpha(20),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: amber.withAlpha(90), width: 1),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: amber.withAlpha(30),
+              borderRadius: BorderRadius.circular(11),
+            ),
+            child: const Icon(
+              Icons.warning_amber_rounded,
+              color: amber,
+              size: 22,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Sin información de licencia',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 14,
+                    color: amber,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'Conéctate a Internet e inicia sesión para validar tu '
+                  'licencia. Mientras tanto puedes seguir operando.',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: colorScheme.onSurfaceVariant,
+                    height: 1.25,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLicenciaGraciaBanner(BuildContext context) {
+    final orange = Colors.orange.shade800;
+    final colorScheme = Theme.of(context).colorScheme;
+
+    final mensaje = _licenseState?.mensaje ??
+        'Tu licencia está vencida. Regulariza antes de que se bloquee.';
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: orange.withAlpha(20),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: orange.withAlpha(90), width: 1),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: orange.withAlpha(30),
+              borderRadius: BorderRadius.circular(11),
+            ),
+            child: Icon(
+              Icons.warning_amber_rounded,
+              color: orange,
+              size: 22,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Licencia en periodo de gracia',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 14,
+                    color: orange,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  mensaje,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: colorScheme.onSurfaceVariant,
+                    height: 1.25,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

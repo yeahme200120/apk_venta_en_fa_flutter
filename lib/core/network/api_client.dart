@@ -137,32 +137,9 @@ class ApiClient {
     return fallback;
   }
 
-  /// Conserva el tipo DioException original.
-  ///
-  /// CAMBIO AUTH:
-  /// Cuando el servidor devuelve 401, se lanza una excepción
-  /// tipada AuthenticationException.
-  ///
-  /// Esto permite que SyncService:
-  ///
-  /// - NO marque ventas como failed.
-  /// - NO marque outbox como failed.
-  /// - NO marque operaciones de sync_queue como failed.
-  /// - Regrese elementos syncing -> pending/queued.
-  /// - Detenga inmediatamente la sincronización actual.
-  ///
-  /// Para cualquier otro error se conserva el comportamiento
-  /// anterior y se lanza DioException.
   Never _throwDioError(DioException error, {required String fallback}) {
     final message = parseApiError(error.response?.data, fallback: fallback);
 
-    // ==========================================================
-    // CAMBIO AUTH:
-    // 401 = sesión expirada/no autorizada.
-    //
-    // NO convertirlo en DioException porque SyncService necesita
-    // identificar específicamente este caso.
-    // ==========================================================
     if (error.response?.statusCode == 401) {
       throw AuthenticationException(
         message.isNotEmpty
@@ -188,11 +165,29 @@ class ApiClient {
   Future<Map<String, dynamic>> login({
     required String identifier,
     required String password,
+    String? macAddress,
+    // 🆕 UBICACIÓN (opcional)
+    double? latitude,
+    double? longitude,
+    double? accuracy,
+    String? locationProvider,
   }) async {
     try {
       final response = await _dio.post(
         '/api/v1/login',
-        data: {'identificador': identifier.trim(), 'password': password},
+        data: {
+          'identificador': identifier.trim(),
+          'password': password,
+          if (macAddress != null && macAddress.trim().isNotEmpty)
+            'mac_address': macAddress.trim().toUpperCase(),
+
+          // 🆕 UBICACIÓN
+          if (latitude != null) 'latitud': latitude,
+          if (longitude != null) 'longitud': longitude,
+          if (accuracy != null) 'precision_metros': accuracy,
+          if (locationProvider != null)
+            'ubicacion_provider': locationProvider,
+        },
       );
 
       if (response.statusCode == 200 && response.data is Map) {
@@ -202,6 +197,85 @@ class ApiClient {
       throw Exception('Respuesta inválida del servidor');
     } on DioException catch (e) {
       _throwDioError(e, fallback: 'Error de autenticación');
+    }
+  }
+
+  Future<Map<String, dynamic>> register({
+    required String empresaNombre,
+    required String nombre,
+    required String email,
+    required String macAddress,
+    String? telefono,
+    String? rfc,
+    // 🆕 UBICACIÓN (opcional)
+    double? latitude,
+    double? longitude,
+    double? accuracy,
+    String? locationProvider,
+  }) async {
+    try {
+      final response = await _dio.post(
+        '/api/v1/register',
+        data: {
+          'empresa_nombre': empresaNombre.trim(),
+          'nombre': nombre.trim(),
+          'email': email.trim().toLowerCase(),
+          'mac_address': macAddress.trim().toUpperCase(),
+          if (telefono != null && telefono.trim().isNotEmpty)
+            'telefono': telefono.trim(),
+          if (rfc != null && rfc.trim().isNotEmpty) 'rfc': rfc.trim(),
+
+          // 🆕 UBICACIÓN
+          if (latitude != null) 'latitud': latitude,
+          if (longitude != null) 'longitud': longitude,
+          if (accuracy != null) 'precision_metros': accuracy,
+          if (locationProvider != null)
+            'ubicacion_provider': locationProvider,
+        },
+      );
+
+      if ((response.statusCode == 200 || response.statusCode == 201) &&
+          response.data is Map) {
+        return Map<String, dynamic>.from(response.data as Map);
+      }
+
+      throw Exception('Respuesta inválida del servidor');
+    } on DioException catch (e) {
+      _throwDioError(e, fallback: 'No se pudo completar el registro');
+    }
+  }
+
+  Future<bool> checkEmailAvailable(String email) async {
+    try {
+      final response = await _dio.post(
+        '/api/v1/register/check-email',
+        data: {'email': email.trim().toLowerCase()},
+      );
+
+      if (response.statusCode == 200 && response.data is Map) {
+        return response.data['disponible'] == true;
+      }
+
+      return false;
+    } on DioException {
+      return false;
+    }
+  }
+
+  Future<bool> checkEmpresaAvailable(String empresaNombre) async {
+    try {
+      final response = await _dio.post(
+        '/api/v1/register/check-empresa',
+        data: {'empresa_nombre': empresaNombre.trim()},
+      );
+
+      if (response.statusCode == 200 && response.data is Map) {
+        return response.data['disponible'] == true;
+      }
+
+      return false;
+    } on DioException {
+      return false;
     }
   }
 
@@ -383,7 +457,6 @@ class ApiClient {
     try {
       response = await request('/api/v1/cajas/operaciones');
     } on DioException catch (e) {
-      // Algunas versiones del backend exponen la ruta singular.
       if (e.response?.statusCode == 404) {
         response = await request('/api/v1/caja/operaciones');
       } else {
@@ -401,16 +474,14 @@ class ApiClient {
     dynamic payload = response.data;
 
     if (payload is Map) {
-      payload =
-          payload['data'] ??
+      payload = payload['data'] ??
           payload['operaciones'] ??
           payload['movimientos'] ??
           payload;
     }
 
     if (payload is Map) {
-      payload =
-          payload['data'] ??
+      payload = payload['data'] ??
           payload['operaciones'] ??
           payload['movimientos'] ??
           payload;
@@ -433,15 +504,26 @@ class ApiClient {
   Future<Map<String, dynamic>> openCashRegister({
     required double openingAmount,
     String? notes,
-    bool forzarReapertura = false, // 👈 NUEVO
+    bool forzarReapertura = false,
+    // 🆕 UBICACIÓN (opcional)
+    double? latitude,
+    double? longitude,
+    double? accuracy,
+    String? locationProvider,
   }) async {
     return _postOperation('/api/v1/cajas/abrir', {
       'monto_apertura': openingAmount,
       if (notes != null && notes.trim().isNotEmpty) 'notas': notes.trim(),
-      if (forzarReapertura) // 👈 NUEVO
-        'forzar_reapertura': true,
+      if (forzarReapertura) 'forzar_reapertura': true,
+
+      // 🆕 UBICACIÓN
+      if (latitude != null) 'latitud': latitude,
+      if (longitude != null) 'longitud': longitude,
+      if (accuracy != null) 'precision_metros': accuracy,
+      if (locationProvider != null) 'ubicacion_provider': locationProvider,
     });
   }
+
   // ============================================================
   // CERRAR CAJA
   // ============================================================
@@ -450,10 +532,21 @@ class ApiClient {
     required int cashRegisterId,
     required double declaredAmount,
     String? notes,
+    // 🆕 UBICACIÓN (opcional)
+    double? latitude,
+    double? longitude,
+    double? accuracy,
+    String? locationProvider,
   }) async {
     return _postOperation('/api/v1/cajas/$cashRegisterId/cerrar', {
       'monto_cierre_declarado': declaredAmount,
       if (notes != null && notes.trim().isNotEmpty) 'notas': notes.trim(),
+
+      // 🆕 UBICACIÓN
+      if (latitude != null) 'latitud': latitude,
+      if (longitude != null) 'longitud': longitude,
+      if (accuracy != null) 'precision_metros': accuracy,
+      if (locationProvider != null) 'ubicacion_provider': locationProvider,
     });
   }
 
@@ -952,6 +1045,11 @@ class ApiClient {
     String? referencia,
     String? notas,
     String? formaPago,
+    // 🆕 UBICACIÓN (opcional)
+    double? latitude,
+    double? longitude,
+    double? accuracy,
+    String? locationProvider,
   }) async {
     final path = cashRegisterId != null && cashRegisterId > 0
         ? '/api/v1/cajas/$cashRegisterId/movimientos'
@@ -966,6 +1064,12 @@ class ApiClient {
       if (notas != null && notas.trim().isNotEmpty) 'notas': notas.trim(),
       if (formaPago != null && formaPago.trim().isNotEmpty)
         'forma_pago': formaPago.trim(),
+
+      // 🆕 UBICACIÓN
+      if (latitude != null) 'latitud': latitude,
+      if (longitude != null) 'longitud': longitude,
+      if (accuracy != null) 'precision_metros': accuracy,
+      if (locationProvider != null) 'ubicacion_provider': locationProvider,
     });
   }
 }

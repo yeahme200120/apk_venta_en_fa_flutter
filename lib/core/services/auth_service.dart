@@ -1,9 +1,13 @@
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/foundation.dart';
 
 import '../network/api_client.dart';
 import '../services/daily_cleanup_service.dart';
+// 🆕 UBICACIÓN
+import '../services/location_service.dart';
 import '../services/sync_service.dart';
 import '../storage/app_storage.dart';
+import 'license_service.dart';
 
 class AuthService {
   final ApiClient _apiClient;
@@ -29,9 +33,20 @@ class AuthService {
     }
 
     try {
+      final mac = await _deviceIdentifier();
+
+      // 🆕 UBICACIÓN (opcional — no bloquea login si no se puede obtener)
+      final location = await LocationService().getCurrentLocation();
+
       final payload = await _apiClient.login(
         identifier: cleanIdentifier,
         password: password,
+        macAddress: mac,
+        // 🆕 UBICACIÓN
+        latitude: location?.latitude,
+        longitude: location?.longitude,
+        accuracy: location?.accuracy,
+        locationProvider: location?.provider,
       );
 
       await _saveOnlineSession(payload, cleanIdentifier, password);
@@ -74,6 +89,83 @@ class AuthService {
           'nombre': await AppStorage().getCompanyName() ?? '',
         },
       };
+    }
+  }
+
+  // ============================================================
+  // REGISTRO
+  // ============================================================
+
+  Future<Map<String, dynamic>> register({
+    required String empresaNombre,
+    required String nombre,
+    required String email,
+    required String macAddress,
+    String? telefono,
+    String? rfc,
+    // 🆕 UBICACIÓN (opcional)
+    double? latitude,
+    double? longitude,
+    double? accuracy,
+    String? locationProvider,
+  }) async {
+    final payload = await _apiClient.register(
+      empresaNombre: empresaNombre.trim(),
+      nombre: nombre.trim(),
+      email: email.trim().toLowerCase(),
+      macAddress: macAddress.trim().toUpperCase(),
+      telefono: telefono?.trim(),
+      rfc: rfc?.trim(),
+      // 🆕 UBICACIÓN
+      latitude: latitude,
+      longitude: longitude,
+      accuracy: accuracy,
+      locationProvider: locationProvider,
+    );
+
+    // 🆕 La contraseña ya no la elige el usuario: la genera el
+    // backend y viene en `credenciales_iniciales.password_generica`.
+    // La usamos para guardar la sesión offline local.
+    final credenciales = payload['credenciales_iniciales'] is Map
+        ? Map<String, dynamic>.from(payload['credenciales_iniciales'] as Map)
+        : <String, dynamic>{};
+
+    final passwordGenerica =
+        credenciales['password_generica']?.toString().trim() ?? '';
+
+    await _saveOnlineSession(
+      payload,
+      email.trim().toLowerCase(),
+      passwordGenerica,
+    );
+
+    return payload;
+  }
+
+  // ============================================================
+  // DEVICE IDENTIFIER
+  // ============================================================
+
+  Future<String?> _deviceIdentifier() async {
+    try {
+      final plugin = DeviceInfoPlugin();
+
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        final androidInfo = await plugin.androidInfo;
+        // Android ID (64-bit hex) — persistente hasta factory reset.
+        // Android 6+ bloquea la MAC real, así que usamos el ID.
+        return androidInfo.id;
+      }
+
+      if (defaultTargetPlatform == TargetPlatform.iOS) {
+        final iosInfo = await plugin.iosInfo;
+        return iosInfo.identifierForVendor ?? iosInfo.name;
+      }
+
+      return null;
+    } catch (e) {
+      debugPrint('⚠️ No se pudo obtener el identificador del dispositivo: $e');
+      return null;
     }
   }
 
@@ -183,6 +275,26 @@ class AuthService {
       serverBusinessDate: serverBusinessDate,
     );
 
+    // ==========================================================
+    // [PASSWORD] Guardar el flag de cambio de contraseña requerido.
+    //
+    // IMPORTANTE:
+    // Este bloque está dentro de un try/catch porque el flag es
+    // solo informativo para la UI. Si falla su guardado NO debe
+    // romper el login ni la sesión recién creada.
+    // ==========================================================
+    try {
+      final requiereCambio =
+          user['requiere_cambio_password'] == true ||
+          payload['requiere_cambio_password'] == true;
+
+      await storage.setRequiresPasswordChange(requiereCambio);
+
+      debugPrint('🔐 requiere_cambio_password guardado: $requiereCambio');
+    } catch (e) {
+      debugPrint('⚠️ No se pudo guardar requiere_cambio_password: $e');
+    }
+
     if (companyName.isNotEmpty) {
       await storage.saveCompanyName(companyName);
     }
@@ -201,6 +313,41 @@ class AuthService {
         'mesas_activas': settings['mesas_activas'] == true,
         'caja_abierta': null,
       });
+    }
+
+    // ==========================================================
+    // 🔴 SNAPSHOT DE LICENCIA
+    // ==========================================================
+    try {
+      final licencia = payload['licencia'];
+
+      final licenciaMap = licencia is Map
+          ? Map<String, dynamic>.from(licencia)
+          : <String, dynamic>{};
+
+      final licenciaTipo = (licenciaMap['tipo'] ?? 'prueba').toString().trim();
+
+      final licenciaFechaInicio = licenciaMap['fecha_inicio']?.toString();
+
+      final licenciaFechaFin = licenciaMap['fecha_fin']?.toString();
+
+      final licenciaActiva = licenciaMap['activa'] == true;
+
+      await storage.saveLicenseSnapshot(
+        tipo: licenciaTipo.isNotEmpty ? licenciaTipo : 'prueba',
+        fechaInicio: licenciaFechaInicio,
+        fechaFin: licenciaFechaFin,
+        activa: licenciaActiva,
+      );
+
+      debugPrint(
+        '🔐 Snapshot de licencia guardado: '
+        'tipo=$licenciaTipo '
+        'fin=$licenciaFechaFin '
+        'activa=$licenciaActiva',
+      );
+    } catch (e) {
+      debugPrint('⚠️ No se pudo guardar el snapshot de licencia: $e');
     }
 
     // ==========================================================
@@ -359,6 +506,9 @@ class AuthService {
   // ============================================================
 
   Future<void> logout() async {
+    await LicenseService().clear();
+    // [PASSWORD] Limpiar el flag de cambio de contraseña.
+    await AppStorage().clearRequiresPasswordChange();
     await AppStorage().logOut();
   }
 

@@ -7,6 +7,9 @@ import '../../core/database/pos_db_service.dart';
 import '../../core/models/sale_model.dart';
 import '../../core/services/sync_service.dart';
 import '../../core/storage/app_storage.dart';
+// [LICENCIA-OFFLINE] Import para evaluar el estado de licencia
+// desde el snapshot local (offline-first).
+import '../../core/services/license_service.dart';
 import '../ventas/sale_detail_screen.dart';
 import '../widgets/app_scaffold.dart';
 
@@ -38,6 +41,10 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   List<Map<String, dynamic>> _formasPagoDetalle = const [];
 
   late TabController _tabController;
+
+  // [LICENCIA-OFFLINE] Estado de licencia leído desde el snapshot local.
+  // Solo se usa para mostrar banners de aviso. NUNCA bloquea nada aquí.
+  LicenseState? _licenseState;
 
   // ============================================================
   // COLORES SEMÁNTICOS DE ESTADO
@@ -230,7 +237,14 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
 
         if (parsed != null && businessDateKey != _businessDateKey) {
           final start = DateTime(parsed.year, parsed.month, parsed.day);
-          final end = DateTime(parsed.year, parsed.month, parsed.day, 23, 59, 59);
+          final end = DateTime(
+            parsed.year,
+            parsed.month,
+            parsed.day,
+            23,
+            59,
+            59,
+          );
 
           if (mounted) {
             setState(() {
@@ -264,6 +278,16 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
       final topPorDia = await _loadTopProductosPorDia();
       final formasPagoDetalle = await _loadFormasPagoDetalle();
 
+      // [LICENCIA-OFFLINE] Evaluamos la licencia desde el snapshot local.
+      // No se consulta al servidor. Solo se usa para banners.
+      LicenseState? licencia;
+      try {
+        licencia = await LicenseService().evaluate();
+      } catch (e) {
+        debugPrint('⚠️ No se pudo evaluar la licencia local: $e');
+        licencia = _licenseState;
+      }
+
       if (!mounted) return;
 
       setState(() {
@@ -271,6 +295,7 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
         _topProductos = top;
         _topPorDia = topPorDia;
         _formasPagoDetalle = formasPagoDetalle;
+        _licenseState = licencia;
         _loading = false;
       });
     } catch (error) {
@@ -297,6 +322,14 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
       final topPorDia = await _loadTopProductosPorDia();
       final formasPagoDetalle = await _loadFormasPagoDetalle();
 
+      // [LICENCIA-OFFLINE] Reevaluar licencia en cada refresh.
+      LicenseState? licencia;
+      try {
+        licencia = await LicenseService().evaluate();
+      } catch (e) {
+        licencia = _licenseState;
+      }
+
       if (!mounted) return;
 
       setState(() {
@@ -304,6 +337,7 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
         _topProductos = top;
         _topPorDia = topPorDia;
         _formasPagoDetalle = formasPagoDetalle;
+        _licenseState = licencia;
       });
     } catch (_) {
     } finally {
@@ -330,7 +364,6 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
 
   Future<List<Map<String, dynamic>>> _loadSalesInRange() async {
     final inicioClave = _dayDb.dateKey(_fechaInicio);
-    final finClave = _dayDb.dateKey(_fechaFin);
 
     // ⚠️ La fecha comercial la manda el servidor, NO DateTime.now().
     final businessKey = _businessDateKey ?? _dayDb.dateKey(DateTime.now());
@@ -417,7 +450,8 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
           (hUpdated != null &&
               cUpdated != null &&
               hUpdated.isAtSameMomentAs(cUpdated))) {
-        if ((sale['sync_status']?.toString().toLowerCase() ?? '') == 'synced' &&
+        if ((sale['sync_status']?.toString().toLowerCase() ?? '') ==
+                'synced' &&
             (current['sync_status']?.toString().toLowerCase() ?? '') !=
                 'synced') {
           unique[uuid] = sale;
@@ -579,7 +613,8 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
               (ventasPorDia[index]['cantidad'] as int) + 1;
 
           ventasPorDia[index]['total'] =
-              (ventasPorDia[index]['total'] as double) + _toDouble(s['total']);
+              (ventasPorDia[index]['total'] as double) +
+                  _toDouble(s['total']);
         }
       }
 
@@ -599,6 +634,14 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
         limitePorDia: 5,
       );
 
+      // [LICENCIA-OFFLINE] Reevaluar licencia también aquí.
+      LicenseState? licencia;
+      try {
+        licencia = await LicenseService().evaluate();
+      } catch (e) {
+        licencia = _licenseState;
+      }
+
       if (!mounted) return;
 
       setState(() {
@@ -608,6 +651,7 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
         _mesPorDia = ventasPorDia;
         _mesTopProductos = top;
         _mesTopPorDia = topPorDia;
+        _licenseState = licencia;
         _loadingMes = false;
       });
     } catch (error) {
@@ -681,6 +725,10 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
 
   Future<void> _syncNow() async {
     if (!mounted || _syncing) return;
+
+    // [LICENCIA-OFFLINE] Sincronizar SIEMPRE se permite.
+    // Es una operación que SUBE datos al servidor. Bloquearla
+    // dejaría ventas pendientes varadas si la licencia vence.
 
     setState(() => _syncing = true);
 
@@ -952,6 +1000,193 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   }
 
   // ============================================================
+  // [LICENCIA-OFFLINE] BANNERS DE LICENCIA
+  // ============================================================
+  //
+  // En esta pantalla NADA se bloquea. Los banners son solo
+  // informativos/visuales para que el usuario sepa el estado.
+  //
+  //   1. bloqueada    → rojo, aviso (permite todo).
+  //   2. sinSnapshot  → ámbar, aviso (permite todo).
+  //   3. enGracia     → naranja, aviso (permite todo).
+  // ============================================================
+
+  Widget _buildLicenciaBloqueadaBanner(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final mensaje = _licenseState?.mensaje ??
+        'Tu licencia está vencida. Inicia sesión con Internet para '
+            'reactivar.';
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: colorScheme.error.withAlpha(20),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: colorScheme.error.withAlpha(90), width: 1),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: colorScheme.error.withAlpha(30),
+              borderRadius: BorderRadius.circular(11),
+            ),
+            child: Icon(Icons.block, color: colorScheme.error, size: 22),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Licencia vencida',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 14,
+                    color: colorScheme.error,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '$mensaje\n'
+                  'Puedes consultar el historial y sincronizar pendientes.',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: colorScheme.onSurfaceVariant,
+                    height: 1.25,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLicenciaSinSnapshotBanner(BuildContext context) {
+    const amber = Color(0xFFB45309);
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: amber.withAlpha(20),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: amber.withAlpha(90), width: 1),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: amber.withAlpha(30),
+              borderRadius: BorderRadius.circular(11),
+            ),
+            child: const Icon(
+              Icons.warning_amber_rounded,
+              color: amber,
+              size: 22,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Sin información de licencia',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 14,
+                    color: amber,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'Conéctate a Internet e inicia sesión para validar tu '
+                  'licencia. Mientras tanto puedes seguir consultando el '
+                  'historial.',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: colorScheme.onSurfaceVariant,
+                    height: 1.25,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLicenciaGraciaBanner(BuildContext context) {
+    final orange = Colors.orange.shade800;
+    final colorScheme = Theme.of(context).colorScheme;
+
+    final mensaje = _licenseState?.mensaje ??
+        'Tu licencia está vencida. Regulariza antes de que se bloquee.';
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: orange.withAlpha(20),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: orange.withAlpha(90), width: 1),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: orange.withAlpha(30),
+              borderRadius: BorderRadius.circular(11),
+            ),
+            child: Icon(
+              Icons.warning_amber_rounded,
+              color: orange,
+              size: 22,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Licencia en periodo de gracia',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 14,
+                    color: orange,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  mensaje,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: colorScheme.onSurfaceVariant,
+                    height: 1.25,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ============================================================
   // BUILD
   // ============================================================
 
@@ -1006,6 +1241,30 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
       child: CustomScrollView(
         physics: const AlwaysScrollableScrollPhysics(),
         slivers: [
+          // [LICENCIA-OFFLINE] Banners de licencia.
+          // En esta pantalla NO bloquean nada, solo informan.
+          if (_licenseState?.status == LicenseStatus.bloqueada)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+                child: _buildLicenciaBloqueadaBanner(context),
+              ),
+            )
+          else if (_licenseState?.status == LicenseStatus.sinSnapshot)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+                child: _buildLicenciaSinSnapshotBanner(context),
+              ),
+            )
+          else if (_licenseState?.debeAvisarGracia == true)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+                child: _buildLicenciaGraciaBanner(context),
+              ),
+            ),
+
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
@@ -1173,6 +1432,29 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
       child: CustomScrollView(
         physics: const AlwaysScrollableScrollPhysics(),
         slivers: [
+          // [LICENCIA-OFFLINE] Banners también en el mes.
+          if (_licenseState?.status == LicenseStatus.bloqueada)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                child: _buildLicenciaBloqueadaBanner(context),
+              ),
+            )
+          else if (_licenseState?.status == LicenseStatus.sinSnapshot)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                child: _buildLicenciaSinSnapshotBanner(context),
+              ),
+            )
+          else if (_licenseState?.debeAvisarGracia == true)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                child: _buildLicenciaGraciaBanner(context),
+              ),
+            ),
+
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),

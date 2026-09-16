@@ -1,3 +1,4 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 
 import '../../core/network/api_client.dart';
@@ -16,6 +17,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
   bool _enviando = false;
   bool _enviado = false;
   String? _errorEmail;
+  String? _errorGeneral;
 
   @override
   void dispose() {
@@ -32,7 +34,10 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
 
     final email = _emailController.text.trim();
 
-    setState(() => _errorEmail = null);
+    setState(() {
+      _errorEmail = null;
+      _errorGeneral = null;
+    });
 
     if (email.isEmpty) {
       setState(() => _errorEmail = 'Ingresa tu correo electrónico.');
@@ -52,12 +57,52 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
 
       if (!mounted) return;
       setState(() => _enviado = true);
-    } catch (_) {
-      // El servidor siempre responde con 200 aunque el correo no exista,
-      // por seguridad. Si hay un error de red, igual mostramos el mensaje
-      // neutral para no revelar si el correo existe.
+    } on DioException catch (e) {
       if (!mounted) return;
-      setState(() => _enviado = true);
+
+      final status = e.response?.statusCode;
+      final payload = e.response?.data;
+
+      // 404 EMAIL_NOT_FOUND → mostramos mensaje neutral (seguridad).
+      if (status == 404) {
+        setState(() => _enviado = true);
+        return;
+      }
+
+      // 500 MAIL_ERROR → el servidor no pudo enviar el correo.
+      if (status == 500) {
+        setState(() {
+          _errorGeneral = ApiClient.parseApiError(
+            payload,
+            fallback: 'No fue posible enviar el correo. Intenta más tarde.',
+          );
+        });
+        return;
+      }
+
+      // 429 RATE LIMIT
+      if (status == 429) {
+        setState(() {
+          _errorGeneral = ApiClient.parseApiError(
+            payload,
+            fallback: 'Demasiados intentos. Intenta más tarde.',
+          );
+        });
+        return;
+      }
+
+      setState(() {
+        _errorGeneral = ApiClient.parseApiError(
+          payload,
+          fallback: 'No se pudo procesar la solicitud.',
+        );
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _errorGeneral =
+            'No se pudo conectar con el servidor. Revisa tu conexión.';
+      });
     } finally {
       if (mounted) setState(() => _enviando = false);
     }
@@ -97,7 +142,6 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Ícono
         Center(
           child: Container(
             width: 72,
@@ -128,13 +172,13 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
         const SizedBox(height: 8),
 
         const Text(
-          'Te enviaremos instrucciones para restablecer tu contraseña.',
+          'Te enviaremos un enlace para restablecer tu contraseña. '
+          'Ábrelo desde tu correo en cualquier dispositivo.',
           style: TextStyle(fontSize: 13, color: Color(0xFF666666)),
         ),
 
         const SizedBox(height: 28),
 
-        // Campo correo
         const Text(
           'Correo electrónico',
           style: TextStyle(fontSize: 13, color: Color(0xFF444444)),
@@ -164,7 +208,8 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
               hintStyle: TextStyle(fontSize: 13),
               prefixIcon: Icon(Icons.email_outlined, size: 20),
               border: InputBorder.none,
-              contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 13),
+              contentPadding:
+                  EdgeInsets.symmetric(horizontal: 10, vertical: 13),
             ),
           ),
         ),
@@ -178,9 +223,26 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
             ),
           ),
 
+        if (_errorGeneral != null) ...[
+          const SizedBox(height: 12),
+          Container(
+            width: double.infinity,
+            padding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.red.shade50,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: Colors.red.shade200),
+            ),
+            child: Text(
+              _errorGeneral!,
+              style: TextStyle(fontSize: 13, color: Colors.red.shade700),
+            ),
+          ),
+        ],
+
         const SizedBox(height: 28),
 
-        // Botón
         SizedBox(
           width: double.infinity,
           height: 46,
@@ -191,13 +253,18 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
               foregroundColor: Colors.white,
               disabledBackgroundColor: const Color(0xFF777777),
               elevation: 0,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(6),
+              ),
             ),
             child: _enviando
                 ? const SizedBox(
                     width: 18,
                     height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
                   )
                 : const Text(
                     'Enviar instrucciones',
@@ -248,7 +315,9 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
         const SizedBox(height: 12),
 
         const Text(
-          'Si el correo que ingresaste está registrado, recibirás un enlace para restablecer tu contraseña.',
+          'Si el correo que ingresaste está registrado, '
+          'recibirás un enlace para restablecer tu contraseña. '
+          'Ábrelo en tu navegador y sigue las instrucciones.',
           textAlign: TextAlign.center,
           style: TextStyle(fontSize: 13, color: Color(0xFF666666)),
         ),
@@ -262,7 +331,9 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
             onPressed: () => Navigator.of(context).pop(),
             style: OutlinedButton.styleFrom(
               foregroundColor: const Color(0xFF303030),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(6),
+              ),
             ),
             child: const Text(
               'Volver al inicio de sesión',

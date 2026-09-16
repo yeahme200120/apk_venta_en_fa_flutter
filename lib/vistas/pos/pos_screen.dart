@@ -11,6 +11,8 @@ import '../../core/payments/payment_breakdown.dart';
 import '../../core/storage/app_storage.dart';
 import '../../core/services/sync_service.dart';
 import '../../core/services/printer_service.dart';
+// [LICENCIA-OFFLINE] Import para evaluar el estado de licencia desde snapshot local.
+import '../../core/services/license_service.dart';
 import '../operacion/operation_screen.dart';
 import 'cart_screen.dart';
 import '../ventas/sale_detail_screen.dart';
@@ -62,6 +64,10 @@ class PosScreenState extends State<PosScreen> {
   bool _cajasActivas = false;
   bool _mesasActivas = false;
   bool _cajaAbierta = false;
+
+  // [LICENCIA-OFFLINE] Estado de licencia leído del snapshot local.
+  // Nunca se consulta al servidor desde aquí: offline-first.
+  LicenseState? _licenseState;
 
   List<Map<String, dynamic>> _tables = const [];
 
@@ -158,7 +164,6 @@ class PosScreenState extends State<PosScreen> {
   }
 
   int? _parseCategoryId(dynamic value) {
-    if (value is int) return value;
     if (value is num) return value.toInt();
     return int.tryParse(value?.toString() ?? '');
   }
@@ -236,6 +241,8 @@ class PosScreenState extends State<PosScreen> {
     await _loadOperationState();
   }
 
+  // Método reservado para uso futuro (por ejemplo, banners de licencia).
+  // ignore: unused_element
   Future<void> _refreshLocalDataSilently() async {
     await _handleSalesChanged();
   }
@@ -325,10 +332,24 @@ class PosScreenState extends State<PosScreen> {
 
     if (!mounted) return;
 
+    // [LICENCIA-OFFLINE] Evaluamos la licencia SIEMPRE desde el snapshot
+    // local. No se consulta al servidor. Se usa server_checked_at como
+    // ancla temporal. Así el POS funciona 100% offline.
+    LicenseState? licencia;
+    try {
+      licencia = await LicenseService().evaluate();
+    } catch (e) {
+      debugPrint('⚠️ No se pudo evaluar la licencia local: $e');
+      licencia = _licenseState;
+    }
+
+    if (!mounted) return;
+
     setState(() {
       _cajasActivas = cajasActivas;
       _mesasActivas = mesasActivas;
       _cajaAbierta = cajaAbierta;
+      _licenseState = licencia;
 
       if (!cajasActivas || !mesasActivas) {
         _selectedTableId = null;
@@ -366,11 +387,43 @@ class PosScreenState extends State<PosScreen> {
     return product.stock > 0;
   }
 
-  bool get _puedeOperar => !_cajasActivas || _cajaAbierta;
+  // [LICENCIA-OFFLINE] _puedeOperar ahora considera la licencia.
+  //
+  // REGLAS:
+  //   - Bloquea SOLO si la licencia está explícitamente vencida
+  //     más allá del periodo de gracia (status == bloqueada).
+  //   - NO bloquea sinSnapshot (podría ser bug local; el POS debe
+  //     seguir operando offline).
+  //   - NO bloquea enGracia (periodo de cortesía).
+  bool get _puedeOperar {
+    final licencia = _licenseState;
+
+    if (licencia != null && licencia.status == LicenseStatus.bloqueada) {
+      return false;
+    }
+
+    return !_cajasActivas || _cajaAbierta;
+  }
 
   bool get _debeAvisarCajaCerrada => _cajasActivas && !_cajaAbierta;
 
   void _addToCart(Product product) {
+    // [LICENCIA-OFFLINE] Bloqueo SOLO si está explícitamente vencida.
+    // sinSnapshot y enGracia permiten seguir vendiendo.
+    final licencia = _licenseState;
+
+    if (licencia != null && licencia.status == LicenseStatus.bloqueada) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(licencia.mensaje),
+            backgroundColor: Colors.red.shade700,
+          ),
+        );
+      }
+      return;
+    }
+
     if (_cajasActivas && !_cajaAbierta) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -500,6 +553,21 @@ class PosScreenState extends State<PosScreen> {
   Future<bool> _canOperateSale() async {
     await _loadOperationState();
 
+    // [LICENCIA-OFFLINE] Si la licencia está bloqueada, no se pueden
+    // crear nuevas ventas.
+    if (_licenseState?.status == LicenseStatus.bloqueada) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(_licenseState!.mensaje),
+            backgroundColor: Colors.red.shade700,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+      return false;
+    }
+
     if (_cajasActivas && !_cajaAbierta) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -522,6 +590,8 @@ class PosScreenState extends State<PosScreen> {
   String? get _tableNameForSale =>
       (_cajasActivas && _mesasActivas) ? _selectedTableName : null;
 
+  // Método reservado para uso futuro.
+  // ignore: unused_element
   Future<void> _savePendingSale() async {
     if (_cartNotifier.value.isEmpty || !await _canOperateSale()) return;
 
@@ -689,63 +759,67 @@ class PosScreenState extends State<PosScreen> {
         }
       }
 
-      final generatedSale = saleId == null
-          ? null
-          : await _db.getSaleById(saleId);
+      // FIX: Abrimos la venta recién guardada para mostrarla en detalle.
+      if (saleId != null && mounted) {
+        final generatedSale = await _db.getSaleById(saleId);
 
-      if (generatedSale != null && mounted) {
-        final sale = generatedSale;
-        Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (_) => SaleDetailScreen(
-              sale: SaleModel(
-                id: int.tryParse('${sale['id'] ?? 0}') ?? 0,
-                uuidLocal: sale['uuid_local']?.toString() ?? uuid,
-                serverId: null,
-                businessDate: DateTime.now().toIso8601String().substring(0, 10),
-                total: (sale['total'] is num)
-                    ? (sale['total'] as num).toDouble()
-                    : _total,
-                syncStatus: sale['sync_status']?.toString() ?? 'pending',
-                status: sale['status']?.toString() ?? 'paid',
-                items: saleItems
-                    .map(
-                      (item) => SaleItemModel(
-                        id: 0,
-                        saleId: 0,
-                        productId:
-                            int.tryParse('${item['product_id'] ?? 0}') ?? 0,
-                        name: item['name']?.toString() ?? '',
-                        quantity: (item['quantity'] is num)
-                            ? (item['quantity'] as num).toDouble()
-                            : 0.0,
-                        unitPrice: (item['unit_price'] is num)
-                            ? (item['unit_price'] as num).toDouble()
-                            : 0.0,
-                        total: (item['total'] is num)
-                            ? (item['total'] as num).toDouble()
-                            : 0.0,
-                      ),
-                    )
-                    .toList(),
-                payments: payments
-                    .map(
-                      (item) => SalePaymentModel(
-                        id: 0,
-                        saleId: 0,
-                        method: item['method']?.toString() ?? '',
-                        amount: (item['amount'] is num)
-                            ? (item['amount'] as num).toDouble()
-                            : 0.0,
-                      ),
-                    )
-                    .toList(),
-                createdAt: DateTime.now().toIso8601String(),
-                updatedAt: DateTime.now().toIso8601String(),
+        if (generatedSale != null && mounted) {
+          final sale = generatedSale;
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => SaleDetailScreen(
+                sale: SaleModel(
+                  id: int.tryParse('${sale['id'] ?? 0}') ?? 0,
+                  uuidLocal: sale['uuid_local']?.toString() ?? uuid,
+                  serverId: null,
+                  businessDate: DateTime.now().toIso8601String().substring(
+                    0,
+                    10,
+                  ),
+                  total: (sale['total'] is num)
+                      ? (sale['total'] as num).toDouble()
+                      : _total,
+                  syncStatus: sale['sync_status']?.toString() ?? 'pending',
+                  status: sale['status']?.toString() ?? 'paid',
+                  items: saleItems
+                      .map(
+                        (item) => SaleItemModel(
+                          id: 0,
+                          saleId: 0,
+                          productId:
+                              int.tryParse('${item['product_id'] ?? 0}') ?? 0,
+                          name: item['name']?.toString() ?? '',
+                          quantity: (item['quantity'] is num)
+                              ? (item['quantity'] as num).toDouble()
+                              : 0.0,
+                          unitPrice: (item['unit_price'] is num)
+                              ? (item['unit_price'] as num).toDouble()
+                              : 0.0,
+                          total: (item['total'] is num)
+                              ? (item['total'] as num).toDouble()
+                              : 0.0,
+                        ),
+                      )
+                      .toList(),
+                  payments: payments
+                      .map(
+                        (item) => SalePaymentModel(
+                          id: 0,
+                          saleId: 0,
+                          method: item['method']?.toString() ?? '',
+                          amount: (item['amount'] is num)
+                              ? (item['amount'] as num).toDouble()
+                              : 0.0,
+                        ),
+                      )
+                      .toList(),
+                  createdAt: DateTime.now().toIso8601String(),
+                  updatedAt: DateTime.now().toIso8601String(),
+                ),
               ),
             ),
-          ),
-        );
+          );
+        }
       }
 
       if (!mounted) return false;
@@ -922,6 +996,8 @@ class PosScreenState extends State<PosScreen> {
   // VER PENDIENTES
   // ============================================================
 
+  // Método reservado para uso futuro.
+  // ignore: unused_element
   Future<void> _showPendingSales() async {
     final sales = (await _db.getTodaySales())
         .where((sale) => sale['status'] == 'pending')
@@ -1022,6 +1098,8 @@ class PosScreenState extends State<PosScreen> {
   // OPERACIÓN (CAJA / MESAS)
   // ============================================================
 
+  // Método reservado para uso futuro (por ejemplo, banners de licencia).
+  // ignore: unused_element
   Future<void> _openOperation() async {
     await Navigator.of(context)
         .push(MaterialPageRoute(builder: (_) => const OperationScreen()));
@@ -1112,13 +1190,32 @@ class PosScreenState extends State<PosScreen> {
                         sliver: SliverToBoxAdapter(
                           child: Column(
                             children: [
+                              // [LICENCIA-OFFLINE] Banners de licencia.
+                              // Orden de prioridad:
+                              //   1. bloqueada  → SÍ bloquea nuevas ventas.
+                              //   2. sinSnapshot → NO bloquea, solo avisa.
+                              //   3. enGracia   → NO bloquea, solo avisa.
+                              if (_licenseState?.status ==
+                                  LicenseStatus.bloqueada) ...[
+                                _buildLicenciaBloqueadaBanner(context),
+                                const SizedBox(height: 10),
+                              ] else if (_licenseState?.status ==
+                                  LicenseStatus.sinSnapshot) ...[
+                                _buildLicenciaSinSnapshotBanner(context),
+                                const SizedBox(height: 10),
+                              ] else if (_licenseState?.debeAvisarGracia ==
+                                  true) ...[
+                                _buildLicenciaGraciaBanner(context),
+                                const SizedBox(height: 10),
+                              ],
                               if (_debeAvisarCajaCerrada) ...[
                                 _buildCajaCerradaBanner(context),
                                 const SizedBox(height: 10),
                               ],
                               if (_cajasActivas && _mesasActivas)
                                 DropdownButtonFormField<int?>(
-                                  value: _selectedTableId,
+                                  // FIX: initialValue en lugar de value.
+                                  initialValue: _selectedTableId,
                                   isExpanded: true,
                                   decoration: InputDecoration(
                                     labelText: 'Mesa para la venta pendiente',
@@ -1294,6 +1391,196 @@ class PosScreenState extends State<PosScreen> {
     );
   }
 
+  // ============================================================
+  // [LICENCIA-OFFLINE] BANNERS DE LICENCIA
+  // ============================================================
+  //
+  // 3 estados posibles:
+  //   1. bloqueada    → rojo, SÍ bloquea nuevas ventas.
+  //   2. sinSnapshot  → ámbar, NO bloquea (offline-first).
+  //   3. enGracia     → naranja, NO bloquea.
+  //
+  // Los 3 tienen el mismo estilo que _buildCajaCerradaBanner
+  // para mantener coherencia visual.
+  // ============================================================
+
+  Widget _buildLicenciaBloqueadaBanner(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final mensaje = _licenseState?.mensaje ??
+        'Tu licencia está vencida. Inicia sesión con Internet para '
+            'reactivar.';
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: colorScheme.error.withAlpha(20),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: colorScheme.error.withAlpha(90), width: 1),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: colorScheme.error.withAlpha(30),
+              borderRadius: BorderRadius.circular(11),
+            ),
+            child: Icon(Icons.block, color: colorScheme.error, size: 22),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Licencia vencida',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 14,
+                    color: colorScheme.error,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '$mensaje\n'
+                  'Mientras tanto puedes consultar ventas anteriores, '
+                  'cerrar la caja y sincronizar pendientes.',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: colorScheme.onSurfaceVariant,
+                    height: 1.25,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLicenciaSinSnapshotBanner(BuildContext context) {
+    // Ámbar: advertencia suave, NO bloquea.
+    const amber = Color(0xFFB45309);
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: amber.withAlpha(20),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: amber.withAlpha(90), width: 1),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: amber.withAlpha(30),
+              borderRadius: BorderRadius.circular(11),
+            ),
+            child: const Icon(
+              Icons.warning_amber_rounded,
+              color: amber,
+              size: 22,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Sin información de licencia',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 14,
+                    color: amber,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'Conéctate a Internet e inicia sesión para validar tu '
+                  'licencia. Mientras tanto puedes seguir operando.',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: colorScheme.onSurfaceVariant,
+                    height: 1.25,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLicenciaGraciaBanner(BuildContext context) {
+    // Naranja: aviso informativo, NO bloquea.
+    final orange = Colors.orange.shade800;
+    final colorScheme = Theme.of(context).colorScheme;
+
+    final mensaje = _licenseState?.mensaje ??
+        'Tu licencia está vencida. Regulariza antes de que se bloquee.';
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: orange.withAlpha(20),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: orange.withAlpha(90), width: 1),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: orange.withAlpha(30),
+              borderRadius: BorderRadius.circular(11),
+            ),
+            child: Icon(
+              Icons.warning_amber_rounded,
+              color: orange,
+              size: 22,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Licencia en periodo de gracia',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 14,
+                    color: orange,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  mensaje,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: colorScheme.onSurfaceVariant,
+                    height: 1.25,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   List<Product> get _filteredProducts {
     final query = _searchController.text.trim().toLowerCase();
 
@@ -1361,7 +1648,8 @@ class PosScreenState extends State<PosScreen> {
             final compact = constraints.maxWidth < 560;
 
             final category = DropdownButtonFormField<int?>(
-              value: _selectedCategoryId,
+              // FIX: initialValue en lugar de value.
+              initialValue: _selectedCategoryId,
               isExpanded: true,
               decoration: InputDecoration(
                 labelText: 'Categoría',
@@ -1834,6 +2122,8 @@ class PosScreenState extends State<PosScreen> {
     );
   }
 
+  // Método reservado para uso futuro.
+  // ignore: unused_element
   Widget _productInformation(BuildContext context, Product product) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1872,6 +2162,8 @@ class PosScreenState extends State<PosScreen> {
     );
   }
 
+  // Método reservado para uso futuro.
+  // ignore: unused_element
   Widget _productBottomActions(
     BuildContext context,
     Product product, {
@@ -2014,9 +2306,7 @@ class _OpenCashDialogState extends State<_OpenCashDialog> {
         ),
         FilledButton.icon(
           onPressed: () {
-            final monto = double.tryParse(
-              _monto.text.replaceAll(',', '.'),
-            );
+            final monto = double.tryParse(_monto.text.replaceAll(',', '.'));
 
             if (monto == null || monto < 0) {
               return;

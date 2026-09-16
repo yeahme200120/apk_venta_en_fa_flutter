@@ -1,7 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
-import 'dart:typed_data';
+
+// CORREGIDO: eliminado 'dart:typed_data' (redundante, ya lo provee foundation.dart).
 
 import 'package:excel_plus/excel_plus.dart';
 import 'package:file_picker/file_picker.dart';
@@ -185,10 +186,8 @@ class CatalogExcelService {
     await file.writeAsBytes(bytes, flush: true);
 
     try {
-      await Share.shareXFiles(
-        [XFile(file.path)],
-        subject: 'Plantilla ${_catalogLabel(table)}',
-        text: 'Plantilla para carga masiva de ${_catalogLabel(table)}.',
+      await SharePlus.instance.share(
+        ShareParams(files: [XFile(file.path)], subject: '...', text: '...'),
       );
     } catch (e) {
       debugPrint('⚠️ No se pudo abrir el share sheet: $e');
@@ -218,7 +217,9 @@ class CatalogExcelService {
     // Leer bytes explícitamente desde el PlatformFile.
     final bytes = await picked.readAsBytes();
 
-    if (bytes == null || bytes.isEmpty) {
+    // CORREGIDO: eliminado 'bytes == null' (siempre es false).
+    // Solo se conserva la verificación de vacío.
+    if (bytes.isEmpty) {
       throw Exception('No se pudo leer el archivo seleccionado.');
     }
 
@@ -731,10 +732,11 @@ class CatalogExcelService {
 
       final existing = await _db.getProductById(localId);
 
+      // CORREGIDO: eliminado cast innecesario 'as Map<String, dynamic>'.
+      // jsonDecodeSafe ya devuelve Map<String, dynamic>?.
       final data = <String, dynamic>{
         if (existing?['data_json'] is String)
-          ...((jsonDecodeSafe(existing!['data_json']) ?? {})
-              as Map<String, dynamic>),
+          ...?(jsonDecodeSafe(existing!['data_json'])),
         'categoria_id': categoryId,
         if (description.isNotEmpty) 'descripcion': description,
       };

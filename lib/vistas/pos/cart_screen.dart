@@ -135,7 +135,7 @@ class _CartScreenState extends State<CartScreen> {
                         : ListView.separated(
                             padding: const EdgeInsets.all(16),
                             itemCount: items.length,
-                            separatorBuilder: (_, __) =>
+                            separatorBuilder: (_, _) =>
                                 const SizedBox(height: 8),
                             itemBuilder: (context, index) => _buildCartItem(
                               items[index],

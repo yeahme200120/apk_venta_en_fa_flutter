@@ -3,8 +3,7 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class AppStorage {
-  static final AppStorage _instance =
-      AppStorage._internal();
+  static final AppStorage _instance = AppStorage._internal();
 
   factory AppStorage() => _instance;
 
@@ -21,35 +20,27 @@ class AppStorage {
   static const String _companyNameKey = 'company_name';
   static const String _loggedKey = 'is_logged_in';
   static const String _roleKey = 'role';
+  static const String _licenseSnapshotKey = 'license_snapshot';
 
-  static const String _offlineIdentifierKey =
-      'offline_identifier';
+  static const String _offlineIdentifierKey = 'offline_identifier';
 
-  static const String _offlinePasswordKey =
-      'offline_password';
+  static const String _offlinePasswordKey = 'offline_password';
 
-  static const String _lastOnlineUserIdKey =
-      'last_online_user_id';
+  static const String _lastOnlineUserIdKey = 'last_online_user_id';
 
-  static const String _lastOnlineEmpresaIdKey =
-      'last_online_empresa_id';
+  static const String _lastOnlineEmpresaIdKey = 'last_online_empresa_id';
 
-  static const String _lastOnlineAtKey =
-      'last_online_at';
+  static const String _lastOnlineAtKey = 'last_online_at';
 
-  static const String _businessDateKey =
-      'server_business_date';
+  static const String _businessDateKey = 'server_business_date';
 
-  static const String _ticketConfigKey =
-      'ticket_config';
+  static const String _ticketConfigKey = 'ticket_config';
 
-  static const String _operationStateKey =
-      'operation_state';
+  static const String _operationStateKey = 'operation_state';
 
   // Indica si las credenciales offline pertenecen
   // al día comercial actualmente autorizado.
-  static const String _offlineDayValidKey =
-      'offline_day_valid';
+  static const String _offlineDayValidKey = 'offline_day_valid';
 
   // Marca que el catálogo local debe purgarse antes
   // de aplicar el próximo sync de catálogos.
@@ -57,16 +48,14 @@ class AppStorage {
   // Se activa en cada login online para garantizar que un
   // dispositivo que antes estaba vinculado a otra empresa
   // no conserve productos/categorías ajenos.
-  static const String _catalogPurgePendingKey =
-      'catalog_purge_pending';
+  static const String _catalogPurgePendingKey = 'catalog_purge_pending';
 
   // ============================================================
   // LIMPIAR STORAGE
   // ============================================================
 
   Future<void> clear() async {
-    final prefs =
-        await SharedPreferences.getInstance();
+    final prefs = await SharedPreferences.getInstance();
 
     await prefs.clear();
   }
@@ -85,98 +74,53 @@ class AppStorage {
     String? offlinePassword,
     String? serverBusinessDate,
   }) async {
-    final prefs =
-        await SharedPreferences.getInstance();
+    final prefs = await SharedPreferences.getInstance();
 
     final cleanToken = token.trim();
 
     if (cleanToken.isEmpty) {
-      throw ArgumentError(
-        'El token de sesión no puede estar vacío.',
-      );
+      throw ArgumentError('El token de sesión no puede estar vacío.');
     }
 
     if (userId <= 0) {
-      throw ArgumentError(
-        'El ID del usuario no es válido.',
-      );
+      throw ArgumentError('El ID del usuario no es válido.');
     }
 
     if (empresaId <= 0) {
-      throw ArgumentError(
-        'El ID de la empresa no es válido.',
-      );
+      throw ArgumentError('El ID de la empresa no es válido.');
     }
 
-    await prefs.setString(
-      _tokenKey,
-      cleanToken,
-    );
+    await prefs.setString(_tokenKey, cleanToken);
 
-    await prefs.setInt(
-      _userIdKey,
-      userId,
-    );
+    await prefs.setInt(_userIdKey, userId);
 
-    await prefs.setInt(
-      _empresaIdKey,
-      empresaId,
-    );
+    await prefs.setInt(_empresaIdKey, empresaId);
 
-    await prefs.setString(
-      _userNameKey,
-      userName.trim(),
-    );
+    await prefs.setString(_userNameKey, userName.trim());
 
-    await prefs.setBool(
-      _loggedKey,
-      isLoggedIn,
-    );
+    await prefs.setBool(_loggedKey, isLoggedIn);
 
     // Última sesión ONLINE válida.
-    await prefs.setInt(
-      _lastOnlineUserIdKey,
-      userId,
-    );
+    await prefs.setInt(_lastOnlineUserIdKey, userId);
 
-    await prefs.setInt(
-      _lastOnlineEmpresaIdKey,
-      empresaId,
-    );
+    await prefs.setInt(_lastOnlineEmpresaIdKey, empresaId);
 
-    await prefs.setString(
-      _lastOnlineAtKey,
-      DateTime.now().toIso8601String(),
-    );
+    await prefs.setString(_lastOnlineAtKey, DateTime.now().toIso8601String());
 
-    if (offlineIdentifier != null &&
-        offlineIdentifier.trim().isNotEmpty) {
-      await prefs.setString(
-        _offlineIdentifierKey,
-        offlineIdentifier.trim(),
-      );
+    if (offlineIdentifier != null && offlineIdentifier.trim().isNotEmpty) {
+      await prefs.setString(_offlineIdentifierKey, offlineIdentifier.trim());
     }
 
     if (offlinePassword != null) {
-      await prefs.setString(
-        _offlinePasswordKey,
-        offlinePassword,
-      );
+      await prefs.setString(_offlinePasswordKey, offlinePassword);
     }
 
-    if (serverBusinessDate != null &&
-        serverBusinessDate.trim().isNotEmpty) {
-      await prefs.setString(
-        _businessDateKey,
-        serverBusinessDate.trim(),
-      );
+    if (serverBusinessDate != null && serverBusinessDate.trim().isNotEmpty) {
+      await prefs.setString(_businessDateKey, serverBusinessDate.trim());
 
       // Las credenciales offline quedan asociadas
       // al día comercial que acaba de validar el servidor.
-      await prefs.setBool(
-        _offlineDayValidKey,
-        true,
-      );
+      await prefs.setBool(_offlineDayValidKey, true);
     }
   }
 
@@ -191,55 +135,29 @@ class AppStorage {
     String? companyName,
     String? role,
   }) async {
-    final prefs =
-        await SharedPreferences.getInstance();
+    final prefs = await SharedPreferences.getInstance();
 
     // Una sesión offline no debe conservar un Bearer token.
-    await prefs.remove(
-      _tokenKey,
-    );
+    await prefs.remove(_tokenKey);
 
-    await prefs.setInt(
-      _userIdKey,
-      userId,
-    );
+    await prefs.setInt(_userIdKey, userId);
 
-    await prefs.setInt(
-      _empresaIdKey,
-      empresaId,
-    );
+    await prefs.setInt(_empresaIdKey, empresaId);
 
-    await prefs.setString(
-      _userNameKey,
-      userName.trim(),
-    );
+    await prefs.setString(_userNameKey, userName.trim());
 
-    await prefs.setBool(
-      _loggedKey,
-      true,
-    );
+    await prefs.setBool(_loggedKey, true);
 
     // Conservamos la identidad de la última sesión online.
-    await prefs.setInt(
-      _lastOnlineUserIdKey,
-      userId,
-    );
+    await prefs.setInt(_lastOnlineUserIdKey, userId);
 
-    await prefs.setInt(
-      _lastOnlineEmpresaIdKey,
-      empresaId,
-    );
+    await prefs.setInt(_lastOnlineEmpresaIdKey, empresaId);
 
-    if (companyName != null &&
-        companyName.trim().isNotEmpty) {
-      await prefs.setString(
-        _companyNameKey,
-        companyName.trim(),
-      );
+    if (companyName != null && companyName.trim().isNotEmpty) {
+      await prefs.setString(_companyNameKey, companyName.trim());
     }
 
-    if (role != null &&
-        role.trim().isNotEmpty) {
+    if (role != null && role.trim().isNotEmpty) {
       await saveRol(role);
     }
   }
@@ -249,14 +167,11 @@ class AppStorage {
   // ============================================================
 
   Future<String?> getToken() async {
-    final prefs =
-        await SharedPreferences.getInstance();
+    final prefs = await SharedPreferences.getInstance();
 
-    final token =
-        prefs.getString(_tokenKey);
+    final token = prefs.getString(_tokenKey);
 
-    if (token == null ||
-        token.trim().isEmpty) {
+    if (token == null || token.trim().isEmpty) {
       return null;
     }
 
@@ -268,94 +183,62 @@ class AppStorage {
   // ============================================================
 
   Future<int?> getUserId() async {
-    final prefs =
-        await SharedPreferences.getInstance();
+    final prefs = await SharedPreferences.getInstance();
 
-    return prefs.getInt(
-      _userIdKey,
-    );
+    return prefs.getInt(_userIdKey);
   }
 
   Future<int?> getEmpresaId() async {
-    final prefs =
-        await SharedPreferences.getInstance();
+    final prefs = await SharedPreferences.getInstance();
 
-    return prefs.getInt(
-      _empresaIdKey,
-    );
+    return prefs.getInt(_empresaIdKey);
   }
 
   Future<String?> getUserName() async {
-    final prefs =
-        await SharedPreferences.getInstance();
+    final prefs = await SharedPreferences.getInstance();
 
-    return prefs.getString(
-      _userNameKey,
-    );
+    return prefs.getString(_userNameKey);
   }
 
   // ============================================================
   // EMPRESA
   // ============================================================
 
-  Future<void> saveCompanyName(
-    String name,
-  ) async {
-    final prefs =
-        await SharedPreferences.getInstance();
+  Future<void> saveCompanyName(String name) async {
+    final prefs = await SharedPreferences.getInstance();
 
-    await prefs.setString(
-      _companyNameKey,
-      name.trim(),
-    );
+    await prefs.setString(_companyNameKey, name.trim());
   }
 
   Future<String?> getCompanyName() async {
-    final prefs =
-        await SharedPreferences.getInstance();
+    final prefs = await SharedPreferences.getInstance();
 
-    return prefs.getString(
-      _companyNameKey,
-    );
+    return prefs.getString(_companyNameKey);
   }
 
   // ============================================================
   // ROL
   // ============================================================
 
-  Future<void> saveRol(
-    String role,
-  ) async {
-    final prefs =
-        await SharedPreferences.getInstance();
+  Future<void> saveRol(String role) async {
+    final prefs = await SharedPreferences.getInstance();
 
-    final normalized =
-        role.trim().toLowerCase();
+    final normalized = role.trim().toLowerCase();
 
     if (normalized.isEmpty) {
-      await prefs.remove(
-        _roleKey,
-      );
+      await prefs.remove(_roleKey);
       return;
     }
 
-    await prefs.setString(
-      _roleKey,
-      normalized,
-    );
+    await prefs.setString(_roleKey, normalized);
   }
 
   Future<String?> getRole() async {
-    final prefs =
-        await SharedPreferences.getInstance();
+    final prefs = await SharedPreferences.getInstance();
 
-    final role =
-        prefs.getString(
-      _roleKey,
-    );
+    final role = prefs.getString(_roleKey);
 
-    if (role == null ||
-        role.trim().isEmpty) {
+    if (role == null || role.trim().isEmpty) {
       return null;
     }
 
@@ -369,56 +252,35 @@ class AppStorage {
 
   // Roles autorizados para Caja.
   Future<bool> isCajero() async {
-    final role =
-        (await getRole())
-                ?.trim()
-                .toLowerCase() ??
-            '';
+    final role = (await getRole())?.trim().toLowerCase() ?? '';
 
-    return role == 'cajero' ||
-        role == 'admin' ||
-        role == 'superadmin';
+    return role == 'cajero' || role == 'admin' || role == 'superadmin';
   }
 
   // ============================================================
   // CONFIGURACIÓN DEL TICKET
   // ============================================================
 
-  Future<void> saveTicketConfig(
-    Map<String, dynamic> config,
-  ) async {
-    final prefs =
-        await SharedPreferences.getInstance();
+  Future<void> saveTicketConfig(Map<String, dynamic> config) async {
+    final prefs = await SharedPreferences.getInstance();
 
-    await prefs.setString(
-      _ticketConfigKey,
-      jsonEncode(config),
-    );
+    await prefs.setString(_ticketConfigKey, jsonEncode(config));
   }
 
-  Future<Map<String, dynamic>>
-      getTicketConfig() async {
-    final prefs =
-        await SharedPreferences.getInstance();
+  Future<Map<String, dynamic>> getTicketConfig() async {
+    final prefs = await SharedPreferences.getInstance();
 
-    final value =
-        prefs.getString(
-      _ticketConfigKey,
-    );
+    final value = prefs.getString(_ticketConfigKey);
 
-    if (value == null ||
-        value.trim().isEmpty) {
+    if (value == null || value.trim().isEmpty) {
       return {};
     }
 
     try {
-      final decoded =
-          jsonDecode(value);
+      final decoded = jsonDecode(value);
 
       if (decoded is Map) {
-        return Map<String, dynamic>.from(
-          decoded,
-        );
+        return Map<String, dynamic>.from(decoded);
       }
     } catch (_) {}
 
@@ -429,41 +291,26 @@ class AppStorage {
   // ESTADO OPERATIVO
   // ============================================================
 
-  Future<void> saveOperationState(
-    Map<String, dynamic> state,
-  ) async {
-    final prefs =
-        await SharedPreferences.getInstance();
+  Future<void> saveOperationState(Map<String, dynamic> state) async {
+    final prefs = await SharedPreferences.getInstance();
 
-    await prefs.setString(
-      _operationStateKey,
-      jsonEncode(state),
-    );
+    await prefs.setString(_operationStateKey, jsonEncode(state));
   }
 
-  Future<Map<String, dynamic>>
-      getOperationState() async {
-    final prefs =
-        await SharedPreferences.getInstance();
+  Future<Map<String, dynamic>> getOperationState() async {
+    final prefs = await SharedPreferences.getInstance();
 
-    final value =
-        prefs.getString(
-      _operationStateKey,
-    );
+    final value = prefs.getString(_operationStateKey);
 
-    if (value == null ||
-        value.trim().isEmpty) {
+    if (value == null || value.trim().isEmpty) {
       return {};
     }
 
     try {
-      final decoded =
-          jsonDecode(value);
+      final decoded = jsonDecode(value);
 
       if (decoded is Map) {
-        return Map<String, dynamic>.from(
-          decoded,
-        );
+        return Map<String, dynamic>.from(decoded);
       }
     } catch (_) {}
 
@@ -475,46 +322,30 @@ class AppStorage {
   // ============================================================
 
   Future<bool> isLoggedIn() async {
-    final prefs =
-        await SharedPreferences.getInstance();
+    final prefs = await SharedPreferences.getInstance();
 
-    return prefs.getBool(
-          _loggedKey,
-        ) ??
-        false;
+    return prefs.getBool(_loggedKey) ?? false;
   }
 
   // ============================================================
   // FECHA COMERCIAL DEL SERVIDOR
   // ============================================================
 
-  Future<void> saveServerBusinessDate(
-    String? value,
-  ) async {
-    final prefs =
-        await SharedPreferences.getInstance();
+  Future<void> saveServerBusinessDate(String? value) async {
+    final prefs = await SharedPreferences.getInstance();
 
-    if (value == null ||
-        value.trim().isEmpty) {
-      await prefs.remove(
-        _businessDateKey,
-      );
+    if (value == null || value.trim().isEmpty) {
+      await prefs.remove(_businessDateKey);
       return;
     }
 
-    await prefs.setString(
-      _businessDateKey,
-      value.trim(),
-    );
+    await prefs.setString(_businessDateKey, value.trim());
   }
 
   Future<String?> getServerBusinessDate() async {
-    final prefs =
-        await SharedPreferences.getInstance();
+    final prefs = await SharedPreferences.getInstance();
 
-    return prefs.getString(
-      _businessDateKey,
-    );
+    return prefs.getString(_businessDateKey);
   }
 
   // Compatibilidad con SettingsScreen.
@@ -523,12 +354,8 @@ class AppStorage {
   }
 
   // Compatibilidad con SettingsScreen.
-  Future<void> saveBusinessDate(
-    String? value,
-  ) async {
-    await saveServerBusinessDate(
-      value,
-    );
+  Future<void> saveBusinessDate(String? value) async {
+    await saveServerBusinessDate(value);
   }
 
   // ============================================================
@@ -603,8 +430,7 @@ class AppStorage {
   Future<bool> consumeCatalogPurgePending() async {
     final prefs = await SharedPreferences.getInstance();
 
-    final wasPending =
-        prefs.getBool(_catalogPurgePendingKey) ?? false;
+    final wasPending = prefs.getBool(_catalogPurgePendingKey) ?? false;
 
     if (wasPending) {
       await prefs.setBool(_catalogPurgePendingKey, false);
@@ -618,12 +444,9 @@ class AppStorage {
   // ============================================================
 
   Future<String?> getLastOnlineAt() async {
-    final prefs =
-        await SharedPreferences.getInstance();
+    final prefs = await SharedPreferences.getInstance();
 
-    return prefs.getString(
-      _lastOnlineAtKey,
-    );
+    return prefs.getString(_lastOnlineAtKey);
   }
 
   // ============================================================
@@ -634,58 +457,37 @@ class AppStorage {
     required String identifier,
     required String password,
   }) async {
-    final prefs =
-        await SharedPreferences.getInstance();
+    final prefs = await SharedPreferences.getInstance();
 
-    await prefs.setString(
-      _offlineIdentifierKey,
-      identifier.trim(),
-    );
+    await prefs.setString(_offlineIdentifierKey, identifier.trim());
 
-    await prefs.setString(
-      _offlinePasswordKey,
-      password,
-    );
+    await prefs.setString(_offlinePasswordKey, password);
 
-    await prefs.setBool(
-      _offlineDayValidKey,
-      true,
-    );
+    await prefs.setBool(_offlineDayValidKey, true);
   }
 
   Future<String?> getOfflineIdentifier() async {
-    final prefs =
-        await SharedPreferences.getInstance();
+    final prefs = await SharedPreferences.getInstance();
 
-    return prefs.getString(
-      _offlineIdentifierKey,
-    );
+    return prefs.getString(_offlineIdentifierKey);
   }
 
   Future<String?> getOfflinePassword() async {
-    final prefs =
-        await SharedPreferences.getInstance();
+    final prefs = await SharedPreferences.getInstance();
 
-    return prefs.getString(
-      _offlinePasswordKey,
-    );
+    return prefs.getString(_offlinePasswordKey);
   }
 
   Future<bool> isOfflineLoginAvailable() async {
-    final identifier =
-        await getOfflineIdentifier();
+    final identifier = await getOfflineIdentifier();
 
-    final password =
-        await getOfflinePassword();
+    final password = await getOfflinePassword();
 
-    final userId =
-        await getLastOnlineUserId();
+    final userId = await getLastOnlineUserId();
 
-    final empresaId =
-        await getLastOnlineEmpresaId();
+    final empresaId = await getLastOnlineEmpresaId();
 
-    final dayValid =
-        await isOfflineDayValid();
+    final dayValid = await isOfflineDayValid();
 
     return identifier != null &&
         identifier.trim().isNotEmpty &&
@@ -699,120 +501,73 @@ class AppStorage {
   }
 
   Future<int?> getLastOnlineUserId() async {
-    final prefs =
-        await SharedPreferences.getInstance();
+    final prefs = await SharedPreferences.getInstance();
 
-    return prefs.getInt(
-      _lastOnlineUserIdKey,
-    );
+    return prefs.getInt(_lastOnlineUserIdKey);
   }
 
   Future<int?> getLastOnlineEmpresaId() async {
-    final prefs =
-        await SharedPreferences.getInstance();
+    final prefs = await SharedPreferences.getInstance();
 
-    return prefs.getInt(
-      _lastOnlineEmpresaIdKey,
-    );
+    return prefs.getInt(_lastOnlineEmpresaIdKey);
   }
 
   // ============================================================
   // VALIDACIÓN DEL DÍA OFFLINE
   // ============================================================
 
-  Future<void> saveOfflineDayValid(
-    bool value,
-  ) async {
-    final prefs =
-        await SharedPreferences.getInstance();
+  Future<void> saveOfflineDayValid(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
 
-    await prefs.setBool(
-      _offlineDayValidKey,
-      value,
-    );
+    await prefs.setBool(_offlineDayValidKey, value);
   }
 
   Future<bool> isOfflineDayValid() async {
-    final prefs =
-        await SharedPreferences.getInstance();
+    final prefs = await SharedPreferences.getInstance();
 
-    return prefs.getBool(
-          _offlineDayValidKey,
-        ) ??
-        false;
+    return prefs.getBool(_offlineDayValidKey) ?? false;
   }
 
   // ============================================================
   // INVALIDAR SESIÓN POR CAMBIO DE DÍA COMERCIAL
   // ============================================================
 
-  Future<void>
-      invalidateSessionForBusinessDateChange() async {
-    final prefs =
-        await SharedPreferences.getInstance();
+  Future<void> invalidateSessionForBusinessDateChange() async {
+    final prefs = await SharedPreferences.getInstance();
 
     // Sesión activa.
-    await prefs.remove(
-      _tokenKey,
-    );
+    await prefs.remove(_tokenKey);
 
-    await prefs.remove(
-      _userIdKey,
-    );
+    await prefs.remove(_userIdKey);
 
-    await prefs.remove(
-      _empresaIdKey,
-    );
+    await prefs.remove(_empresaIdKey);
 
-    await prefs.remove(
-      _userNameKey,
-    );
+    await prefs.remove(_userNameKey);
 
-    await prefs.remove(
-      _companyNameKey,
-    );
+    await prefs.remove(_companyNameKey);
 
-    await prefs.remove(
-      _roleKey,
-    );
+    await prefs.remove(_roleKey);
 
-    await prefs.remove(
-      _loggedKey,
-    );
+    await prefs.remove(_loggedKey);
 
     // Las credenciales anteriores ya no pueden
     // utilizarse para entrar offline al nuevo día.
-    await prefs.remove(
-      _offlineIdentifierKey,
-    );
+    await prefs.remove(_offlineIdentifierKey);
 
-    await prefs.remove(
-      _offlinePasswordKey,
-    );
+    await prefs.remove(_offlinePasswordKey);
 
-    await prefs.remove(
-      _lastOnlineUserIdKey,
-    );
+    await prefs.remove(_lastOnlineUserIdKey);
 
-    await prefs.remove(
-      _lastOnlineEmpresaIdKey,
-    );
+    await prefs.remove(_lastOnlineEmpresaIdKey);
 
-    await prefs.remove(
-      _lastOnlineAtKey,
-    );
+    await prefs.remove(_lastOnlineAtKey);
 
-    await prefs.setBool(
-      _offlineDayValidKey,
-      false,
-    );
+    await prefs.setBool(_offlineDayValidKey, false);
 
     // La fecha comercial se elimina para que
     // el siguiente login online establezca
     // explícitamente la nueva fecha autorizada.
-    await prefs.remove(
-      _businessDateKey,
-    );
+    await prefs.remove(_businessDateKey);
 
     // No eliminamos:
     // - ticket_config
@@ -831,11 +586,9 @@ class AppStorage {
       return false;
     }
 
-    final token =
-        await getToken();
+    final token = await getToken();
 
-    if (token != null &&
-        token.trim().isNotEmpty) {
+    if (token != null && token.trim().isNotEmpty) {
       return false;
     }
 
@@ -847,36 +600,21 @@ class AppStorage {
   // ============================================================
 
   Future<void> logOut() async {
-    final prefs =
-        await SharedPreferences.getInstance();
+    final prefs = await SharedPreferences.getInstance();
 
-    await prefs.remove(
-      _tokenKey,
-    );
+    await prefs.remove(_tokenKey);
 
-    await prefs.remove(
-      _userIdKey,
-    );
+    await prefs.remove(_userIdKey);
 
-    await prefs.remove(
-      _empresaIdKey,
-    );
+    await prefs.remove(_empresaIdKey);
 
-    await prefs.remove(
-      _userNameKey,
-    );
+    await prefs.remove(_userNameKey);
 
-    await prefs.remove(
-      _companyNameKey,
-    );
+    await prefs.remove(_companyNameKey);
 
-    await prefs.remove(
-      _roleKey,
-    );
+    await prefs.remove(_roleKey);
 
-    await prefs.remove(
-      _loggedKey,
-    );
+    await prefs.remove(_loggedKey);
 
     // No eliminamos:
     // - credenciales offline
@@ -888,5 +626,92 @@ class AppStorage {
     //
     // Tampoco invalidamos _offlineDayValidKey:
     // cerrar sesión normal no significa cambio de día.
+  }
+  // ============================================================
+  // SNAPSHOT DE LICENCIA
+  // ============================================================
+
+  Future<void> saveLicenseSnapshot({
+    required String tipo,
+    required String? fechaInicio,
+    required String? fechaFin,
+    required bool activa,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+
+    final snapshot = {
+      'licencia_tipo': tipo.trim(),
+      'licencia_fecha_inicio': fechaInicio?.trim(),
+      'licencia_fecha_fin': fechaFin?.trim(),
+      'licencia_activa': activa,
+      'server_checked_at': DateTime.now().toIso8601String(),
+      'received_at': DateTime.now().toIso8601String(),
+    };
+
+    await prefs.setString(_licenseSnapshotKey, jsonEncode(snapshot));
+  }
+
+  Future<Map<String, dynamic>> getLicenseSnapshot() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    final raw = prefs.getString(_licenseSnapshotKey);
+
+    if (raw == null || raw.trim().isEmpty) {
+      return <String, dynamic>{};
+    }
+
+    try {
+      final decoded = jsonDecode(raw);
+
+      if (decoded is Map) {
+        return Map<String, dynamic>.from(decoded);
+      }
+    } catch (_) {}
+
+    return <String, dynamic>{};
+  }
+
+  Future<void> clearLicenseSnapshot() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_licenseSnapshotKey);
+  }
+
+  Future<void> touchLicenseServerCheckedAt() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    final raw = prefs.getString(_licenseSnapshotKey);
+
+    if (raw == null || raw.trim().isEmpty) return;
+
+    try {
+      final decoded = jsonDecode(raw);
+
+      if (decoded is! Map) return;
+
+      final updated = Map<String, dynamic>.from(decoded);
+      updated['server_checked_at'] = DateTime.now().toIso8601String();
+
+      await prefs.setString(_licenseSnapshotKey, jsonEncode(updated));
+    } catch (_) {}
+  }
+  // ============================================================
+  // [PASSWORD] requiere_cambio_password
+  // ============================================================
+
+  static const String _requiresPasswordChangeKey = 'requires_password_change';
+
+  Future<void> setRequiresPasswordChange(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_requiresPasswordChangeKey, value);
+  }
+
+  Future<bool> getRequiresPasswordChange() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_requiresPasswordChangeKey) ?? false;
+  }
+
+  Future<void> clearRequiresPasswordChange() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_requiresPasswordChangeKey);
   }
 }
