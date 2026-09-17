@@ -27,7 +27,7 @@ class _OperationScreenState extends State<OperationScreen> {
   final SyncService _sync = SyncService();
 
   bool _loading = true;
-  bool _canOperateCash = false;
+  bool _cajasActivas = false;
   bool _tablesEnabled = false;
 
   Map<String, dynamic>? _cashRegister;
@@ -153,7 +153,7 @@ class _OperationScreenState extends State<OperationScreen> {
       setState(() {
         _cashRegister = localCash;
         _cashSummary = summary;
-        _canOperateCash = state['puede_operar_caja'] == true;
+        _cajasActivas  = state['cajas_activas'] == true;
         _tablesEnabled = tablesEnabled;
         _tables = tables;
         _pendingByTable = pendingByTable;
@@ -538,7 +538,7 @@ class _OperationScreenState extends State<OperationScreen> {
                         )
                       : const Icon(Icons.refresh),
                 ),
-                if (_canOperateCash)
+                if (_cajasActivas )
                   FilledButton(
                     onPressed: abierta ? _closeCashDialog : _openCashDialog,
                     child: Text(abierta ? 'Cerrar' : 'Abrir'),
@@ -630,7 +630,7 @@ class _OperationScreenState extends State<OperationScreen> {
               // El retiro parcial solo se habilita cuando la caja está
               // abierta y el usuario puede operarla.
               //
-              if (_canOperateCash) ...[
+              if (_cajasActivas ) ...[
                 const SizedBox(height: 16),
                 SizedBox(
                   width: double.infinity,

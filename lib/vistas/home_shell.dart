@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
+import '../core/database/local_db.dart';
 import '../core/network/api_client.dart';
 import '../core/storage/app_storage.dart';
 import 'caja/cash_management_screen.dart';
@@ -29,7 +32,9 @@ class _HomeShellState extends State<HomeShell>
   TabController? _cashTabController;
 
   bool _cajasActivas = false;
-  bool _esCajero = false;
+
+  // 🆕 Escucha cambios de operación en tiempo real.
+  StreamSubscription<void>? _operationSub;
 
   @override
   void initState() {
@@ -39,6 +44,12 @@ class _HomeShellState extends State<HomeShell>
     _initCashTabController();
 
     WidgetsBinding.instance.addObserver(this);
+
+    // 🆕 Escucha cambios de operación en tiempo real.
+    _operationSub = LocalDb.operationChanges.listen((_) {
+      if (mounted) _loadOperationState();
+    });
+
     _loadOperationState();
   }
 
@@ -72,6 +83,10 @@ class _HomeShellState extends State<HomeShell>
     _cashTabController?.dispose();
     _cashTabController = null;
 
+    // 🆕 Cancelar suscripción.
+    _operationSub?.cancel();
+    _operationSub = null;
+
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -89,12 +104,10 @@ class _HomeShellState extends State<HomeShell>
 
   Future<void> _loadOperationState() async {
     final cached = await AppStorage().getOperationState();
-    final cajeroLocal = await AppStorage().isCajero();
 
     if (mounted) {
       setState(() {
         _cajasActivas = cached['cajas_activas'] == true;
-        _esCajero = cajeroLocal;
       });
     }
 
@@ -119,7 +132,7 @@ class _HomeShellState extends State<HomeShell>
   // LÓGICA DE NAVEGACIÓN
   // ============================================================
 
-  bool get _showCajaTab => _cajasActivas && _esCajero;
+  bool get _showCajaTab => _cajasActivas;
 
   List<Widget> _buildPages() {
     return [
@@ -178,56 +191,56 @@ class _HomeShellState extends State<HomeShell>
   // ============================================================
 
   @override
-Widget build(BuildContext context) {
-  final colors = Theme.of(context).colorScheme;
-  final pages = _buildPages();
-  final destinations = _buildDestinations();
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final pages = _buildPages();
+    final destinations = _buildDestinations();
 
-  final safeIndex = _currentIndex.clamp(0, pages.length - 1);
+    final safeIndex = _currentIndex.clamp(0, pages.length - 1);
 
-  // 🔑 Aquí está el fix: no uses _cajaTabIndex, compara directo.
-  final estaEnCaja = _showCajaTab && safeIndex == 2;
+    // 🔑 Aquí está el fix: no uses _cajaTabIndex, compara directo.
+    final estaEnCaja = _showCajaTab && safeIndex == 2;
 
-  return Scaffold(
-    backgroundColor: colors.surface,
+    return Scaffold(
+      backgroundColor: colors.surface,
 
-    appBar: estaEnCaja
-        ? AppBar(
-            title: Text(
-              _cashSubIndex == 0 ? 'Operación' : 'Movimientos',
-              style: const TextStyle(fontWeight: FontWeight.w800),
-            ),
-            bottom: _cashTabController != null
-                ? TabBar(
-                    controller: _cashTabController,
-                    labelColor: Colors.white,
-                    unselectedLabelColor: Colors.white70,
-                    indicatorColor: Colors.white,
-                    tabs: const [
-                      Tab(text: 'Operación'),
-                      Tab(text: 'Movimientos'),
-                    ],
-                  )
-                : null,
-          )
-        : null,
+      appBar: estaEnCaja
+          ? AppBar(
+              title: Text(
+                _cashSubIndex == 0 ? 'Operación' : 'Movimientos',
+                style: const TextStyle(fontWeight: FontWeight.w800),
+              ),
+              bottom: _cashTabController != null
+                  ? TabBar(
+                      controller: _cashTabController,
+                      labelColor: Colors.white,
+                      unselectedLabelColor: Colors.white70,
+                      indicatorColor: Colors.white,
+                      tabs: const [
+                        Tab(text: 'Operación'),
+                        Tab(text: 'Movimientos'),
+                      ],
+                    )
+                  : null,
+            )
+          : null,
 
-    body: IndexedStack(
-      index: safeIndex,
-      children: pages,
-    ),
+      body: IndexedStack(
+        index: safeIndex,
+        children: pages,
+      ),
 
-    bottomNavigationBar: NavigationBar(
-      selectedIndex: safeIndex,
-      onDestinationSelected: (index) {
-        setState(() => _currentIndex = index);
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: safeIndex,
+        onDestinationSelected: (index) {
+          setState(() => _currentIndex = index);
 
-        if (_showCajaTab && index == 2) {
-          _loadOperationState();
-        }
-      },
-      destinations: destinations,
-    ),
-  );
-}
+          if (_showCajaTab && index == 2) {
+            _loadOperationState();
+          }
+        },
+        destinations: destinations,
+      ),
+    );
+  }
 }
