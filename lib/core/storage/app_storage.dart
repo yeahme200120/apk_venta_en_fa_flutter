@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/foundation.dart';
 
 class AppStorage {
   static final AppStorage _instance = AppStorage._internal();
@@ -713,5 +714,61 @@ class AppStorage {
   Future<void> clearRequiresPasswordChange() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_requiresPasswordChangeKey);
+  }
+
+  /// Detecta si el `empresa_id` cambió respecto a la última sesión.
+  ///
+  /// Devuelve true si cambió y guarda el nuevo empresa_id.
+  Future<bool> detectCompanyChange(int newEmpresaId) async {
+    final prefs = await SharedPreferences.getInstance();
+
+    final oldEmpresaId = prefs.getInt(_empresaIdKey);
+
+    if (oldEmpresaId == null) {
+      // Primera vez: no hay cambio
+      return false;
+    }
+
+    if (oldEmpresaId == newEmpresaId) {
+      return false;
+    }
+
+    debugPrint(
+      '🔄 Cambio de empresa detectado: '
+      '$oldEmpresaId → $newEmpresaId',
+    );
+
+    return true;
+  }
+
+  /// Limpia SOLO los datos de empresa/usuario pero CONSERVA:
+  /// - Credenciales offline
+  /// - Últimos IDs online
+  /// - Snapshot de licencia
+  /// - Configuración del ticket
+  ///
+  /// Se usa al detectar cambio de empresa.
+  Future<void> clearCompanyData() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    // Eliminar datos de sesión actual
+    await prefs.remove(_tokenKey);
+    await prefs.remove(_userIdKey);
+    await prefs.remove(_empresaIdKey);
+    await prefs.remove(_userNameKey);
+    await prefs.remove(_companyNameKey);
+    await prefs.remove(_roleKey);
+    await prefs.remove(_loggedKey);
+    await prefs.remove(_businessDateKey);
+    await prefs.remove(_operationStateKey);
+
+    // ⚠️ NO eliminamos:
+    // - offline_identifier
+    // - offline_password
+    // - last_online_user_id
+    // - last_online_empresa_id
+    // - last_online_at
+    // - license_snapshot
+    // - ticket_config
   }
 }

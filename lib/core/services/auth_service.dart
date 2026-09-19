@@ -8,6 +8,8 @@ import '../services/location_service.dart';
 import '../services/sync_service.dart';
 import '../storage/app_storage.dart';
 import 'license_service.dart';
+import '../database/local_db.dart';
+import '../database/pos_db_service.dart';
 
 class AuthService {
   final ApiClient _apiClient;
@@ -201,7 +203,59 @@ class AuthService {
     if (userId <= 0 || companyId <= 0) {
       throw Exception('El servidor devolvió una sesión incompleta.');
     }
+    // ==========================================================
+    // 🔴 DETECCIÓN DE CAMBIO DE EMPRESA
+    // ==========================================================
+    final storage = AppStorage();
 
+    final previousCompanyId = await storage.getEmpresaId();
+
+    final companyChanged =
+        previousCompanyId != null &&
+        previousCompanyId > 0 &&
+        previousCompanyId != companyId;
+
+    if (companyChanged) {
+      debugPrint(
+        '🔄 Cambio de empresa detectado: '
+        '$previousCompanyId → $companyId',
+      );
+
+      // 1. Sincronizar pendientes de la empresa anterior
+      final previousUserId = await storage.getUserId();
+      final rawPrevDate = await storage.getServerBusinessDate();
+      final prevDate = DateTime.tryParse(rawPrevDate ?? '') ?? DateTime.now();
+
+      if (previousUserId != null && previousUserId > 0) {
+        try {
+          await SyncService().syncManual(
+            companyId: previousCompanyId,
+            userId: previousUserId,
+            businessDate: prevDate,
+          );
+        } catch (e) {
+          debugPrint('⚠️ Sync antes de cambio de empresa falló: $e');
+        }
+
+        // 2. Eliminar la base diaria anterior
+        try {
+          await PosDatabaseService().deleteDatabaseFile(
+            companyId: previousCompanyId,
+            userId: previousUserId,
+            businessDate: prevDate,
+          );
+        } catch (e) {
+          debugPrint('⚠️ Borrar BD anterior falló: $e');
+        }
+      }
+
+      // 3. Limpiar TODO el historial local
+      try {
+        await LocalDb().clearAll();
+      } catch (e) {
+        debugPrint('⚠️ Limpiar LocalDb falló: $e');
+      }
+    }
     final serverIdentifier =
         (user['numero_usuario'] ??
                 user['numero_empleado'] ??
@@ -225,7 +279,6 @@ class AuthService {
     // ==========================================================
     // 🔴 CAMBIO DE DÍA COMERCIAL
     // ==========================================================
-    final storage = AppStorage();
 
     final dayChanged = await storage.businessDateChanged(serverBusinessDate);
 

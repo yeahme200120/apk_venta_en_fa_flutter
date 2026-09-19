@@ -732,6 +732,12 @@ class LocalDb {
       return;
     }
 
+    // ✅ FIX: garantizar que exista UNA sola empresa en la tabla.
+    // Si el id cambió (empresa distinta), eliminamos cualquier fila
+    // previa antes de insertar para evitar filas huérfanas que
+    // getCompany() pudiera devolver por orden de rowid.
+    await executor.delete('company');
+
     dynamic colors = data['colores'];
     dynamic config = data['configuracion'];
 
@@ -771,7 +777,14 @@ class LocalDb {
   Future<Map<String, dynamic>?> getCompany() async {
     final db = await database;
 
-    final rows = await db.query('company', limit: 1);
+    // ✅ FIX: ordenar explícitamente por updated_at DESC para que,
+    // si por cualquier motivo quedara más de una fila, siempre
+    // devolvamos la más reciente.
+    final rows = await db.query(
+      'company',
+      orderBy: 'updated_at DESC',
+      limit: 1,
+    );
 
     if (rows.isEmpty) {
       return null;
@@ -1590,7 +1603,10 @@ class LocalDb {
     // locales para evitar mezclar datos entre empresas si el
     // dispositivo cambió de empresa.
     //
-    // NO se purgan: sales, sale_items, sale_payments, cash_*.
+    // ✅ FIX: además de los catálogos, también se purga la data
+    // operativa (ventas, pagos, cajas y movimientos) y la cola de
+    // sincronización. Si no, quedaban ventas y cajas de la empresa
+    // anterior visibles en estadísticas y afectando el arqueo.
     //
     final purge = await AppStorage().consumeCatalogPurgePending();
 
@@ -1629,6 +1645,16 @@ class LocalDb {
         if (data['cupones'] is List) {
           await txn.delete('coupons');
         }
+
+        // ✅ FIX: purgar data operativa al cambiar de empresa.
+        // Esto evita que ventas/cajas de la empresa anterior sigan
+        // apareciendo en estadísticas y arqueos.
+        await txn.delete('sales');
+        await txn.delete('sale_items');
+        await txn.delete('sale_payments');
+        await txn.delete('cash_registers');
+        await txn.delete('cash_movements');
+        await txn.delete('sync_queue');
       }
 
       if (data['empresa'] is Map) {
@@ -2059,11 +2085,37 @@ class LocalDb {
         });
       }
 
+      // ✅ FIX: el primer pago en efectivo absorbe el cambio.
+      // Así `sale_payments.amount` guarda el efectivo NETO que
+      // realmente entra a la caja, y las queries de arqueo
+      // (getCashSummaryLocal, getSalesByPaymentMethod*) ya no
+      // sobre-estiman el ingreso. El cambio total queda en
+      // `sales.change_due` y el monto entregado por el cliente
+      // se reconstruye sumando `amount + change_due`.
+      var cashAdjusted = false;
+
       for (final payment in payments) {
+        final method = payment['method']?.toString() ?? 'Efectivo';
+        final originalAmount = _toDouble(payment['amount']);
+
+        var amount = originalAmount;
+
+        if (method.trim().toLowerCase() == 'efectivo' &&
+            !cashAdjusted &&
+            changeDue > 0) {
+          amount = originalAmount - changeDue;
+          if (amount < 0) amount = 0;
+          cashAdjusted = true;
+        }
+
+        if (amount <= 0) {
+          continue;
+        }
+
         await txn.insert('sale_payments', {
           'sale_id': id,
-          'method': payment['method'],
-          'amount': _toDouble(payment['amount']),
+          'method': method,
+          'amount': amount,
           'referencia': payment['referencia'],
         });
       }
@@ -2545,11 +2597,34 @@ class LocalDb {
         whereArgs: [saleId],
       );
 
+      // ✅ FIX: mismo criterio que en saveSale. El primer pago en
+      // efectivo absorbe el cambio para que `sale_payments.amount`
+      // represente el efectivo NETO. Sin este fix, una venta de
+      // $50 pagada con $100 dejaría $100 en caja en lugar de $50.
+      var cashAdjusted = false;
+
       for (final payment in payments) {
+        final method = payment['method']?.toString() ?? 'Efectivo';
+        final originalAmount = _toDouble(payment['amount']);
+
+        var amount = originalAmount;
+
+        if (method.trim().toLowerCase() == 'efectivo' &&
+            !cashAdjusted &&
+            changeDue > 0) {
+          amount = originalAmount - changeDue;
+          if (amount < 0) amount = 0;
+          cashAdjusted = true;
+        }
+
+        if (amount <= 0) {
+          continue;
+        }
+
         await txn.insert('sale_payments', {
           'sale_id': saleId,
-          'method': payment['method'],
-          'amount': _toDouble(payment['amount']),
+          'method': method,
+          'amount': amount,
           'referencia': payment['referencia'],
         });
       }
@@ -3693,5 +3768,172 @@ class LocalDb {
           },
         )
         .toList();
+  }
+
+  /// Elimina TODOS los datos locales de la empresa actual.
+  ///
+  /// Se usa SOLO cuando se detecta un cambio de empresa.
+  /// NO se usa para limpieza diaria.
+  Future<void> clearAll() async {
+    final db = await database;
+
+    await db.transaction((txn) async {
+      final tablas = [
+        'sync_queue',
+        'sales',
+        'sale_items',
+        'sale_payments',
+        'cash_registers',
+        'cash_movements',
+        'products',
+        'categories',
+        'clients',
+        'taxes',
+        'payment_methods',
+        'units',
+        'promotions',
+        'coupons',
+        'catalog_sync',
+        'company',
+      ];
+
+      for (final tabla in tablas) {
+        await txn.delete(tabla);
+      }
+    });
+
+    notifyAllChanged();
+
+    print('🧹 LocalDb: todas las tablas limpiadas por cambio de empresa.');
+  }
+
+  /// Elimina SOLO los datos operativos del día:
+  /// ventas, caja y movimientos.
+  ///
+  /// NO toca catálogos, productos, configuración ni empresa.
+  ///
+  /// Se usa al iniciar sesión en un nuevo día comercial.
+  Future<void> clearDailyData() async {
+    final db = await database;
+
+    await db.transaction((txn) async {
+      final tablas = [
+        'sales',
+        'sale_items',
+        'sale_payments',
+        'cash_registers',
+        'cash_movements',
+      ];
+
+      for (final tabla in tablas) {
+        await txn.delete(tabla);
+      }
+    });
+
+    notifySalesChanged();
+    notifyCashChanged();
+    notifyOperationChanged();
+
+    print('🧹 LocalDb: datos del día limpiados.');
+  }
+
+  /// Purga la cola de sincronización de operaciones antiguas.
+  ///
+  /// Se usa para evitar que la tabla `sync_queue` crezca indefinidamente.
+  ///
+  /// Reglas:
+  /// - Operaciones `synced` con más de 7 días → eliminar
+  /// - Operaciones `failed` con más de 30 días → eliminar
+  /// - Operaciones `failed` con más de 3 intentos → eliminar
+  /// - Máximo 500 registros en la cola → eliminar los más antiguos
+  Future<int> purgeOldSyncQueue() async {
+    final db = await database;
+
+    final now = DateTime.now();
+
+    // 1. Eliminar synced antiguos (>7 días)
+    final syncedCutoff = now
+        .subtract(const Duration(days: 7))
+        .toIso8601String();
+
+    final deletedSynced = await db.delete(
+      'sync_queue',
+      where: "status = 'synced' AND synced_at < ?",
+      whereArgs: [syncedCutoff],
+    );
+
+    // 2. Eliminar failed antiguos (>30 días)
+    final failedCutoff = now
+        .subtract(const Duration(days: 30))
+        .toIso8601String();
+
+    final deletedFailedOld = await db.delete(
+      'sync_queue',
+      where: "status = 'failed' AND created_at < ?",
+      whereArgs: [failedCutoff],
+    );
+
+    // 3. Eliminar failed con más de 3 intentos
+    final deletedFailedRetries = await db.delete(
+      'sync_queue',
+      where: "status = 'failed' AND attempts >= 3",
+    );
+
+    // 4. Si la cola tiene más de 500 registros, eliminar los más antiguos synced
+    final countResult = await db.rawQuery(
+      'SELECT COUNT(*) as total FROM sync_queue',
+    );
+    final total = Sqflite.firstIntValue(countResult) ?? 0;
+
+    var deletedOverflow = 0;
+
+    if (total > 500) {
+      final excess = total - 500;
+
+      deletedOverflow = await db.rawDelete(
+        '''
+            DELETE FROM sync_queue
+            WHERE id IN (
+                SELECT id FROM sync_queue
+                WHERE status = 'synced'
+                ORDER BY synced_at ASC
+                LIMIT ?
+            )
+            ''',
+        [excess],
+      );
+    }
+
+    final deletedTotal =
+        deletedSynced +
+        deletedFailedOld +
+        deletedFailedRetries +
+        deletedOverflow;
+
+    if (deletedTotal > 0) {
+      print(
+        '🧹 Sync Queue purgada: '
+        'synced=$deletedSynced '
+        'failed_old=$deletedFailedOld '
+        'failed_retries=$deletedFailedRetries '
+        'overflow=$deletedOverflow '
+        'total=$deletedTotal',
+      );
+    }
+
+    return deletedTotal;
+  }
+
+  /// Devuelve el conteo de la cola de sincronización por estado.
+  Future<Map<String, int>> getSyncQueueCounts() async {
+    final db = await database;
+
+    final rows = await db.rawQuery(
+      'SELECT status, COUNT(*) as total FROM sync_queue GROUP BY status',
+    );
+
+    return {
+      for (final row in rows) row['status'].toString(): _toInt(row['total']),
+    };
   }
 }

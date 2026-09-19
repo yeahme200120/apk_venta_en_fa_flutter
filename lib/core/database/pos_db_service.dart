@@ -466,6 +466,34 @@ class PosDatabaseService {
     required DateTime businessDate,
   }) async => _cache[_key(companyId, userId, businessDate)]?.isOpen ?? false;
 
+  /// Limpia SOLO los datos operativos del día (ventas, caja, movimientos).
+  ///
+  /// NO elimina el archivo .sqlite.
+  /// Conserva catálogos y productos.
+  ///
+  /// Se usa al iniciar sesión en un nuevo día comercial.
+  Future<void> clearDailyData({
+    required int companyId,
+    required int userId,
+    required DateTime businessDate,
+  }) async {
+    final db = await open(
+      companyId: companyId,
+      userId: userId,
+      businessDate: businessDate,
+    );
+
+    await db.transaction((txn) async {
+      final tablas = ['sales', 'sale_items', 'sale_payments', 'sync_outbox'];
+
+      for (final tabla in tablas) {
+        await txn.delete(tabla);
+      }
+    });
+
+    print('🧹 PosDatabaseService: datos del día limpiados.');
+  }
+
   Future<String> databasePath({
     required int companyId,
     required int userId,

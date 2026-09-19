@@ -9,6 +9,7 @@ import '../database/pos_db_service.dart';
 import '../network/api_client.dart';
 import '../storage/app_storage.dart';
 import 'daily_cleanup_service.dart';
+import 'package:flutter/foundation.dart';
 
 class SyncResult {
   const SyncResult({
@@ -83,12 +84,12 @@ class SyncService {
     try {
       await _historyDb.resetSaleForRetry(saleId);
 
-      print(
+      debugPrint(
         '🔐 Venta histórica $saleId '
         'regresada a pendiente por autenticación.',
       );
     } catch (e) {
-      print(
+      debugPrint(
         '⚠️ No fue posible regresar la venta histórica '
         '$saleId a pendiente: $e',
       );
@@ -143,12 +144,12 @@ class SyncService {
         );
       });
 
-      print(
+      debugPrint(
         '🔐 Outbox $uuidLocal '
         'regresado a queued por autenticación.',
       );
     } catch (e) {
-      print(
+      debugPrint(
         '⚠️ No fue posible regresar outbox $uuidLocal '
         'a queued: $e',
       );
@@ -177,12 +178,12 @@ class SyncService {
         whereArgs: [queueId],
       );
 
-      print(
+      debugPrint(
         '🔐 Sync Queue $queueId '
         'regresada a pending por autenticación.',
       );
     } catch (e) {
-      print(
+      debugPrint(
         '⚠️ No fue posible regresar Sync Queue '
         '$queueId a pending: $e',
       );
@@ -220,7 +221,7 @@ class SyncService {
 
     _automaticSyncStarted = true;
 
-    print('🔄 Sincronización automática iniciada.');
+    debugPrint('🔄 Sincronización automática iniciada.');
 
     unawaited(
       _runAutomaticSync(
@@ -251,7 +252,7 @@ class SyncService {
     required DateTime businessDate,
   }) async {
     if (_running) {
-      print(
+      debugPrint(
         'ℹ️ Sincronización automática omitida: '
         'ya existe una sincronización en curso.',
       );
@@ -260,7 +261,7 @@ class SyncService {
     }
 
     if (await AppStorage().isOfflineSession()) {
-      print(
+      debugPrint(
         'ℹ️ Sincronización automática omitida: '
         'sesión offline.',
       );
@@ -270,7 +271,7 @@ class SyncService {
 
     // 🔐 AUTH
     if (!await _hasAuthenticatedSession()) {
-      print(
+      debugPrint(
         'ℹ️ Sincronización automática omitida: '
         'no existe sesión autenticada.',
       );
@@ -279,7 +280,7 @@ class SyncService {
     }
 
     try {
-      print('🔄 Ejecutando sincronización automática...');
+      debugPrint('🔄 Ejecutando sincronización automática...');
 
       final result = await syncManual(
         companyId: companyId,
@@ -287,7 +288,7 @@ class SyncService {
         businessDate: businessDate,
       );
 
-      print(
+      debugPrint(
         '✅ Sincronización automática finalizada: '
         'total=${result.total} '
         'synced=${result.synced} '
@@ -297,14 +298,14 @@ class SyncService {
     } on AuthenticationException catch (e) {
       // 🔐 AUTH
       // Nunca convertir 401 en failed.
-      print(
+      debugPrint(
         '🔐 Sincronización automática detenida: '
         'sesión no autenticada: $e',
       );
     } catch (e) {
       // La sincronización automática nunca debe cerrar
       // ni bloquear el POS por un error de red.
-      print('⚠️ Error en sincronización automática: $e');
+      debugPrint('⚠️ Error en sincronización automática: $e');
     }
   }
 
@@ -314,7 +315,7 @@ class SyncService {
     _automaticSyncTimer = null;
     _automaticSyncStarted = false;
 
-    print('⏹️ Sincronización automática detenida.');
+    debugPrint('⏹️ Sincronización automática detenida.');
   }
 
   // ============================================================
@@ -350,7 +351,7 @@ class SyncService {
     final token = await storage.getToken();
 
     if (!loggedIn || token == null || token.trim().isEmpty) {
-      print(
+      debugPrint(
         'ℹ️ Sincronización manual omitida: '
         'no existe una sesión autenticada.',
       );
@@ -386,7 +387,7 @@ class SyncService {
 
     // 🔐 AUTH
     if (!await _hasAuthenticatedSession()) {
-      print(
+      debugPrint(
         '🔐 Sincronización omitida: '
         'no existe sesión autenticada.',
       );
@@ -456,7 +457,7 @@ class SyncService {
         }
       }
 
-      print(
+      debugPrint(
         '✅ Sincronización general finalizada: '
         'total=$total '
         'synced=$synced '
@@ -474,7 +475,7 @@ class SyncService {
       // 🔐 AUTH
       // La operación actual ya fue regresada a pending/queued.
       // Se detiene inmediatamente toda la sincronización.
-      print(
+      debugPrint(
         '🔐 Sesión expirada durante sincronización. '
         'Los pendientes permanecen disponibles para reintento.',
       );
@@ -502,7 +503,7 @@ class SyncService {
 
     // 🔐 AUTH
     if (!await _hasAuthenticatedSession()) {
-      print(
+      debugPrint(
         '🔐 No se puede sincronizar venta $saleId: '
         'no existe sesión autenticada.',
       );
@@ -556,12 +557,12 @@ class SyncService {
         'ventas': [venta],
       };
 
-      print(
+      debugPrint(
         '🔄 Sincronizando venta histórica '
         '${sale['uuid_local']}',
       );
 
-      print('📦 Payload: $payload');
+      debugPrint('📦 Payload: $payload');
 
       final response = await _apiClient.syncOffline(payload);
 
@@ -588,7 +589,7 @@ class SyncService {
       // NO usar markSaleSyncFailed().
       // La venta sigue pendiente y podrá reintentarse después
       // de iniciar sesión nuevamente.
-      print(
+      debugPrint(
         '🔐 Sesión expirada sincronizando venta histórica '
         '${sale['uuid_local']}.',
       );
@@ -597,7 +598,7 @@ class SyncService {
 
       rethrow;
     } catch (e) {
-      print(
+      debugPrint(
         '❌ Error sincronizando venta histórica '
         '${sale['uuid_local']}: $e',
       );
@@ -667,7 +668,7 @@ class SyncService {
         );
       }
 
-      print('🔄 Sincronizando outbox $uuid');
+      debugPrint('🔄 Sincronizando outbox $uuid');
 
       final response = await _apiClient.syncOffline(requestPayload);
 
@@ -698,7 +699,7 @@ class SyncService {
       // 🔐 AUTH
       // NO marcar como failed.
       // El outbox vuelve a queued y la venta a pending.
-      print('🔐 Sesión expirada sincronizando outbox $uuid.');
+      debugPrint('🔐 Sesión expirada sincronizando outbox $uuid.');
 
       await _resetDayOutboxForAuthentication(
         companyId: companyId,
@@ -709,7 +710,7 @@ class SyncService {
 
       rethrow;
     } catch (e) {
-      print('❌ Error sincronizando outbox $uuid: $e');
+      debugPrint('❌ Error sincronizando outbox $uuid: $e');
 
       await _dayDb.markOutboxFailed(
         companyId: companyId,
@@ -867,7 +868,7 @@ class SyncService {
         businessDate: businessDate,
       );
     } catch (e) {
-      print(
+      debugPrint(
         '⚠️ No fue posible abrir la base diaria '
         'para resolver productos: $e',
       );
@@ -989,7 +990,7 @@ class SyncService {
 
       final isInventoriable = _extractInventoriable(item, product);
 
-      print(
+      debugPrint(
         '🔎 PRODUCTO VENTA DIARIA '
         'server_id=$serverProductId '
         'local_id=${localProductId > 0 ? localProductId : '-'} '
@@ -1063,12 +1064,12 @@ class SyncService {
     try {
       await _historyDb.applySyncProductMappings(rawMappings);
 
-      print(
+      debugPrint(
         '✅ Mapeos de productos aplicados: '
         '${rawMappings.length}',
       );
     } catch (e) {
-      print(
+      debugPrint(
         '⚠️ No fue posible aplicar los mapeos '
         'producto local/servidor: $e',
       );
@@ -1271,7 +1272,7 @@ class SyncService {
       );
 
       final isInventoriable = _extractInventoriable(item, product);
-      print(
+      debugPrint(
         '🔎 INVENTARIO HISTÓRICO '
         'local_id=$localProductId '
         'server_id=$serverProductId '
@@ -1279,7 +1280,7 @@ class SyncService {
         'historico=${item['is_inventariable'] ?? '-'} '
         'enviado=$isInventoriable',
       );
-      print(
+      debugPrint(
         '🔎 PRODUCTO HISTÓRICO '
         'local_id=$localProductId '
         'server_id=$serverProductId '
@@ -1379,7 +1380,7 @@ class SyncService {
 
     // 🔐 AUTH
     if (!await _hasAuthenticatedSession()) {
-      print(
+      debugPrint(
         '🔐 Sync Queue omitida: '
         'no existe sesión autenticada.',
       );
@@ -1405,7 +1406,7 @@ class SyncService {
     final queue = await _historyDb.getPendingSyncQueue(limit: limit);
 
     if (queue.isEmpty) {
-      print('ℹ️ Sync Queue vacía.');
+      debugPrint('ℹ️ Sync Queue vacía.');
 
       return const SyncResult(total: 0, synced: 0, failed: 0, skipped: 0);
     }
@@ -1462,7 +1463,7 @@ class SyncService {
     skipped += ignored.length;
 
     if (ignored.isNotEmpty) {
-      print(
+      debugPrint(
         '⚠️ Sync Queue: '
         '${ignored.length} operaciones ignoradas '
         'por entity_type no soportado.',
@@ -1548,7 +1549,7 @@ class SyncService {
       }
     }
 
-    print(
+    debugPrint(
       '✅ Sync Queue finalizada: '
       'total=$total '
       'synced=$synced '
@@ -1624,7 +1625,7 @@ class SyncService {
         if (codigo != null && codigo.isNotEmpty) 'codigo': codigo,
       };
 
-      print(
+      debugPrint(
         '🔄 Sync categoría '
         'local=$localId '
         'server='
@@ -1666,7 +1667,7 @@ class SyncService {
         serverReceivedAt: DateTime.now().toIso8601String(),
       );
 
-      print(
+      debugPrint(
         '✅ Categoría sincronizada '
         'local=$localId '
         'server=$resolvedServerId',
@@ -1678,14 +1679,14 @@ class SyncService {
       // NO marcar como failed.
       await _resetSyncQueueItemForAuthentication(queueId);
 
-      print(
+      debugPrint(
         '🔐 Sesión expirada sincronizando categoría '
         '${item['uuid_local']}.',
       );
 
       rethrow;
     } catch (e) {
-      print(
+      debugPrint(
         '❌ Error sincronizando categoría '
         '${item['uuid_local']}: $e',
       );
@@ -1814,7 +1815,7 @@ class SyncService {
         if (categoryServerId != null) 'categoria_id': categoryServerId,
       };
 
-      print(
+      debugPrint(
         '🔄 Sync producto '
         'local=$localId '
         'server='
@@ -1824,7 +1825,7 @@ class SyncService {
         '${categoryServerId ?? '-'}',
       );
 
-      print(
+      debugPrint(
         '📤 PRODUCT PAYLOAD '
         'local=$localId: '
         '${jsonEncode(serverPayload)}',
@@ -1858,7 +1859,7 @@ class SyncService {
         serverReceivedAt: DateTime.now().toIso8601String(),
       );
 
-      print(
+      debugPrint(
         '✅ Producto sincronizado '
         'local=$localId '
         'server=$resolvedServerId',
@@ -1870,14 +1871,14 @@ class SyncService {
       // NO marcar como failed.
       await _resetSyncQueueItemForAuthentication(queueId);
 
-      print(
+      debugPrint(
         '🔐 Sesión expirada sincronizando producto '
         '${item['uuid_local']}.',
       );
 
       rethrow;
     } catch (e) {
-      print(
+      debugPrint(
         '❌ Error sincronizando producto '
         '${item['uuid_local']}: $e',
       );
@@ -1955,7 +1956,7 @@ class SyncService {
             mensaje.toLowerCase().contains('ya existe una caja abierta');
 
         if (esConflictoDeApertura) {
-          print(
+          debugPrint(
             'ℹ️ Caja local $localId ya está abierta en backend. Vinculando...',
           );
 
@@ -1996,7 +1997,7 @@ class SyncService {
                 serverReceivedAt: DateTime.now().toIso8601String(),
               );
 
-              print('✅ Caja local $localId vinculada a server_id $serverId.');
+              debugPrint('✅ Caja local $localId vinculada a server_id $serverId.');
               return true;
             }
           } catch (_) {}
@@ -2008,7 +2009,7 @@ class SyncService {
       await _resetSyncQueueItemForAuthentication(queueId);
       rethrow;
     } catch (e) {
-      print('❌ Error sincronizando apertura de caja: $e');
+      debugPrint('❌ Error sincronizando apertura de caja: $e');
       await _historyDb.markSyncQueueFailed(queueId, errorMessage: e.toString());
       return false;
     }
@@ -2063,7 +2064,7 @@ class SyncService {
       await _resetSyncQueueItemForAuthentication(queueId);
       rethrow;
     } catch (e) {
-      print('❌ Error sincronizando cierre de caja: $e');
+      debugPrint('❌ Error sincronizando cierre de caja: $e');
       await _historyDb.markSyncQueueFailed(queueId, errorMessage: e.toString());
       return false;
     }
@@ -2149,7 +2150,7 @@ class SyncService {
       await _resetSyncQueueItemForAuthentication(queueId);
       rethrow;
     } catch (e) {
-      print('❌ Error sincronizando movimiento de caja: $e');
+      debugPrint('❌ Error sincronizando movimiento de caja: $e');
       await _historyDb.markSyncQueueFailed(queueId, errorMessage: e.toString());
       return false;
     }
@@ -2274,104 +2275,151 @@ class SyncService {
   // ============================================================
 
   Future<Map<String, dynamic>> syncPull() async {
-    final cursor = await _historyDb.getCatalogCursor('server_changes');
+    // ✅ CAMBIO: esperar si hay una sincronización en curso.
+    //
+    // Esto evita que syncPull purgue catálogos mientras
+    // syncPendingSales está usando categorías/productos locales.
+    while (_running) {
+      await Future.delayed(const Duration(milliseconds: 200));
+    }
 
-    print(
-      '⬇️ Iniciando SYNC PULL '
-      'cursor=${cursor ?? 'SIN_CURSOR'}',
-    );
+    _running = true;
 
-    // 🔐 AUTH
-    // AuthenticationException se propaga intencionalmente.
-    // No se convierte en un error genérico porque el cursor NO
-    // debe avanzar cuando la sesión expiró.
-    final response = await _apiClient.syncPull(cursor: cursor);
+    try {
+      final cursor = await _historyDb.getCatalogCursor('server_changes');
 
-    print('⬇️ SYNC PULL recibido.');
+      debugPrint(
+        '⬇️ Iniciando SYNC PULL '
+        'cursor=${cursor ?? 'SIN_CURSOR'}',
+      );
 
-    final cambios = response['cambios'];
+      // 🔐 AUTH
+      // AuthenticationException se propaga intencionalmente.
+      // No se convierte en un error genérico porque el cursor NO
+      // debe avanzar cuando la sesión expiró.
+      final response = await _apiClient.syncPull(cursor: cursor);
 
-    final tombstones = response['tombstones'];
+      debugPrint('⬇️ SYNC PULL recibido.');
 
-    final serverData = <String, dynamic>{};
+      final cambios = response['cambios'];
 
-    List<Map<String, dynamic>> ventas = <Map<String, dynamic>>[];
+      final tombstones = response['tombstones'];
 
-    if (cambios is Map) {
-      final cambiosMap = Map<String, dynamic>.from(cambios);
+      final serverData = <String, dynamic>{};
 
-      final rawVentas = cambiosMap.remove('ventas');
+      List<Map<String, dynamic>> ventas = <Map<String, dynamic>>[];
 
-      if (rawVentas is List) {
-        ventas = rawVentas
-            .whereType<Map>()
-            .map((item) => Map<String, dynamic>.from(item))
-            .where((venta) => _serverSaleUuid(venta).isNotEmpty)
-            .toList();
+      if (cambios is Map) {
+        final cambiosMap = Map<String, dynamic>.from(cambios);
+
+        final rawVentas = cambiosMap.remove('ventas');
+
+        if (rawVentas is List) {
+          ventas = rawVentas
+              .whereType<Map>()
+              .map((item) => Map<String, dynamic>.from(item))
+              .where((venta) => _serverSaleUuid(venta).isNotEmpty)
+              .toList();
+        }
+
+        serverData.addAll(cambiosMap);
+        final empresa = cambiosMap['empresa'];
+
+        debugPrint('🏢 EMPRESA RECIBIDA EN SYNC: $empresa');
       }
 
-      serverData.addAll(cambiosMap);
-      final empresa = cambiosMap['empresa'];
-
-      print('🏢 EMPRESA RECIBIDA EN SYNC: $empresa');
-    }
-
-    print(
-      '⬇️ Ventas recibidas del servidor: '
-      '${ventas.length}',
-    );
-
-    if (tombstones != null) {
-      serverData['tombstones'] = tombstones;
-    }
-
-    if (serverData.isNotEmpty) {
-      await _historyDb.syncCatalogs(serverData);
-    }
-
-    // ==========================================================
-    // 🔴 DETECTAR CAMBIO DE DÍA COMERCIAL DESDE EL PULL
-    // ==========================================================
-    //
-    // El pull de Laravel trae la empresa actualizada. Si su
-    // business_date cambió, hay que hacer el cleanup igual que
-    // en el login.
-    //
-    try {
-      await _maybeCleanupOnBusinessDateChange();
-    } catch (e) {
-      print('⚠️ Cleanup por syncPull falló: $e');
-    }
-
-    final empresaLocal = await _historyDb.getCompany();
-
-    print('🏢 EMPRESA LOCAL: $empresaLocal');
-
-    if (ventas.isNotEmpty) {
-      await _upsertServerSales(ventas);
-    }
-
-    final nextCursor =
-        response['next_cursor']?.toString() ?? response['cursor']?.toString();
-
-    if (nextCursor != null && nextCursor.isNotEmpty) {
-      await _historyDb.setCatalogVersion(
-        'server_changes',
-        null,
-        cursor: nextCursor,
+      debugPrint(
+        '⬇️ Ventas recibidas del servidor: '
+        '${ventas.length}',
       );
 
-      print(
-        '✅ Cursor actualizado: '
-        '$nextCursor',
-      );
+      if (tombstones != null) {
+        serverData['tombstones'] = tombstones;
+      }
+
+      // ==========================================================
+      // DETECTAR CAMBIO DE EMPRESA ANTES DE APLICAR EL CATÁLOGO
+      // ==========================================================
+      //
+      // Si la empresa que viene en el pull es distinta a la local,
+      // marcamos la bandera para que syncCatalogs purgue TODO
+      // (catálogos + ventas + cajas + sync_queue) en la próxima
+      // ejecución.
+      //
+      // Este bloque debe ir AQUÍ, no en syncCatalogs, porque
+      // syncCatalogs se alimenta del endpoint /catalogos, que no
+      // incluye el bloque 'empresa'.
+      if (serverData['empresa'] is Map) {
+        final empresaNueva = Map<String, dynamic>.from(
+          serverData['empresa'] as Map,
+        );
+        final nuevoId = _toInt(empresaNueva['id']);
+
+        if (nuevoId > 0) {
+          final empresaLocal = await _historyDb.getCompany();
+          final localId = _toInt(empresaLocal?['id']);
+
+          if (localId > 0 && localId != nuevoId) {
+            debugPrint(
+              '🔄 Cambio de empresa detectado: $localId → $nuevoId. '
+              'Marcando purga total.',
+            );
+
+            await AppStorage().markCatalogPurgePending();
+          }
+        }
+      }
+
+      if (serverData.isNotEmpty) {
+        await _historyDb.syncCatalogs(serverData);
+      }
+
+      // ==========================================================
+      // 🔴 DETECTAR CAMBIO DE DÍA COMERCIAL DESDE EL PULL
+      // ==========================================================
+      //
+      // El pull de Laravel trae la empresa actualizada. Si su
+      // business_date cambió, hay que hacer el cleanup igual que
+      // en el login.
+      //
+      try {
+        await _maybeCleanupOnBusinessDateChange();
+      } catch (e) {
+        debugPrint('⚠️ Cleanup por syncPull falló: $e');
+      }
+
+      final empresaLocal = await _historyDb.getCompany();
+
+      debugPrint('🏢 EMPRESA LOCAL: $empresaLocal');
+
+      if (ventas.isNotEmpty) {
+        await _upsertServerSales(ventas);
+      }
+
+      final nextCursor =
+          response['next_cursor']?.toString() ?? response['cursor']?.toString();
+
+      if (nextCursor != null && nextCursor.isNotEmpty) {
+        await _historyDb.setCatalogVersion(
+          'server_changes',
+          null,
+          cursor: nextCursor,
+        );
+
+        debugPrint(
+          '✅ Cursor actualizado: '
+          '$nextCursor',
+        );
+      }
+
+      debugPrint('✅ SYNC PULL finalizado.');
+
+      LocalDb.notifyAllChanged();
+
+      return response;
+    } finally {
+      _running = false;
     }
-
-    print('✅ SYNC PULL finalizado.');
-
-    LocalDb.notifyAllChanged();
-
-    return response;
   }
 
   // ============================================================
@@ -2433,7 +2481,7 @@ class SyncService {
 
     final previousDate = await storage.getServerBusinessDateKey();
 
-    print(
+    debugPrint(
       '🔄 syncPull detectó cambio de día: '
       '$previousDate → $remoteDate',
     );
@@ -2448,7 +2496,7 @@ class SyncService {
         businessDate: previousParsed,
       );
     } catch (e) {
-      print('⚠️ Sync del día anterior falló: $e');
+      debugPrint('⚠️ Sync del día anterior falló: $e');
     }
 
     try {
@@ -2458,7 +2506,7 @@ class SyncService {
         businessDate: previousParsed,
       );
     } catch (e) {
-      print('⚠️ Archivar pendientes falló: $e');
+      debugPrint('⚠️ Archivar pendientes falló: $e');
     }
 
     try {
@@ -2468,7 +2516,7 @@ class SyncService {
         businessDate: previousParsed,
       );
     } catch (e) {
-      print('⚠️ Borrar base vieja falló: $e');
+      debugPrint('⚠️ Borrar base vieja falló: $e');
     }
 
     await storage.saveServerBusinessDate(remoteDate);
@@ -2493,7 +2541,7 @@ class SyncService {
     }
 
     if (uniqueSales.isEmpty) {
-      print(
+      debugPrint(
         'ℹ️ No existen ventas válidas '
         'para aplicar.',
       );
@@ -2525,7 +2573,7 @@ class SyncService {
       }
     });
 
-    print(
+    debugPrint(
       '✅ Ventas servidor aplicadas: '
       'insertadas=$inserted '
       'actualizadas=$updated '
@@ -2560,7 +2608,7 @@ class SyncService {
       final localId = _toInt(localSale['id']);
 
       if (_isLocalSalePending(localSale)) {
-        print(
+        debugPrint(
           '⚠️ Venta $uuid '
           'pendiente localmente. '
           'No se sobrescribe.',
@@ -3043,7 +3091,7 @@ class SyncService {
 
     final result = _toBool(value, defaultValue: true);
 
-    print(
+    debugPrint(
       '🔎 INVENTARIO PRODUCTO '
       'actual=${product?['is_inventariable'] ?? '-'} '
       'historico=${item is Map ? (item['is_inventariable'] ?? '-') : '-'} '
@@ -3227,5 +3275,43 @@ class SyncService {
     }
 
     return 'Otro';
+  }
+
+  /// Sincroniza los pendientes y, si fallan 3 veces, los mueve al respaldo.
+  ///
+  /// Se ejecuta:
+  /// - Al iniciar sesión
+  /// - Cada vez que se recupera conexión
+  /// - Al cambiar de día comercial
+  ///
+  /// No genera ciclo infinito: después de 3 intentos fallidos, purga.
+  Future<SyncResult> syncAndArchive({
+    required int companyId,
+    required int userId,
+    required DateTime businessDate,
+  }) async {
+    // 1. Sincronización normal
+    final result = await syncPendingSales(
+      companyId: companyId,
+      userId: userId,
+      businessDate: businessDate,
+    );
+
+    // 2. Si hay fallos, marcar como failed y dejar que la purga actúe
+    if (result.failed > 0) {
+      debugPrint(
+        '⚠️ ${result.failed} operaciones fallidas. '
+        'La purga automática las eliminará después de 3 intentos.',
+      );
+    }
+
+    // 3. Purgar cola antigua
+    try {
+      await _historyDb.purgeOldSyncQueue();
+    } catch (e) {
+      debugPrint('⚠️ No se pudo purgar la cola: $e');
+    }
+
+    return result;
   }
 }

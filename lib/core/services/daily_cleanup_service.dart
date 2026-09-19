@@ -1,8 +1,6 @@
-import 'dart:io';
-
 import 'package:flutter/foundation.dart';
-import 'package:path_provider/path_provider.dart';
 
+import '../database/local_db.dart';
 import '../database/pos_db_service.dart';
 import 'sync_service.dart';
 
@@ -15,83 +13,88 @@ import 'sync_service.dart';
 ///   2. Archivar lo que no se pudo sincronizar en LocalDb (histórico).
 ///   3. Borrar la base diaria vieja.
 ///   4. Los pendientes archivados se reintentan en cada sync hasta
-///      quedar `synced`.
+///      quedar `synced` o ser purgados por antigüedad.
 class DailyCleanupService {
   final PosDatabaseService _dayDb;
   final SyncService _syncService;
+  final LocalDb _historyDb;
 
   DailyCleanupService({
     PosDatabaseService? dayDb,
     SyncService? syncService,
+    LocalDb? historyDb,
   })  : _dayDb = dayDb ?? PosDatabaseService(),
-        _syncService = syncService ?? SyncService();
+        _syncService = syncService ?? SyncService(),
+        _historyDb = historyDb ?? LocalDb();
 
-  Future<int> archiveAndClearDailyDatabase({
+  /// Archiva pendientes, limpia datos del día y NO toca catálogos.
+  Future<void> archiveAndClearDailyDatabase({
     required int companyId,
     required int userId,
     required DateTime businessDate,
   }) async {
-    debugPrint(
-      '🧹 Iniciando cleanup de día ${businessDate.toIso8601String()}',
-    );
-
-    // 1. Sincronizar lo pendiente contra el servidor.
+    // 1. Sincronizar pendientes del día anterior
     try {
-      final result = await _syncService.syncManual(
+      await _syncService.syncManual(
         companyId: companyId,
         userId: userId,
         businessDate: businessDate,
       );
+    } catch (e) {
+      debugPrint('⚠️ Sync del día anterior falló: $e');
+    }
 
-      debugPrint(
-        '🧹 Sync previo: '
-        'synced=${result.synced} failed=${result.failed}',
+    // 2. Archivar pendientes que no se sincronizaron
+    try {
+      await _syncService.archivePendingSalesFromDay(
+        companyId: companyId,
+        userId: userId,
+        businessDate: businessDate,
       );
     } catch (e) {
-      debugPrint(
-        '🧹 Sync previo falló (seguimos): $e',
+      debugPrint('⚠️ Archivar pendientes falló: $e');
+    }
+
+    // 3. Limpiar SOLO datos operativos del día
+    try {
+      await _dayDb.clearDailyData(
+        companyId: companyId,
+        userId: userId,
+        businessDate: businessDate,
       );
+    } catch (e) {
+      debugPrint('⚠️ Limpiar datos del día falló: $e');
     }
 
-    // 2. Archivar pendientes en LocalDb (histórico).
-    final pending = await _syncService.archivePendingSalesFromDay(
-      companyId: companyId,
-      userId: userId,
-      businessDate: businessDate,
-    );
-
-    debugPrint('🧹 Pendientes archivados en LocalDb: $pending');
-
-    // 3. Borrar la base diaria vieja.
-    final root = await getApplicationDocumentsDirectory();
-    final date = businessDate.toIso8601String().substring(0, 10);
-    final file = File(
-      '${root.path}/app-data/companies/$companyId/users/$userId/pos_day_$date.sqlite',
-    );
-
-    if (await file.exists()) {
-      debugPrint('🧹 Borrando base diaria: ${file.path}');
+    // 4. Eliminar el archivo .sqlite del día anterior
+    try {
+      await _dayDb.deleteDatabaseFile(
+        companyId: companyId,
+        userId: userId,
+        businessDate: businessDate,
+      );
+    } catch (e) {
+      debugPrint('⚠️ Borrar archivo .sqlite falló: $e');
     }
 
-    await _dayDb.deleteDatabaseFile(
-      companyId: companyId,
-      userId: userId,
-      businessDate: businessDate,
-    );
-
-    debugPrint('🧹 Cleanup finalizado.');
-
-    return pending;
+    // 5. Purgar la cola de sync antigua
+    try {
+      await _historyDb.purgeOldSyncQueue();
+    } catch (e) {
+      debugPrint('⚠️ Purga de cola falló: $e');
+    }
   }
 
   Future<int> prepareNewBusinessDay({
     required int companyId,
     required int userId,
     required DateTime businessDate,
-  }) =>
-      archiveAndClearDailyDatabase(
-        companyId: companyId,
-        userId: userId,
-        businessDate: businessDate,
-      );
+  }) async {
+    await archiveAndClearDailyDatabase(
+      companyId: companyId,
+      userId: userId,
+      businessDate: businessDate,
+    );
+    return 0;
+  }
 }
