@@ -771,4 +771,168 @@ class AppStorage {
     // - license_snapshot
     // - ticket_config
   }
+
+  // ============================================================
+  // CERRAR SESIÓN PARA LIMPIEZA DE DATOS DEL DÍA
+  // ============================================================
+  //
+  // A diferencia de logOut(), este método:
+  //
+  //   • Borra TODO lo relacionado a la sesión actual y a la
+  //     empresa:
+  //       - token
+  //       - user_id, empresa_id
+  //       - user_name, company_name
+  //       - role
+  //       - is_logged_in
+  //       - server_business_date (fecha comercial)
+  //       - operation_state
+  //       - requires_password_change
+  //       - CREDENCIALES OFFLINE (offline_identifier,
+  //         offline_password, offline_day_valid)
+  //       - last_online_user_id, last_online_empresa_id,
+  //         last_online_at
+  //       - catalog_purge_pending
+  //
+  //   • PRESERVA únicamente:
+  //       - license_snapshot (tipo, fechas, activa)
+  //       - ticket_config (config global del dispositivo)
+  //       - terms_accepted_user_* (consentimiento por titular)
+  //
+  // Tras esta llamada, cualquier flujo de auto-login offline
+  // queda sin datos y la app DEBE mostrar el LoginScreen.
+  //
+  // Se usa exclusivamente en "Limpiar datos del día".
+  Future<void> logOutForCleanup() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    // --------------------------------------------------------
+    // 1. Sesión activa
+    // --------------------------------------------------------
+    await prefs.remove(_tokenKey);
+    await prefs.remove(_userIdKey);
+    await prefs.remove(_empresaIdKey);
+    await prefs.remove(_userNameKey);
+    await prefs.remove(_companyNameKey);
+    await prefs.remove(_roleKey);
+    await prefs.remove(_loggedKey);
+
+    // --------------------------------------------------------
+    // 2. Fecha comercial y estado operativo
+    // --------------------------------------------------------
+    await prefs.remove(_businessDateKey);
+    await prefs.remove(_operationStateKey);
+
+    // --------------------------------------------------------
+    // 3. Marca de cambio de contraseña
+    // --------------------------------------------------------
+    await prefs.remove(_requiresPasswordChangeKey);
+
+    // --------------------------------------------------------
+    // 4. Credenciales offline (evita auto-login)
+    // --------------------------------------------------------
+    await prefs.remove(_offlineIdentifierKey);
+    await prefs.remove(_offlinePasswordKey);
+    await prefs.remove(_lastOnlineUserIdKey);
+    await prefs.remove(_lastOnlineEmpresaIdKey);
+    await prefs.remove(_lastOnlineAtKey);
+    await prefs.remove(_offlineDayValidKey);
+
+    // --------------------------------------------------------
+    // 5. Purga pendiente de catálogo
+    // --------------------------------------------------------
+    await prefs.remove(_catalogPurgePendingKey);
+
+    // --------------------------------------------------------
+    // 6. NO tocamos:
+    // --------------------------------------------------------
+    //
+    //   • _licenseSnapshotKey   → licencia del dispositivo
+    //   • _ticketConfigKey      → config del ticket global
+    //   • terms_accepted_user_* → consentimiento T&C
+  }
+  // ============================================================
+  // TÉRMINOS Y CONDICIONES (POR USUARIO)
+  // ============================================================
+  //
+  // El consentimiento de los T&C es POR TITULAR, no por app.
+  // Cada usuario que se registra en este dispositivo tiene su
+  // propio flag, guardado con la fecha exacta de aceptación.
+  //
+  // Esto cumple con el principio de consentimiento informado
+  // del titular de los datos (no del dispositivo).
+  //
+  // Se guarda:
+  //   terms_accepted_user_{userId}         → bool
+  //   terms_accepted_user_{userId}_at      → ISO8601 (auditoría)
+  //   terms_accepted_user_{userId}_version → versión del texto
+
+  /// Marca que el usuario indicado aceptó los términos.
+  ///
+  /// [userId] debe ser > 0. Si es <= 0, la llamada no hace nada.
+  Future<void> markTermsAccepted(int userId) async {
+    if (userId <= 0) {
+      debugPrint('⚠️ markTermsAccepted: userId inválido ($userId)');
+      return;
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+
+    await prefs.setBool('terms_accepted_user_$userId', true);
+
+    await prefs.setString(
+      'terms_accepted_user_${userId}_at',
+      DateTime.now().toIso8601String(),
+    );
+
+    await prefs.setString(
+      'terms_accepted_user_${userId}_version',
+      '2026-09-19',
+    );
+  }
+
+  /// Devuelve true si el usuario indicado ya aceptó los términos
+  /// en este dispositivo.
+  Future<bool> hasAcceptedTerms(int userId) async {
+    if (userId <= 0) return false;
+
+    final prefs = await SharedPreferences.getInstance();
+
+    return prefs.getBool('terms_accepted_user_$userId') ?? false;
+  }
+
+  /// Devuelve la fecha en que el usuario aceptó los términos.
+  /// Útil para auditoría.
+  Future<String?> getTermsAcceptedAt(int userId) async {
+    if (userId <= 0) return null;
+
+    final prefs = await SharedPreferences.getInstance();
+
+    return prefs.getString('terms_accepted_user_${userId}_at');
+  }
+
+  /// Devuelve la versión del texto que el usuario aceptó.
+  Future<String?> getTermsAcceptedVersion(int userId) async {
+    if (userId <= 0) return null;
+
+    final prefs = await SharedPreferences.getInstance();
+
+    return prefs.getString('terms_accepted_user_${userId}_version');
+  }
+
+  /// Borra la aceptación del usuario indicado.
+  ///
+  /// Se usa:
+  ///   • Al cerrar sesión (opcional, si quieres forzar re-aceptación).
+  ///   • Para pruebas manuales.
+  ///   • Al actualizar los T&C a una versión que requiere re-aceptación.
+  Future<void> clearTermsAccepted(int userId) async {
+    if (userId <= 0) return;
+
+    final prefs = await SharedPreferences.getInstance();
+
+    await prefs.remove('terms_accepted_user_$userId');
+    await prefs.remove('terms_accepted_user_${userId}_at');
+    await prefs.remove('terms_accepted_user_${userId}_version');
+  }
 }

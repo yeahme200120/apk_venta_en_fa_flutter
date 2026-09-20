@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../core/database/local_db.dart';
 import '../../core/database/pos_db_service.dart';
 import '../../core/models/sale_model.dart';
+import '../../core/services/sync_orchestrator.dart';
 import '../../core/services/sync_service.dart';
 import '../../core/storage/app_storage.dart';
 // [LICENCIA-OFFLINE] Import para evaluar el estado de licencia
@@ -12,6 +13,8 @@ import '../../core/storage/app_storage.dart';
 import '../../core/services/license_service.dart';
 import '../ventas/sale_detail_screen.dart';
 import '../widgets/app_scaffold.dart';
+import '../widgets/sync_progress_dialog.dart';
+import '../widgets/sync_result_dialog.dart';
 
 // ============================================================
 // PANTALLA PRINCIPAL
@@ -47,12 +50,12 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   LicenseState? _licenseState;
 
   // ============================================================
-  // COLORES SEMÁNTICOS DE ESTADO
+  // COLORES SEMÁNTICOS DE ESTADO (dinámicos desde el tema)
   // ============================================================
 
-  static const Color _colorPaid = Color(0xFF4CAF50);
-  static const Color _colorPending = Color(0xFFFF9800);
-  static const Color _colorCancelled = Color(0xFFE53935);
+  Color _colorPaid(ColorScheme cs) => cs.primary;
+  Color _colorPending(ColorScheme cs) => cs.tertiary;
+  Color _colorCancelled(ColorScheme cs) => cs.error;
 
   // ============================================================
   // ESTADO DEL DÍA
@@ -450,8 +453,7 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
           (hUpdated != null &&
               cUpdated != null &&
               hUpdated.isAtSameMomentAs(cUpdated))) {
-        if ((sale['sync_status']?.toString().toLowerCase() ?? '') ==
-                'synced' &&
+        if ((sale['sync_status']?.toString().toLowerCase() ?? '') == 'synced' &&
             (current['sync_status']?.toString().toLowerCase() ?? '') !=
                 'synced') {
           unique[uuid] = sale;
@@ -459,13 +461,10 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
       }
     }
 
-    // ------------------------------------------------------------
-    // FILTRO POR RANGO
-    // ------------------------------------------------------------
-    // Si una venta no tiene fecha parseable, se DESCARTA.
-    // (Antes se incluía por defecto y colaba ventas viejas).
     final result = unique.values.where((s) {
-      DateTime? dt = _dateValue(s['created_at']);
+      // ✅ FIX: business_date primero (fecha comercial del servidor).
+      DateTime? dt = _dateValue(s['business_date']);
+      dt ??= _dateValue(s['created_at']);
       dt ??= _dateValue(s['paid_at']);
 
       if (dt == null) {
@@ -529,7 +528,7 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   }
 
   Future<Map<String, List<Map<String, dynamic>>>>
-      _loadTopProductosPorDia() async {
+  _loadTopProductosPorDia() async {
     try {
       return await _historyDb.getTopProductsByDayLocal(
         desde: _fechaInicio,
@@ -587,10 +586,10 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
       final ventasPorDia = <Map<String, dynamic>>[];
 
       for (final s in activas) {
-        // ⚠️ Usar la fecha LOCAL del created_at/paid_at para
-        // agrupar por día, no substring(0, 10) sobre UTC.
-        final dt =
-            _dateValue(s['created_at']) ?? _dateValue(s['paid_at']);
+        // ✅ FIX: business_date primero.
+        DateTime? dt = _dateValue(s['business_date']);
+        dt ??= _dateValue(s['created_at']);
+        dt ??= _dateValue(s['paid_at']);
 
         if (dt == null) continue;
 
@@ -613,8 +612,7 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
               (ventasPorDia[index]['cantidad'] as int) + 1;
 
           ventasPorDia[index]['total'] =
-              (ventasPorDia[index]['total'] as double) +
-                  _toDouble(s['total']);
+              (ventasPorDia[index]['total'] as double) + _toDouble(s['total']);
         }
       }
 
@@ -674,7 +672,9 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
       for (final raw in all) {
         final s = Map<String, dynamic>.from(raw);
 
-        DateTime? dt = _dateValue(s['created_at']);
+        // ✅ FIX: business_date primero.
+        DateTime? dt = _dateValue(s['business_date']);
+        dt ??= _dateValue(s['created_at']);
         dt ??= _dateValue(s['paid_at']);
 
         if (dt == null) {
@@ -723,6 +723,10 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
     }
   }
 
+  // ============================================================
+  // SINCRONIZAR (orquestador único, con diálogos)
+  // ============================================================
+
   Future<void> _syncNow() async {
     if (!mounted || _syncing) return;
 
@@ -730,22 +734,88 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
     // Es una operación que SUBE datos al servidor. Bloquearla
     // dejaría ventas pendientes varadas si la licencia vence.
 
+    final companyId = await AppStorage().getEmpresaId() ?? 0;
+    final userId = await AppStorage().getUserId() ?? 0;
+
+    if (companyId <= 0 || userId <= 0) {
+      _showMessage(
+        'No existe una sesión válida para sincronizar.',
+        isError: true,
+      );
+      return;
+    }
+
+    final businessDate = _businessDate;
+
+    if (!mounted) return;
+
     setState(() => _syncing = true);
 
+    final progressNotifier = ValueNotifier<String>(
+      'Iniciando sincronización...',
+    );
+
+    NavigatorState? progressNavigator;
+
+    unawaited(
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) {
+          progressNavigator = Navigator.of(ctx, rootNavigator: true);
+
+          return SyncProgressDialog(progressNotifier: progressNotifier);
+        },
+      ),
+    );
+
+    await Future.delayed(const Duration(milliseconds: 120));
+
     try {
-      await _syncUploadThenPull();
+      final report = await SyncOrchestrator().syncAll(
+        companyId: companyId,
+        userId: userId,
+        businessDate: businessDate,
+        onProgress: (stage, message) {
+          progressNotifier.value = message;
+        },
+      );
 
-      if (mounted) await _loadStats();
+      if (progressNavigator != null && progressNavigator!.canPop()) {
+        progressNavigator!.pop();
+      }
 
-      if (mounted) _showMessage('Sincronización completada.');
+      progressNotifier.dispose();
+
+      if (!mounted) return;
+
+      await showSyncResultDialog(
+        context,
+        report: report,
+        onRetry: () => _syncNow(),
+      );
+
+      if (mounted) {
+        await _loadStats();
+      }
     } catch (error) {
+      if (progressNavigator != null && progressNavigator!.canPop()) {
+        progressNavigator!.pop();
+      }
+
+      progressNotifier.dispose();
+
       if (mounted) {
         _showMessage('No fue posible sincronizar: $error', isError: true);
       }
     } finally {
-      if (mounted) setState(() => _syncing = false);
+      if (mounted) {
+        setState(() => _syncing = false);
+      }
 
-      await _refreshSilently();
+      if (mounted) {
+        await _refreshSilently();
+      }
     }
   }
 
@@ -818,15 +888,15 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   // ============================================================
 
   Iterable<Map<String, dynamic>> get _activeSales => _sales.where((s) {
-        final raw = (s['status'] ?? '').toString().trim().toLowerCase();
+    final raw = (s['status'] ?? '').toString().trim().toLowerCase();
 
-        return raw != 'cancelled' &&
-            raw != 'canceled' &&
-            raw != 'cancelado' &&
-            raw != 'cancelada' &&
-            raw != 'anulado' &&
-            raw != 'anulada';
-      });
+    return raw != 'cancelled' &&
+        raw != 'canceled' &&
+        raw != 'cancelado' &&
+        raw != 'cancelada' &&
+        raw != 'anulado' &&
+        raw != 'anulada';
+  });
 
   double get _totalVentas =>
       _activeSales.fold(0.0, (sum, s) => sum + _toDouble(s['total']));
@@ -1013,7 +1083,8 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
 
   Widget _buildLicenciaBloqueadaBanner(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    final mensaje = _licenseState?.mensaje ??
+    final mensaje =
+        _licenseState?.mensaje ??
         'Tu licencia está vencida. Inicia sesión con Internet para '
             'reactivar.';
 
@@ -1068,8 +1139,8 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   }
 
   Widget _buildLicenciaSinSnapshotBanner(BuildContext context) {
-    const amber = Color(0xFFB45309);
     final colorScheme = Theme.of(context).colorScheme;
+    final amber = colorScheme.tertiary;
 
     return Container(
       width: double.infinity,
@@ -1088,7 +1159,7 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
               color: amber.withAlpha(30),
               borderRadius: BorderRadius.circular(11),
             ),
-            child: const Icon(
+            child: Icon(
               Icons.warning_amber_rounded,
               color: amber,
               size: 22,
@@ -1099,7 +1170,7 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
+                Text(
                   'Sin información de licencia',
                   style: TextStyle(
                     fontWeight: FontWeight.w800,
@@ -1127,10 +1198,11 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
   }
 
   Widget _buildLicenciaGraciaBanner(BuildContext context) {
-    final orange = Colors.orange.shade800;
     final colorScheme = Theme.of(context).colorScheme;
+    final orange = colorScheme.tertiary;
 
-    final mensaje = _licenseState?.mensaje ??
+    final mensaje =
+        _licenseState?.mensaje ??
         'Tu licencia está vencida. Regulariza antes de que se bloquee.';
 
     return Container(
@@ -1150,11 +1222,7 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
               color: orange.withAlpha(30),
               borderRadius: BorderRadius.circular(11),
             ),
-            child: Icon(
-              Icons.warning_amber_rounded,
-              color: orange,
-              size: 22,
-            ),
+            child: Icon(Icons.warning_amber_rounded, color: orange, size: 22),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -1192,6 +1260,8 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
     return AppScaffold(
       title: _companyName.isNotEmpty
           ? _companyName.toUpperCase()
@@ -1201,12 +1271,12 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
           tooltip: 'Sincronizar',
           onPressed: _syncing ? null : _syncNow,
           icon: _syncing
-              ? const SizedBox(
+              ? SizedBox(
                   width: 20,
                   height: 20,
                   child: CircularProgressIndicator(
                     strokeWidth: 2,
-                    color: Colors.white,
+                    color: cs.onPrimary,
                   ),
                 )
               : const Icon(Icons.sync),
@@ -1220,8 +1290,8 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
       tabView: TabBarView(
         controller: _tabController,
         children: [
-          _buildDayTab(Theme.of(context).colorScheme),
-          _buildMonthTab(Theme.of(context).colorScheme),
+          _buildDayTab(cs),
+          _buildMonthTab(cs),
         ],
       ),
     );
@@ -2126,7 +2196,7 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
 
     final total = _toDouble(sale['total']);
     final method = _metodoVenta(sale);
-    final statusColor = _statusColor(sale);
+    final statusColor = _statusColor(sale, cs);
     final statusLabel = _statusLabel(sale);
     final fechaHora = _formatDateTime(sale['created_at']?.toString());
 
@@ -2296,15 +2366,15 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
     return raw.isEmpty ? '—' : raw;
   }
 
-  Color _statusColor(Map<String, dynamic> sale) {
+  Color _statusColor(Map<String, dynamic> sale, ColorScheme cs) {
     final raw = (sale['status'] ?? '').toString().trim().toLowerCase();
 
     if (raw == 'paid' || raw == 'pagado' || raw == 'pagada') {
-      return _colorPaid;
+      return _colorPaid(cs);
     }
 
     if (raw == 'pending' || raw == 'pendiente') {
-      return _colorPending;
+      return _colorPending(cs);
     }
 
     if (raw == 'cancelled' ||
@@ -2313,10 +2383,10 @@ class _DailyStatsScreenState extends State<DailyStatsScreen>
         raw == 'cancelada' ||
         raw == 'anulado' ||
         raw == 'anulada') {
-      return _colorCancelled;
+      return _colorCancelled(cs);
     }
 
-    return Theme.of(context).colorScheme.onSurfaceVariant;
+    return cs.onSurfaceVariant;
   }
 
   IconData _iconMetodo(String method) {
@@ -2411,8 +2481,7 @@ class _DateButton extends StatelessWidget {
 }
 
 // ============================================================
-// INFO TILE
-// ============================================================
+// INFO TILE// ============================================================
 
 class _InfoTile extends StatelessWidget {
   const _InfoTile({

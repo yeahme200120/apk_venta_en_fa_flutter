@@ -75,6 +75,34 @@ class LocationService {
   DateTime? _cachedAt;
 
   // ============================================================
+  // 🆕 CACHE ESTÁTICO
+  // ============================================================
+  //
+  // Cache compartido a nivel aplicación, accesible sin instanciar
+  // el servicio. Se usa desde ApiClient para inyectar la ubicación
+  // en cada request POST/PUT/PATCH automáticamente.
+  //
+  // Se actualiza cada vez que `getCurrentLocation()` devuelve
+  // una ubicación válida.
+  //
+  static DeviceLocation? _lastKnown;
+
+  /// Última ubicación conocida.
+  ///
+  /// Es `null` si nunca se ha obtenido una ubicación válida.
+  ///
+  /// NO consulta el GPS: solo devuelve el último valor cacheado.
+  static DeviceLocation? get lastKnown => _lastKnown;
+
+  /// Guarda manualmente una ubicación como "última conocida".
+  ///
+  /// Útil para casos donde ya se tiene la ubicación desde otra
+  /// fuente y se quiere poblar el cache sin volver a pedirla.
+  static void cacheLocation(DeviceLocation location) {
+    _lastKnown = location;
+  }
+
+  // ============================================================
   // API PÚBLICA
   // ============================================================
 
@@ -126,6 +154,10 @@ class LocationService {
     // Cache.
     if (useCache && _isCacheValid()) {
       debugPrint('📍 Usando ubicación en cache.');
+
+      // Mantener sincronizado el cache estático.
+      _lastKnown = _cached;
+
       return _cached;
     }
 
@@ -184,6 +216,9 @@ class LocationService {
       _cached = location;
       _cachedAt = DateTime.now();
 
+      // 🆕 Sincronizar cache estático.
+      _lastKnown = location;
+
       debugPrint('📍 Ubicación obtenida: $location');
 
       return location;
@@ -200,6 +235,9 @@ class LocationService {
   void clearCache() {
     _cached = null;
     _cachedAt = null;
+
+    // 🆕 También limpia el cache estático.
+    _lastKnown = null;
   }
 
   // ============================================================

@@ -9,6 +9,7 @@ import '../database/pos_db_service.dart';
 import '../network/api_client.dart';
 import '../storage/app_storage.dart';
 import 'daily_cleanup_service.dart';
+
 import 'package:flutter/foundation.dart';
 
 class SyncResult {
@@ -725,6 +726,15 @@ class SyncService {
     }
   }
 
+  Future<bool> syncDayOutboxByItem({
+    required int companyId,
+    required int userId,
+    required DateTime businessDate,
+    required Map<String, dynamic> item,
+  }) async {
+    return _syncDayOutbox(companyId, userId, businessDate, item);
+  }
+
   // ============================================================
   // NORMALIZAR PAYLOAD OFFLINE
   // ============================================================
@@ -1190,10 +1200,11 @@ class SyncService {
       }
     }
 
+    // Si no existe, caer a fecha_venta / created_at / now.
     final fechaVenta = _normalizeSaleDate(
-      sale['fecha_venta'] ??
+      sale['business_date'] ??
+          sale['fecha_venta'] ??
           sale['created_at'] ??
-          sale['business_date'] ??
           DateTime.now().toIso8601String(),
     );
 
@@ -1812,7 +1823,7 @@ class SyncService {
         'stock': stock,
         'activo': activo,
         'is_inventariable': inventariable,
-        if (categoryServerId != null) 'categoria_id': categoryServerId,
+        'categoria_id': ?categoryServerId,
       };
 
       debugPrint(
@@ -1997,7 +2008,9 @@ class SyncService {
                 serverReceivedAt: DateTime.now().toIso8601String(),
               );
 
-              debugPrint('✅ Caja local $localId vinculada a server_id $serverId.');
+              debugPrint(
+                '✅ Caja local $localId vinculada a server_id $serverId.',
+              );
               return true;
             }
           } catch (_) {}
@@ -2232,11 +2245,15 @@ class SyncService {
   // ============================================================
 
   Future<void> syncCatalogs({bool force = false}) async {
-    final versions = await _historyDb.getCatalogVersions();
+    final purgePending = await AppStorage().isCatalogPurgePending();
+    final effectiveForce = force || purgePending;
 
+    final versions = await _historyDb.getCatalogVersions();
     final cursor = await _historyDb.getCatalogCursor('global');
 
-    final String? catalogDate = force ? null : cursor ?? versions['global'];
+    final String? catalogDate = effectiveForce
+        ? null
+        : cursor ?? versions['global'];
 
     final DateTime? desde = catalogDate == null || catalogDate.trim().isEmpty
         ? null
@@ -2651,6 +2668,7 @@ class SyncService {
       'total': _toDouble(venta['total']),
       'status': _normalizeSaleStatus(estado),
       'sync_status': 'synced',
+      'business_date': _extractDateFromServerSale(venta), // 👈 NUEVO
       'payment_method': paymentMethod,
       'cash_received': cashReceived,
       'change_due': changeDue,
@@ -2691,6 +2709,7 @@ class SyncService {
         'total': _toDouble(venta['total']),
         'status': _normalizeSaleStatus(estado),
         'sync_status': 'synced',
+        'business_date': _extractDateFromServerSale(venta), // 👈 NUEVO
         'payment_method': paymentMethod,
         'cash_received': _cashReceived(payments),
         'change_due': _cashChange(payments),
@@ -2710,7 +2729,6 @@ class SyncService {
 
     await _replaceServerSaleChildren(txn, saleId, venta);
   }
-
   // ============================================================
   // REEMPLAZAR DETALLES Y PAGOS
   // ============================================================
@@ -3313,5 +3331,33 @@ class SyncService {
     }
 
     return result;
+  }
+
+  /// Extrae "YYYY-MM-DD" de la venta del servidor.
+  /// Prioriza business_date / fecha_negocio / fecha_operacion.
+  /// Si no hay, cae a fecha_venta / fecha.
+  String? _extractDateFromServerSale(Map<String, dynamic> venta) {
+    final raw =
+        venta['business_date'] ??
+        venta['fecha_negocio'] ??
+        venta['fecha_operacion'] ??
+        venta['fecha_comercial'] ??
+        venta['fecha_venta'] ??
+        venta['fecha'] ??
+        venta['created_at'];
+
+    final text = raw?.toString().trim() ?? '';
+    if (text.isEmpty) return null;
+
+    final parsed = DateTime.tryParse(text);
+    if (parsed == null) {
+      // Ya viene como 'YYYY-MM-DD' pero no parsea: devolver tal cual si
+      // tiene forma de fecha.
+      return text.length >= 10 ? text.substring(0, 10) : null;
+    }
+
+    return '${parsed.year.toString().padLeft(4, '0')}-'
+        '${parsed.month.toString().padLeft(2, '0')}-'
+        '${parsed.day.toString().padLeft(2, '0')}';
   }
 }

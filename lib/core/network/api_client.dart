@@ -3,7 +3,10 @@ import 'dart:io';
 import 'package:dio/dio.dart';
 
 import '../config/app_config.dart';
+import '../services/location_service.dart';
 import '../storage/app_storage.dart';
+
+import 'package:flutter/foundation.dart';
 
 // ============================================================
 // AUTENTICACIÓN
@@ -49,10 +52,66 @@ class ApiClient {
               options.headers['Authorization'] = 'Bearer ${token.trim()}';
             }
           } catch (e) {
-            print('[API] Error obteniendo token: $e');
+            debugPrint('[API] Error obteniendo token: $e');
           }
 
-          print(
+          // ============================================================
+          // 🆕 UBICACIÓN AUTOMÁTICA
+          // ============================================================
+          //
+          // Inyecta la última ubicación conocida en cada petición
+          // POST / PUT / PATCH que:
+          //   • tenga un body tipo Map.
+          //   • NO traiga ya su propia latitud/longitud.
+          //
+          // Esto cubre:
+          //   • updateProfile
+          //   • changePassword
+          //   • updateCompanyConfig
+          //   • updateTicketConfig
+          //   • saveTable
+          //   • createProduct / updateProduct
+          //   • createCategory / updateCategory
+          //   • syncOffline
+          //   • openCashRegister / closeCashRegister
+          //   • registerCashMovement
+          //   • cancelSale / returnSale
+          //   • shareDailyReport
+          //   • uploadCompanyLogo (multipart)
+          //   • etc.
+          //
+          // NO inyecta en GET (no tiene body).
+          // Si no hay ubicación cacheada, no envía nada.
+          // Si el método ya la envía explícitamente, se respeta.
+          //
+          final method = options.method.toUpperCase();
+          final metodoConBody =
+              method == 'POST' || method == 'PUT' || method == 'PATCH';
+
+          if (metodoConBody) {
+            final data = options.data;
+
+            if (data is Map) {
+              final tieneUbicacion =
+                  data.containsKey('latitud') || data.containsKey('longitud');
+
+              if (!tieneUbicacion) {
+                final cached = LocationService.lastKnown;
+
+                if (cached != null) {
+                  data['latitud'] = cached.latitude;
+                  data['longitud'] = cached.longitude;
+                  data['precision_metros'] = cached.accuracy;
+
+                  if (cached.provider.trim().isNotEmpty) {
+                    data['ubicacion_provider'] = cached.provider;
+                  }
+                }
+              }
+            }
+          }
+
+          debugPrint(
             '[API] ${options.method} ${options.uri} '
             'token=${options.headers['Authorization'] != null}',
           );
@@ -60,7 +119,7 @@ class ApiClient {
           handler.next(options);
         },
         onResponse: (response, handler) {
-          print(
+          debugPrint(
             '[API] ${response.requestOptions.method} '
             '${response.requestOptions.uri} '
             '-> ${response.statusCode}',
@@ -69,7 +128,7 @@ class ApiClient {
           handler.next(response);
         },
         onError: (error, handler) async {
-          print(
+          debugPrint(
             '[API] ERROR ${error.requestOptions.method} '
             '${error.requestOptions.uri} '
             '-> ${error.response?.statusCode}',
@@ -88,6 +147,56 @@ class ApiClient {
   final Dio _dio;
 
   Dio get dio => _dio;
+
+  // ============================================================
+  // CACHÉ Y DEDUPLICACIÓN DE ESTADO OPERATIVO Y MESAS
+  // ============================================================
+  //
+  // Evita peticiones duplicadas cuando varios widgets del
+  // HomeShell piden el mismo recurso al mismo tiempo durante
+  // el arranque (IndexedStack monta todos los tabs a la vez).
+  //
+  // El estado operativo se cachea 5s (cambia con frecuencia).
+  // Las mesas se cachean 10s (cambian con menos frecuencia).
+  //
+  // Además, se deduplican peticiones concurrentes: si ya hay
+  // una petición en vuelo al mismo endpoint, las siguientes
+  // esperan esa misma promesa en lugar de lanzar otra.
+  //
+  // Para forzar datos frescos tras una operación que cambia
+  // el estado (abrir/cerrar caja, guardar mesa), se debe llamar
+  // a `invalidateOperationCache()`.
+
+  Map<String, dynamic>? _cachedOperationStatus;
+  DateTime? _cachedOperationStatusAt;
+  static const Duration _operationStatusTtl = Duration(seconds: 5);
+
+  /// Petición en vuelo de `/operacion/estado`.
+  /// Evita que múltiples widgets que piden el estado al mismo
+  /// tiempo disparen múltiples peticiones HTTP en paralelo.
+  Future<Map<String, dynamic>>? _operationStatusInFlight;
+
+  List<Map<String, dynamic>>? _cachedTables;
+  DateTime? _cachedTablesAt;
+  static const Duration _tablesTtl = Duration(seconds: 10);
+
+  /// Petición en vuelo de `/mesas`.
+  Future<List<Map<String, dynamic>>>? _tablesInFlight;
+
+  /// Invalida las cachés de operación y mesas.
+  ///
+  /// Llamar después de abrir/cerrar caja, guardar mesa,
+  /// o cualquier operación que cambie el estado operativo.
+  ///
+  /// No se tocan las peticiones en vuelo (_operationStatusInFlight
+  /// ni _tablesInFlight): esas se completarán solas y actualizarán
+  /// la caché cuando llegue la respuesta.
+  void invalidateOperationCache() {
+    _cachedOperationStatus = null;
+    _cachedOperationStatusAt = null;
+    _cachedTables = null;
+    _cachedTablesAt = null;
+  }
 
   // ============================================================
   // MANEJO CENTRALIZADO DE ERRORES
@@ -181,12 +290,10 @@ class ApiClient {
           if (macAddress != null && macAddress.trim().isNotEmpty)
             'mac_address': macAddress.trim().toUpperCase(),
 
-          // 🆕 UBICACIÓN
-          if (latitude != null) 'latitud': latitude,
-          if (longitude != null) 'longitud': longitude,
-          if (accuracy != null) 'precision_metros': accuracy,
-          if (locationProvider != null)
-            'ubicacion_provider': locationProvider,
+          'latitud': ?latitude,
+          'longitud': ?longitude,
+          'precision_metros': ?accuracy,
+          'ubicacion_provider': ?locationProvider,
         },
       );
 
@@ -212,8 +319,14 @@ class ApiClient {
     double? longitude,
     double? accuracy,
     String? locationProvider,
+    // ✅ T&C
+    required bool terminosAceptados,
+    required String terminosVersion,
   }) async {
     try {
+      debugPrint(
+        '[REGISTER] body = ${{'empresa_nombre': empresaNombre, 'terminos_aceptados': terminosAceptados, 'terminos_version': terminosVersion}}',
+      );
       final response = await _dio.post(
         '/api/v1/register',
         data: {
@@ -226,11 +339,13 @@ class ApiClient {
           if (rfc != null && rfc.trim().isNotEmpty) 'rfc': rfc.trim(),
 
           // 🆕 UBICACIÓN
-          if (latitude != null) 'latitud': latitude,
-          if (longitude != null) 'longitud': longitude,
-          if (accuracy != null) 'precision_metros': accuracy,
-          if (locationProvider != null)
-            'ubicacion_provider': locationProvider,
+          'latitud': ?latitude,
+          'longitud': ?longitude,
+          'precision_metros': ?accuracy,
+          'ubicacion_provider': ?locationProvider,
+          // ✅ T&C — OBLIGATORIOS
+          'terminos_aceptados': terminosAceptados, // bool → true
+          'terminos_version': terminosVersion, // string → '2026-09-19'
         },
       );
 
@@ -388,17 +503,51 @@ class ApiClient {
   // ============================================================
   // ESTADO OPERATIVO
   // ============================================================
+  //
+  // Caché con TTL 5s + deduplicación de peticiones en vuelo.
+  // HomeShell, OperationScreen y otros widgets piden el
+  // estado al mismo tiempo al montar el IndexedStack.
 
   Future<Map<String, dynamic>> getOperationStatus() async {
+    final now = DateTime.now();
+
+    // 1. Cache hit.
+    if (_cachedOperationStatus != null &&
+        _cachedOperationStatusAt != null &&
+        now.difference(_cachedOperationStatusAt!) < _operationStatusTtl) {
+      debugPrint('ℹ️ OperationStatus desde cache (TTL 5s)');
+      return _cachedOperationStatus!;
+    }
+
+    // 2. Ya hay una petición en vuelo → esperarla.
+    if (_operationStatusInFlight != null) {
+      debugPrint('ℹ️ OperationStatus deduplicado (petición en vuelo)');
+      return _operationStatusInFlight!;
+    }
+
+    // 3. Lanzar nueva petición.
+    _operationStatusInFlight = _fetchOperationStatus(now);
+
+    try {
+      return await _operationStatusInFlight!;
+    } finally {
+      _operationStatusInFlight = null;
+    }
+  }
+
+  Future<Map<String, dynamic>> _fetchOperationStatus(DateTime now) async {
     try {
       final response = await _dio.get('/api/v1/operacion/estado');
 
       if (response.statusCode == 200 && response.data is Map) {
         final payload = Map<String, dynamic>.from(response.data as Map);
-
         final data = payload['data'];
+        final result = data is Map ? Map<String, dynamic>.from(data) : payload;
 
-        return data is Map ? Map<String, dynamic>.from(data) : payload;
+        _cachedOperationStatus = result;
+        _cachedOperationStatusAt = now;
+
+        return result;
       }
 
       throw Exception('No se pudo consultar el estado operativo');
@@ -474,14 +623,16 @@ class ApiClient {
     dynamic payload = response.data;
 
     if (payload is Map) {
-      payload = payload['data'] ??
+      payload =
+          payload['data'] ??
           payload['operaciones'] ??
           payload['movimientos'] ??
           payload;
     }
 
     if (payload is Map) {
-      payload = payload['data'] ??
+      payload =
+          payload['data'] ??
           payload['operaciones'] ??
           payload['movimientos'] ??
           payload;
@@ -511,17 +662,22 @@ class ApiClient {
     double? accuracy,
     String? locationProvider,
   }) async {
-    return _postOperation('/api/v1/cajas/abrir', {
+    final result = await _postOperation('/api/v1/cajas/abrir', {
       'monto_apertura': openingAmount,
       if (notes != null && notes.trim().isNotEmpty) 'notas': notes.trim(),
       if (forzarReapertura) 'forzar_reapertura': true,
 
       // 🆕 UBICACIÓN
-      if (latitude != null) 'latitud': latitude,
-      if (longitude != null) 'longitud': longitude,
-      if (accuracy != null) 'precision_metros': accuracy,
-      if (locationProvider != null) 'ubicacion_provider': locationProvider,
+      'latitud': ?latitude,
+      'longitud': ?longitude,
+      'precision_metros': ?accuracy,
+      'ubicacion_provider': ?locationProvider,
     });
+
+    // 🔑 El estado operativo cambió (hay caja abierta).
+    invalidateOperationCache();
+
+    return result;
   }
 
   // ============================================================
@@ -538,33 +694,74 @@ class ApiClient {
     double? accuracy,
     String? locationProvider,
   }) async {
-    return _postOperation('/api/v1/cajas/$cashRegisterId/cerrar', {
+    final result =
+        await _postOperation('/api/v1/cajas/$cashRegisterId/cerrar', {
       'monto_cierre_declarado': declaredAmount,
       if (notes != null && notes.trim().isNotEmpty) 'notas': notes.trim(),
 
       // 🆕 UBICACIÓN
-      if (latitude != null) 'latitud': latitude,
-      if (longitude != null) 'longitud': longitude,
-      if (accuracy != null) 'precision_metros': accuracy,
-      if (locationProvider != null) 'ubicacion_provider': locationProvider,
+      'latitud': ?latitude,
+      'longitud': ?longitude,
+      'precision_metros': ?accuracy,
+      'ubicacion_provider': ?locationProvider,
     });
+
+    // 🔑 El estado operativo cambió (caja cerrada).
+    invalidateOperationCache();
+
+    return result;
   }
 
   // ============================================================
   // MESAS
   // ============================================================
+  //
+  // Caché con TTL 10s + deduplicación de peticiones en vuelo.
+  // PosScreen y OperationScreen piden mesas al montar.
 
   Future<List<Map<String, dynamic>>> getTables() async {
+    final now = DateTime.now();
+
+    // 1. Cache hit.
+    if (_cachedTables != null &&
+        _cachedTablesAt != null &&
+        now.difference(_cachedTablesAt!) < _tablesTtl) {
+      debugPrint('ℹ️ Mesas desde cache (TTL 10s)');
+      return _cachedTables!;
+    }
+
+    // 2. Ya hay una petición en vuelo → esperarla.
+    if (_tablesInFlight != null) {
+      debugPrint('ℹ️ Mesas deduplicadas (petición en vuelo)');
+      return _tablesInFlight!;
+    }
+
+    // 3. Lanzar nueva petición.
+    _tablesInFlight = _fetchTables(now);
+
+    try {
+      return await _tablesInFlight!;
+    } finally {
+      _tablesInFlight = null;
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> _fetchTables(DateTime now) async {
     try {
       final response = await _dio.get('/api/v1/mesas');
 
       final data = response.data is Map ? (response.data as Map)['data'] : null;
 
       if (data is List) {
-        return data
+        final result = data
             .whereType<Map>()
             .map((item) => Map<String, dynamic>.from(item))
             .toList();
+
+        _cachedTables = result;
+        _cachedTablesAt = now;
+
+        return result;
       }
 
       return const [];
@@ -579,19 +776,24 @@ class ApiClient {
     int? capacity,
     String? notes,
     bool? active,
-  }) {
+  }) async {
     final payload = <String, dynamic>{
       'nombre': name.trim(),
-      if (capacity != null) 'capacidad': capacity,
-      if (notes != null && notes.trim().isNotEmpty) 'notas': notes.trim(),
-      if (active != null) 'activo': active,
+      'capacidad': ?capacity,
+      'notas': ?(notes != null && notes.trim().isNotEmpty
+          ? notes.trim()
+          : null),
+      'activo': ?active,
     };
 
-    if (id == null) {
-      return _postOperation('/api/v1/mesas', payload);
-    }
+    final result = id == null
+        ? await _postOperation('/api/v1/mesas', payload)
+        : await _putOperation('/api/v1/mesas/$id', payload);
 
-    return _putOperation('/api/v1/mesas/$id', payload);
+    // 🔑 Las mesas cambiaron.
+    invalidateOperationCache();
+
+    return result;
   }
 
   // ============================================================
@@ -862,7 +1064,7 @@ class ApiClient {
       final response = await _dio.get('/api/v1/admin/empresa/config');
 
       if (response.statusCode == 200 && response.data is Map) {
-        print('[COMPANY CONFIG] response.data = ${response.data}');
+        debugPrint('[COMPANY CONFIG] response.data = ${response.data}');
 
         return Map<String, dynamic>.from(response.data as Map);
       }
@@ -1066,10 +1268,10 @@ class ApiClient {
         'forma_pago': formaPago.trim(),
 
       // 🆕 UBICACIÓN
-      if (latitude != null) 'latitud': latitude,
-      if (longitude != null) 'longitud': longitude,
-      if (accuracy != null) 'precision_metros': accuracy,
-      if (locationProvider != null) 'ubicacion_provider': locationProvider,
+      'latitud': ?latitude,
+      'longitud': ?longitude,
+      'precision_metros': ?accuracy,
+      'ubicacion_provider': ?locationProvider,
     });
   }
 }

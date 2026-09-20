@@ -1,10 +1,14 @@
-﻿import 'dart:convert';
+﻿import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 
 import '../../core/database/local_db.dart';
-import '../../core/network/api_client.dart';
 import '../../core/services/catalog_excel_service.dart';
+import '../../core/services/sync_orchestrator.dart';
+import '../../core/storage/app_storage.dart';
+import '../widgets/sync_progress_dialog.dart';
+import '../widgets/sync_result_dialog.dart';
 import 'catalog_edit_screen.dart';
 
 class CatalogAdminScreen extends StatefulWidget {
@@ -271,79 +275,83 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
 
     await showDialog<void>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(
-          result.hasErrors
-              ? 'Importación con errores'
-              : 'Importación completada',
-        ),
-        content: ConstrainedBox(
-          constraints: BoxConstraints(
-            maxHeight: MediaQuery.sizeOf(ctx).height * 0.65,
-            maxWidth: 520,
+      builder: (ctx) {
+        final cs = Theme.of(ctx).colorScheme;
+
+        return AlertDialog(
+          title: Text(
+            result.hasErrors
+                ? 'Importación con errores'
+                : 'Importación completada',
           ),
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('Filas procesadas: ${result.totalRows}'),
-                const SizedBox(height: 4),
-                Text('Insertadas: ${result.inserted}'),
-                const SizedBox(height: 4),
-                Text('Errores: ${result.errors.length}'),
-                if (result.errors.isNotEmpty) ...[
-                  const Divider(height: 24),
-                  const Text(
-                    'Filas rechazadas:',
-                    style: TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                  const SizedBox(height: 8),
-                  ...result.errors.map(
-                    (e) => Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: Container(
-                        padding: const EdgeInsets.all(10),
-                        decoration: BoxDecoration(
-                          color: Colors.red.withAlpha(15),
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(
-                            color: Colors.red.withAlpha(60),
+          content: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(ctx).height * 0.65,
+              maxWidth: 520,
+            ),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Filas procesadas: ${result.totalRows}'),
+                  const SizedBox(height: 4),
+                  Text('Insertadas: ${result.inserted}'),
+                  const SizedBox(height: 4),
+                  Text('Errores: ${result.errors.length}'),
+                  if (result.errors.isNotEmpty) ...[
+                    const Divider(height: 24),
+                    const Text(
+                      'Filas rechazadas:',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    const SizedBox(height: 8),
+                    ...result.errors.map(
+                      (e) => Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: cs.error.withValues(alpha: 0.08),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                              color: cs.error.withValues(alpha: 0.35),
+                            ),
                           ),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Fila ${e.rowNumber}'
-                              '${e.field.isNotEmpty ? ' · ${e.field}' : ''}',
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w700,
-                                fontSize: 13,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Fila ${e.rowNumber}'
+                                '${e.field.isNotEmpty ? ' · ${e.field}' : ''}',
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 13,
+                                ),
                               ),
-                            ),
-                            const SizedBox(height: 3),
-                            Text(
-                              e.message,
-                              style: const TextStyle(fontSize: 12),
-                            ),
-                          ],
+                              const SizedBox(height: 3),
+                              Text(
+                                e.message,
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                     ),
-                  ),
+                  ],
                 ],
-              ],
+              ),
             ),
           ),
-        ),
-        actions: [
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('Aceptar'),
-          ),
-        ],
-      ),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Aceptar'),
+            ),
+          ],
+        );
+      },
     );
   }
 
@@ -503,48 +511,122 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
   }
 
   // ============================================================
-  // SINCRONIZAR CATÁLOGOS
+  // SINCRONIZAR CATÁLOGOS (estandarizado con SyncOrchestrator)
   // ============================================================
+  //
+  // Usa el mismo flujo que Settings, POS y HomeShell:
+  //
+  //   1. SyncProgressDialog modal mientras corre.
+  //   2. SyncOrchestrator.syncAll() sube sync_queue + ventas
+  //      pendientes + outbox y baja catálogos + empresa + mesas.
+  //   3. showSyncResultDialog con el resumen.
 
   Future<void> _syncCatalogs() async {
     if (_isDisposed || !mounted || _isSyncing) {
       return;
     }
 
-    _safeSetState(() {
-      _isSyncing = true;
-    });
+    final companyId = await AppStorage().getEmpresaId() ?? 0;
+    final userId = await AppStorage().getUserId() ?? 0;
 
-    try {
-      final apiClient = ApiClient();
-
-      final response = await apiClient.getCatalog();
-
-      await _db.syncCatalogs(response);
-
-      if (_isDisposed || !mounted) return;
-
-      await _load();
-
-      if (_isDisposed || !mounted) return;
+    if (companyId <= 0 || userId <= 0) {
+      if (!mounted) return;
 
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
         ..showSnackBar(
           const SnackBar(
-            content: Text('Catálogos sincronizados correctamente.'),
+            content: Text('No existe una sesión válida para sincronizar.'),
             behavior: SnackBarBehavior.floating,
           ),
         );
-    } catch (e) {
+
+      return;
+    }
+
+    final rawBusinessDate = await AppStorage().getServerBusinessDate();
+    final businessDate =
+        DateTime.tryParse(rawBusinessDate ?? '') ?? DateTime.now();
+
+    if (_isDisposed || !mounted) return;
+
+    _safeSetState(() {
+      _isSyncing = true;
+    });
+
+    // ============================================================
+    // DIÁLOGO DE PROGRESO
+    // ============================================================
+
+    final progressNotifier = ValueNotifier<String>(
+      'Iniciando sincronización...',
+    );
+
+    NavigatorState? progressNavigator;
+
+    unawaited(
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) {
+          progressNavigator = Navigator.of(ctx, rootNavigator: true);
+
+          return SyncProgressDialog(
+            progressNotifier: progressNotifier,
+            title: 'Sincronizando catálogos',
+          );
+        },
+      ),
+    );
+
+    await Future.delayed(const Duration(milliseconds: 120));
+
+    try {
+      final report = await SyncOrchestrator().syncAll(
+        companyId: companyId,
+        userId: userId,
+        businessDate: businessDate,
+        onProgress: (stage, message) {
+          progressNotifier.value = message;
+        },
+      );
+
+      if (progressNavigator != null && progressNavigator!.canPop()) {
+        progressNavigator!.pop();
+      }
+
+      progressNotifier.dispose();
+
       if (_isDisposed || !mounted) return;
+
+      // Refrescar la lista tras la sincronización.
+      await _load();
+
+      if (_isDisposed || !mounted) return;
+
+      await showSyncResultDialog(
+        context,
+        report: report,
+        onRetry: () => _syncCatalogs(),
+      );
+    } catch (error) {
+      if (progressNavigator != null && progressNavigator!.canPop()) {
+        progressNavigator!.pop();
+      }
+
+      progressNotifier.dispose();
+
+      if (_isDisposed || !mounted) return;
+
+      final cs = Theme.of(context).colorScheme;
 
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
         ..showSnackBar(
           SnackBar(
-            content: Text('Error al sincronizar: $e'),
+            content: Text('Error al sincronizar: $error'),
             behavior: SnackBarBehavior.floating,
+            backgroundColor: cs.error,
           ),
         );
     } finally {
@@ -710,7 +792,10 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
             return Column(
               children: [
                 if (_isImporting)
-                  const LinearProgressIndicator(minHeight: 3),
+                  LinearProgressIndicator(
+                    minHeight: 3,
+                    color: cs.primary,
+                  ),
 
                 _buildCatalogSelector(
                   isDesktop: isDesktop,
@@ -1003,6 +1088,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
     Map<String, dynamic> item, {
     required bool compact,
   }) {
+    final cs = Theme.of(context).colorScheme;
     final catalog = _currentCatalog;
 
     final name = item['name']?.toString() ??
@@ -1048,7 +1134,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        color: Colors.grey.shade600,
+                        color: cs.onSurfaceVariant,
                         fontSize: 12,
                       ),
                     ),
@@ -1074,11 +1160,13 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
   // ============================================================
 
   Widget _buildToggleSwitch(Map<String, dynamic> item, bool active) {
+    final cs = Theme.of(context).colorScheme;
+
     return Switch(
       value: active,
       onChanged: (_) => _toggleStatus(item),
-      activeThumbColor: Colors.green,
-      inactiveThumbColor: Colors.grey,
+      activeThumbColor: cs.primary,
+      inactiveThumbColor: cs.onSurfaceVariant,
     );
   }
 
@@ -1145,12 +1233,14 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
   // ============================================================
 
   Widget _buildStatusBadge(bool active) {
+    final cs = Theme.of(context).colorScheme;
+
+    final color = active ? cs.primary : cs.onSurfaceVariant;
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
       decoration: BoxDecoration(
-        color: active
-            ? Colors.green.withValues(alpha: 0.10)
-            : Colors.grey.withValues(alpha: 0.12),
+        color: color.withValues(alpha: 0.10),
         borderRadius: BorderRadius.circular(20),
       ),
       child: Row(
@@ -1159,7 +1249,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
           Icon(
             active ? Icons.check_circle_outline : Icons.cancel_outlined,
             size: 15,
-            color: active ? Colors.green : Colors.grey.shade600,
+            color: color,
           ),
           const SizedBox(width: 5),
           Text(
@@ -1167,7 +1257,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
             style: TextStyle(
               fontSize: 11,
               fontWeight: FontWeight.w600,
-              color: active ? Colors.green : Colors.grey.shade600,
+              color: color,
             ),
           ),
         ],
@@ -1209,6 +1299,8 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
   // ============================================================
 
   Widget _buildEmptyState(_CatalogInfo catalog) {
+    final cs = Theme.of(context).colorScheme;
+
     return RefreshIndicator(
       onRefresh: _load,
       child: ListView(
@@ -1256,7 +1348,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
                           : 'Todavía no existen registros en ${catalog.title.toLowerCase()}.',
                       textAlign: TextAlign.center,
                       softWrap: true,
-                      style: TextStyle(color: Colors.grey.shade600),
+                      style: TextStyle(color: cs.onSurfaceVariant),
                     ),
                   ),
                   const SizedBox(height: 20),

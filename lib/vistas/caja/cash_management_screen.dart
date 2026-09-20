@@ -4,11 +4,15 @@ import 'package:flutter/material.dart';
 
 import '../../core/database/local_db.dart';
 import '../../core/services/cash_service.dart';
+import '../../core/services/pdf_service.dart';
+import '../../core/services/printer_service.dart';
+import '../../core/services/whatsapp_service.dart';
 import '../../core/storage/app_storage.dart';
 // [LICENCIA-OFFLINE] Import para evaluar el estado de licencia
 // desde el snapshot local (offline-first).
 import '../../core/services/license_service.dart';
 import '../widgets/app_scaffold.dart';
+import 'cash_movement_detail_screen.dart';
 
 class CashManagementScreen extends StatefulWidget {
   const CashManagementScreen({super.key});
@@ -20,6 +24,7 @@ class CashManagementScreen extends StatefulWidget {
 class _CashManagementScreenState extends State<CashManagementScreen> {
   final CashService _service = CashService();
   final LocalDb _db = LocalDb();
+  final PrinterService _printerService = PrinterService();
 
   bool _loading = true;
   Map<String, dynamic>? _caja;
@@ -34,6 +39,9 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
   // Nunca se consulta al servidor desde aquí.
   LicenseState? _licenseState;
 
+  // Bandera para el botón "Imprimir resumen de caja".
+  bool _imprimiendoResumen = false;
+
   // ============================================================
   // FECHA COMERCIAL (AUTORIZADA POR EL SERVIDOR)
   // ============================================================
@@ -44,7 +52,6 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
   String? _businessDateKey;
 
   DateTime _desde = DateTime.now().subtract(const Duration(days: 7));
-  DateTime _hasta = DateTime.now();
 
   String _tipoFiltro = 'todos';
 
@@ -121,7 +128,6 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
 
         setState(() {
           _businessDateKey = key;
-          _hasta = business;
           _desde = business.subtract(const Duration(days: 7));
         });
       } else {
@@ -149,7 +155,6 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
 
         setState(() {
           _businessDateKey = key;
-          _hasta = business;
           _desde = business.subtract(const Duration(days: 7));
         });
       } else {
@@ -185,16 +190,46 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
       List<Map<String, dynamic>> ventasPorMetodo = const [];
       List<Map<String, dynamic>> movimientosPorTipoMetodo = const [];
 
-      if (caja != null) {
-        resumen = await _db.getCashSummaryLocal(
-          cashRegisterId: caja['id'] as int,
-        );
+      // ============================================================
+      // SIEMPRE cargar registros del día, aunque la caja esté cerrada
+      // ============================================================
+      //
+      // Esto permite:
+      //   • Ver ventas y movimientos de un turno ya cerrado.
+      //   • Al reabrir la caja, seguir contabilizando lo del mismo día.
+      //
+      final fechaBase = _businessDate;
+      final desde = DateTime(fechaBase.year, fechaBase.month, fechaBase.day);
+      final hasta = DateTime(
+        fechaBase.year,
+        fechaBase.month,
+        fechaBase.day,
+        23,
+        59,
+        59,
+      );
 
+      // --- Ventas del día por método de pago (siempre) ---
+      try {
+        ventasPorMetodo = await _db.getSalesByPaymentMethodLocal(
+          businessDate: fechaBase,
+        );
+      } catch (e) {
+        debugPrint('⚠️ No se pudieron cargar ventas por método: $e');
+      }
+
+      // --- Movimientos manuales (siempre) ---
+      //
+      // Si la caja está abierta usamos su id; si está cerrada
+      // usamos el rango de fechas del día comercial.
+      final cashRegisterId = caja != null ? caja['id'] as int : 0;
+
+      try {
         final todos = await _db.getCashMovementsLocal(
-          cashRegisterId: caja['id'] as int,
+          cashRegisterId: cashRegisterId > 0 ? cashRegisterId : null,
           tipo: _tipoFiltro == 'todos' ? null : _tipoFiltro,
-          desde: DateTime(_desde.year, _desde.month, _desde.day),
-          hasta: DateTime(_hasta.year, _hasta.month, _hasta.day, 23, 59, 59),
+          desde: desde,
+          hasta: hasta,
         );
 
         movimientos = todos
@@ -202,22 +237,33 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
             .toList();
 
         porMetodo = _calcularPorMetodo(movimientos);
+      } catch (e) {
+        debugPrint('⚠️ No se pudieron cargar movimientos: $e');
+      }
 
-        final fechaCaja = caja['fecha_comercial']?.toString() ?? '';
-
-        if (fechaCaja.isNotEmpty) {
-          // ⚠️ Usamos la fecha comercial de la CAJA (que ya viene
-          // del servidor). NO DateTime.now().
-          final fecha = DateTime.tryParse(fechaCaja) ?? _businessDate;
-
-          ventasPorMetodo = await _db.getSalesByPaymentMethodLocal(
-            businessDate: fecha,
+      if (caja != null) {
+        try {
+          resumen = await _db.getCashSummaryLocal(
+            cashRegisterId: caja['id'] as int,
           );
+        } catch (e) {
+          debugPrint('⚠️ No se pudo cargar resumen: $e');
         }
 
-        movimientosPorTipoMetodo = await _db.getMovementsByTypeAndMethodLocal(
-          cashRegisterId: caja['id'] as int,
-        );
+        try {
+          movimientosPorTipoMetodo =
+              await _db.getMovementsByTypeAndMethodLocal(
+            cashRegisterId: caja['id'] as int,
+          );
+        } catch (e) {
+          debugPrint('⚠️ No se pudo cargar desglose movimientos: $e');
+        }
+      } else {
+        // Aunque no haya caja abierta, calculamos el desglose a
+        // partir de los movimientos del día para no perder la
+        // información del turno cerrado.
+        movimientosPorTipoMetodo =
+            _agruparMovimientosPorTipoMetodo(movimientos);
       }
 
       // [LICENCIA-OFFLINE] Evaluamos la licencia desde el snapshot local.
@@ -278,6 +324,39 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
     }
 
     return map;
+  }
+
+  // ============================================================
+  // AGRUPAR MOVIMIENTOS POR TIPO Y MÉTODO (fallback sin caja)
+  // ============================================================
+
+  List<Map<String, dynamic>> _agruparMovimientosPorTipoMetodo(
+    List<Map<String, dynamic>> movs,
+  ) {
+    final map = <String, Map<String, dynamic>>{};
+
+    for (final m in movs) {
+      final tipo = (m['tipo'] ?? '').toString().toLowerCase();
+      final metodo = (m['forma_pago'] ?? 'Sin especificar').toString();
+      final key = '$tipo::$metodo';
+
+      final monto = _d(m['monto']);
+
+      final entry = map.putIfAbsent(
+        key,
+        () => {
+          'tipo': tipo,
+          'method_label': metodo,
+          'cantidad': 0,
+          'total': 0.0,
+        },
+      );
+
+      entry['cantidad'] = (entry['cantidad'] as int) + 1;
+      entry['total'] = (entry['total'] as double) + monto;
+    }
+
+    return map.values.toList();
   }
 
   // ============================================================
@@ -404,12 +483,137 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
 
   void _snack(String msg, {bool error = false}) {
     if (!mounted) return;
+    final cs = Theme.of(context).colorScheme;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(msg),
-        backgroundColor: error ? Colors.red.shade700 : null,
+        backgroundColor: error ? cs.error : null,
       ),
     );
+  }
+
+  // ============================================================
+  // DETALLE / IMPRESIÓN DE UN MOVIMIENTO
+  // ============================================================
+
+  Future<void> _abrirDetalleMovimiento(Map<String, dynamic> m) async {
+    if (!mounted) return;
+
+    final cajaNombre = _caja?['nombre']?.toString() ??
+        _caja?['folio']?.toString();
+
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => CashMovementDetailScreen(
+          movement: m,
+          cajaNombre: cajaNombre,
+          fechaComercial:
+              _businessDateKey ?? _formatFechaKey(_businessDate),
+        ),
+      ),
+    );
+
+    if (mounted) await _load(silent: true);
+  }
+
+  Future<void> _imprimirMovimiento(Map<String, dynamic> m) async {
+    try {
+      final config = await _printerService.loadCachedTicketConfig();
+
+      final payload = Map<String, dynamic>.from(m)
+        ..['caja_nombre'] = _caja?['nombre']?.toString()
+        ..['fecha_comercial'] =
+            _businessDateKey ?? _formatFechaKey(_businessDate);
+
+      final result = await _printerService.printMovementByTipo(
+        payload,
+        config: config,
+      );
+
+      if (!mounted) return;
+
+      _snack(result.message, error: !result.success);
+    } catch (e) {
+      if (!mounted) return;
+      _snack('No fue posible imprimir: $e', error: true);
+    }
+  }
+
+  Future<void> _compartirMovimiento(Map<String, dynamic> m) async {
+    try {
+      final config = await _printerService.loadCachedTicketConfig();
+
+      final payload = Map<String, dynamic>.from(m)
+        ..['caja_nombre'] = _caja?['nombre']?.toString()
+        ..['fecha_comercial'] =
+            _businessDateKey ?? _formatFechaKey(_businessDate);
+
+      final bytes = await PdfService.generateCashMovementPdf(
+        movement: payload,
+        config: config,
+      );
+
+      final folio = m['folio']?.toString().trim();
+      final tipo = (m['tipo'] ?? 'movimiento').toString();
+
+      final fileName = (folio != null && folio.isNotEmpty)
+          ? '${tipo}_$folio.pdf'
+          : '${tipo}_${DateTime.now().millisecondsSinceEpoch}.pdf';
+
+      await WhatsAppService.sharePdf(
+        bytes: bytes,
+        fileName: fileName,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      _snack('No fue posible compartir: $e', error: true);
+    }
+  }
+
+  // ============================================================
+  // IMPRIMIR RESUMEN DE CAJA (por secciones)
+  // ============================================================
+
+  Future<void> _imprimirResumenCaja() async {
+    if (_imprimiendoResumen) return;
+    setState(() => _imprimiendoResumen = true);
+
+    try {
+      final config = await _printerService.loadCachedTicketConfig();
+
+      final fechaComercial =
+          _businessDateKey ?? _formatFechaKey(_businessDate);
+
+      final bytes = await PdfService.generateCashSummaryPdf(
+        caja: _caja,
+        resumen: _resumen,
+        ventasPorMetodo: _ventasPorMetodo,
+        movimientosPorTipoMetodo: _movimientosPorTipoMetodo,
+        config: config,
+        fechaComercial: fechaComercial,
+      );
+
+      if (!mounted) return;
+
+      final fileName = 'resumen_caja_$fechaComercial.pdf';
+
+      await WhatsAppService.sharePdf(
+        bytes: bytes,
+        fileName: fileName,
+        text: 'Resumen de caja · $fechaComercial',
+      );
+    } catch (e) {
+      if (!mounted) return;
+      _snack('No fue posible generar el resumen: $e', error: true);
+    } finally {
+      if (mounted) setState(() => _imprimiendoResumen = false);
+    }
+  }
+
+  String _formatFechaKey(DateTime d) {
+    return '${d.year.toString().padLeft(4, '0')}-'
+        '${d.month.toString().padLeft(2, '0')}-'
+        '${d.day.toString().padLeft(2, '0')}';
   }
 
   // ============================================================
@@ -496,11 +700,6 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
                     ),
                   ),
                 ),
-                IconButton(
-                  tooltip: 'Refrescar',
-                  onPressed: () => _load(silent: false),
-                  icon: const Icon(Icons.refresh),
-                ),
               ],
             ),
             const SizedBox(height: 4),
@@ -540,6 +739,34 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
                   foregroundColor: licenciaBloqueada && !_cajaAbierta
                       ? cs.onError
                       : null,
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 8),
+
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed:
+                    _imprimiendoResumen ? null : _imprimirResumenCaja,
+                icon: _imprimiendoResumen
+                    ? SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: cs.primary,
+                        ),
+                      )
+                    : const Icon(Icons.receipt_long_outlined, size: 18),
+                label: Text(
+                  _imprimiendoResumen
+                      ? 'Generando resumen...'
+                      : 'Imprimir resumen de caja',
+                ),
+                style: OutlinedButton.styleFrom(
+                  minimumSize: const Size(0, 46),
                 ),
               ),
             ),
@@ -811,7 +1038,7 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
               children: [
                 Icon(
                   abierta ? Icons.lock_open : Icons.lock_outline,
-                  color: abierta ? Colors.green : Colors.grey,
+                  color: abierta ? cs.primary : cs.onSurfaceVariant,
                 ),
                 const SizedBox(width: 8),
                 Expanded(
@@ -840,7 +1067,7 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
             _kv(
               'Ventas en efectivo',
               _m(ventasEfectivo),
-              color: Colors.green.shade700,
+              color: cs.primary,
             ),
             _kv('Ingresos manuales', _m(ingresos)),
             _kv('Retiros / gastos', _m(egresos)),
@@ -856,8 +1083,8 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
                 color: diferencia == 0
                     ? null
                     : (diferencia > 0
-                          ? Colors.green.shade700
-                          : Colors.red.shade700),
+                          ? cs.primary
+                          : cs.error),
               ),
             ],
 
@@ -1060,7 +1287,7 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
                 0,
                 (acc, v) => acc + _d(v['total']),
               );
-              final color = _colorTipo(tipo);
+              final color = _colorTipo(tipo, cs);
 
               return Padding(
                 padding: const EdgeInsets.only(bottom: 12),
@@ -1166,13 +1393,13 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
             _kv(
               'Ventas en efectivo',
               _m(ventasEfectivo),
-              color: Colors.green.shade700,
+              color: cs.primary,
             ),
             if (ventasTotal > ventasEfectivo)
               _kv(
                 'Ventas otros métodos',
                 _m(ventasTotal - ventasEfectivo),
-                color: Colors.grey.shade700,
+                color: cs.onSurfaceVariant,
               ),
 
             const Divider(height: 16),
@@ -1180,11 +1407,11 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
             _kv(
               'Ingresos manuales',
               _m(ingresos),
-              color: Colors.green.shade700,
+              color: cs.primary,
             ),
-            _kv('Retiros / gastos', _m(egresos), color: Colors.red.shade700),
+            _kv('Retiros / gastos', _m(egresos), color: cs.error),
             if (ajustes != 0)
-              _kv('Ajustes', _m(ajustes), color: Colors.blue.shade700),
+              _kv('Ajustes', _m(ajustes), color: cs.secondary),
 
             const Divider(height: 16),
 
@@ -1193,7 +1420,7 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
               'Neto en caja',
               _m(neto),
               bold: true,
-              color: neto >= 0 ? Colors.green.shade700 : Colors.red.shade700,
+              color: neto >= 0 ? cs.primary : cs.error,
             ),
           ],
         ),
@@ -1257,9 +1484,7 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
                       style: TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.w800,
-                        color: e.value >= 0
-                            ? Colors.green.shade700
-                            : Colors.red.shade700,
+                        color: e.value >= 0 ? cs.primary : cs.error,
                       ),
                     ),
                   ],
@@ -1352,7 +1577,11 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
           padding: const EdgeInsets.all(24),
           child: Column(
             children: [
-              const Icon(Icons.inbox_outlined, size: 48, color: Colors.black26),
+              Icon(
+                Icons.inbox_outlined,
+                size: 48,
+                color: cs.onSurfaceVariant.withValues(alpha: 0.5),
+              ),
               const SizedBox(height: 12),
               const Text(
                 'No hay operaciones',
@@ -1390,57 +1619,77 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
             ),
           ),
           ..._movimientos.map(
-            (m) => Container(
-              decoration: BoxDecoration(
-                border: Border(
-                  top: BorderSide(color: cs.outlineVariant, width: 0.5),
+            (m) => InkWell(
+              onTap: () => _abrirDetalleMovimiento(m),
+              child: Container(
+                decoration: BoxDecoration(
+                  border: Border(
+                    top: BorderSide(color: cs.outlineVariant, width: 0.5),
+                  ),
                 ),
-              ),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              child: Row(
-                children: [
-                  Expanded(
-                    flex: 3,
-                    child: Text(
-                      _fmt(m['registrado_at']?.toString()),
-                      style: const TextStyle(fontSize: 12),
-                    ),
-                  ),
-                  Expanded(
-                    flex: 2,
-                    child: _buildTipoBadge((m['tipo'] ?? '').toString(), cs),
-                  ),
-                  Expanded(
-                    flex: 4,
-                    child: Text(
-                      (m['concepto'] ?? '').toString(),
-                      style: const TextStyle(fontSize: 12),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  Expanded(
-                    flex: 3,
-                    child: Text(
-                      (m['forma_pago'] ?? '—').toString(),
-                      style: const TextStyle(fontSize: 12),
-                    ),
-                  ),
-                  Expanded(
-                    flex: 2,
-                    child: Text(
-                      _m(m['monto']),
-                      textAlign: TextAlign.right,
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700,
-                        color: _esEntrada(m['tipo'])
-                            ? Colors.green.shade700
-                            : Colors.red.shade700,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 10,
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      flex: 3,
+                      child: Text(
+                        _fmt(m['registrado_at']?.toString()),
+                        style: const TextStyle(fontSize: 12),
                       ),
                     ),
-                  ),
-                ],
+                    Expanded(
+                      flex: 2,
+                      child: _buildTipoBadge(
+                        (m['tipo'] ?? '').toString(),
+                        cs,
+                      ),
+                    ),
+                    Expanded(
+                      flex: 4,
+                      child: Text(
+                        (m['concepto'] ?? '').toString(),
+                        style: const TextStyle(fontSize: 12),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    Expanded(
+                      flex: 3,
+                      child: Text(
+                        (m['forma_pago'] ?? '—').toString(),
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                    ),
+                    Expanded(
+                      flex: 2,
+                      child: Text(
+                        _m(m['monto']),
+                        textAlign: TextAlign.right,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: _esEntrada(m['tipo'])
+                              ? cs.primary
+                              : cs.error,
+                        ),
+                      ),
+                    ),
+                    SizedBox(
+                      width: 40,
+                      child: IconButton(
+                        tooltip: 'Más acciones',
+                        iconSize: 18,
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                        onPressed: () => _mostrarAccionesMovimiento(m),
+                        icon: const Icon(Icons.more_vert),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -1449,12 +1698,65 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
     );
   }
 
+  Future<void> _mostrarAccionesMovimiento(Map<String, dynamic> m) async {
+    if (!mounted) return;
+
+    final accion = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) {
+        final cs = Theme.of(ctx).colorScheme;
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: Icon(Icons.visibility_outlined, color: cs.primary),
+                title: const Text('Ver detalle'),
+                onTap: () => Navigator.of(ctx).pop('detalle'),
+              ),
+              ListTile(
+                leading: Icon(Icons.print_outlined, color: cs.primary),
+                title: const Text('Imprimir'),
+                onTap: () => Navigator.of(ctx).pop('imprimir'),
+              ),
+              ListTile(
+                leading: Icon(Icons.share_outlined, color: cs.primary),
+                title: const Text('Compartir PDF'),
+                onTap: () => Navigator.of(ctx).pop('compartir'),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: Icon(Icons.close, color: cs.onSurfaceVariant),
+                title: const Text('Cancelar'),
+                onTap: () => Navigator.of(ctx).pop(),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (!mounted || accion == null) return;
+
+    switch (accion) {
+      case 'detalle':
+        await _abrirDetalleMovimiento(m);
+        break;
+      case 'imprimir':
+        await _imprimirMovimiento(m);
+        break;
+      case 'compartir':
+        await _compartirMovimiento(m);
+        break;
+    }
+  }
+
   // ============================================================
   // AUXILIARES
   // ============================================================
 
   Widget _buildTipoBadge(String tipo, ColorScheme cs) {
-    final color = _colorTipo(tipo);
+    final color = _colorTipo(tipo, cs);
     return Align(
       alignment: Alignment.centerLeft,
       child: Container(
@@ -1494,21 +1796,21 @@ class _CashManagementScreenState extends State<CashManagementScreen> {
     }
   }
 
-  Color _colorTipo(String tipo) {
+  Color _colorTipo(String tipo, ColorScheme cs) {
     switch (tipo.toLowerCase()) {
       case 'ingreso':
-        return Colors.green.shade700;
+        return cs.primary;
       case 'egreso':
-        return Colors.red.shade700;
+        return cs.error;
       case 'retiro':
-        return Colors.orange.shade700;
+        return cs.tertiary;
       case 'ajuste':
-        return Colors.blue.shade700;
+        return cs.secondary;
       case 'apertura':
       case 'cierre':
-        return Colors.grey.shade700;
+        return cs.onSurfaceVariant;
       default:
-        return Colors.grey;
+        return cs.onSurfaceVariant;
     }
   }
 

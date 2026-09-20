@@ -2104,9 +2104,97 @@ class PrinterService {
   // LIMPIEZA
   // ============================================================
 
-  Future<void> dispose() async {
-    // El estado Bluetooth es compartido entre las instancias.
-    // Una pantalla puede destruir su PrinterService sin
-    // desconectar la impresora utilizada por otra pantalla.
+  Future<void> dispose() async {}
+  Future<PrintOperationResult> printRetiro(
+    Map<String, dynamic> movement, {
+    TicketConfig? config,
+  }) async {
+    final effectiveConfig = config ?? await loadCachedTicketConfig();
+
+    final bytes = await _buildCashMovementTicket(
+      movement,
+      type: 'RETIRO',
+      config: effectiveConfig,
+    );
+
+    return _printCopies(bytes, effectiveConfig.copies);
   }
+
+  Future<PrintOperationResult> printAjuste(
+    Map<String, dynamic> movement, {
+    TicketConfig? config,
+  }) async {
+    final effectiveConfig = config ?? await loadCachedTicketConfig();
+
+    final bytes = await _buildCashMovementTicket(
+      movement,
+      type: 'AJUSTE',
+      config: effectiveConfig,
+    );
+
+    return _printCopies(bytes, effectiveConfig.copies);
+  }
+
+    // ============================================================
+  // RETIRO
+  // ============================================================
+
+  Future<PrintOperationResult> reprintRetiro(
+    Map<String, dynamic> movement, {
+    TicketConfig? config,
+  }) {
+    return printRetiro(movement, config: config);
+  }
+
+  // ============================================================
+  // AJUSTE
+  // ============================================================
+
+  Future<PrintOperationResult> reprintAjuste(
+    Map<String, dynamic> movement, {
+    TicketConfig? config,
+  }) {
+    return printAjuste(movement, config: config);
+  }
+
+  // ============================================================
+  // MOVIMIENTO GENÉRICO POR TIPO
+  // ============================================================
+  //
+  // Decide qué método usar según `movement['tipo']`.
+  //
+  // Tipos soportados:
+  //   • ingreso  → printIncome
+  //   • egreso   → printExpense
+  //   • retiro   → printRetiro
+  //   • ajuste   → printAjuste
+  //
+  // Cualquier otro tipo devuelve error.
+
+  Future<PrintOperationResult> printMovementByTipo(
+    Map<String, dynamic> movement, {
+    TicketConfig? config,
+  }) async {
+    final tipo = movement['tipo']?.toString().toLowerCase().trim() ?? '';
+
+    switch (tipo) {
+      case 'ingreso':
+        return printIncome(movement, config: config);
+
+      case 'egreso':
+        return printExpense(movement, config: config);
+
+      case 'retiro':
+        return printRetiro(movement, config: config);
+
+      case 'ajuste':
+        return printAjuste(movement, config: config);
+
+      default:
+        return PrintOperationResult.error(
+          'Tipo de movimiento no soportado: $tipo',
+        );
+    }
+  }
+  
 }

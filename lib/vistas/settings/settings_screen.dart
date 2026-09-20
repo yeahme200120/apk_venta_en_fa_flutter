@@ -6,10 +6,12 @@ import 'package:flutter/material.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../core/config/app_theme.dart';
+import '../../core/database/local_db.dart';
 import '../../core/database/pos_db_service.dart';
 import '../../core/network/api_client.dart';
 import '../../core/network/network_monitor.dart';
 import '../../core/services/catalog_service.dart';
+import '../../core/services/sync_orchestrator.dart';
 import '../../core/services/sync_service.dart';
 import '../../core/storage/app_storage.dart';
 import '../auth/login_screen.dart';
@@ -17,6 +19,8 @@ import '../catalog/catalog_admin_screen.dart';
 import 'printer_settings_screen.dart';
 import 'company_logo_screen.dart';
 import '../widgets/app_scaffold.dart';
+import '../widgets/sync_progress_dialog.dart';
+import '../widgets/sync_result_dialog.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
@@ -40,7 +44,10 @@ class SettingsScreen extends StatelessWidget {
             child: const Text('Cancelar'),
           ),
           FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(ctx).colorScheme.error,
+              foregroundColor: Theme.of(ctx).colorScheme.onError,
+            ),
             onPressed: () => Navigator.of(ctx).pop(true),
             child: const Text('Cerrar sesión'),
           ),
@@ -72,15 +79,13 @@ class SettingsScreen extends StatelessWidget {
   // CAMBIAR CONTRASEÑA
   // ============================================================
   //
-  // [PASSWORD] Abre un diálogo para cambiar la contraseña del
-  // usuario autenticado.
+  // CAMBIO:
+  // Cuando la contraseña se cambia correctamente, se cierra la
+  // sesión SIEMPRE y se regresa al login.
   //
-  // Esta operación REQUIERE INTERNET (el endpoint es online).
-  // Si no hay red, se muestra aviso y se cancela.
-  //
-  // Si el backend responde OK, limpiamos el flag local
-  // `requiere_cambio_password`.
-  // ============================================================
+  // El Navigator se captura ANTES de los awaits largos para que
+  // el push no sea sobrescrito por rebuilds del árbol (listeners
+  // de sesión, AuthGate, etc.).
 
   Future<void> _cambiarPassword(BuildContext context) async {
     final networkMonitor = NetworkMonitor();
@@ -108,7 +113,10 @@ class SettingsScreen extends StatelessWidget {
 
     if (result == null || !context.mounted) return;
 
-    // Diálogo de progreso.
+    // Capturamos el Navigator raíz AHORA, antes de cualquier
+    // await adicional.
+    final rootNavigator = Navigator.of(context, rootNavigator: true);
+
     NavigatorState? progressNavigator;
 
     unawaited(
@@ -140,7 +148,6 @@ class SettingsScreen extends StatelessWidget {
         newPassword: result['nueva'] as String,
       );
 
-      // [PASSWORD] Limpiar el flag local.
       await AppStorage().setRequiresPasswordChange(false);
 
       if (progressNavigator != null && progressNavigator!.canPop()) {
@@ -149,33 +156,52 @@ class SettingsScreen extends StatelessWidget {
 
       if (!context.mounted) return;
 
+      // ==========================================================
+      // AVISO AL USUARIO: SESIÓN CERRADA
+      // ==========================================================
       await showDialog<void>(
         context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Row(
-            children: [
-              Icon(Icons.check_circle_outline, color: Colors.green),
-              SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  'Contraseña actualizada',
-                  style: TextStyle(fontSize: 16),
+        barrierDismissible: false,
+        builder: (ctx) {
+          final cs = Theme.of(ctx).colorScheme;
+
+          return AlertDialog(
+            title: Row(
+              children: [
+                Icon(Icons.check_circle_outline, color: cs.primary),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text(
+                    'Contraseña actualizada',
+                    style: TextStyle(fontSize: 16),
+                  ),
                 ),
+              ],
+            ),
+            content: const Text(
+              'Tu contraseña se cambió correctamente. '
+              'Por seguridad, cerraremos la sesión para que inicies '
+              'con tu nueva contraseña.',
+              style: TextStyle(fontSize: 13),
+            ),
+            actions: [
+              FilledButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('Entendido'),
               ),
             ],
-          ),
-          content: const Text(
-            'Tu contraseña se cambió correctamente. '
-            'Las sesiones anteriores fueron cerradas por seguridad.',
-            style: TextStyle(fontSize: 13),
-          ),
-          actions: [
-            FilledButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('Entendido'),
-            ),
-          ],
-        ),
+          );
+        },
+      );
+
+      // ==========================================================
+      // FORZAR LOGOUT + REGRESO AL LOGIN
+      // ==========================================================
+      await AppStorage().logOut();
+
+      rootNavigator.pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const LoginScreen()),
+        (route) => false,
       );
     } catch (error) {
       if (progressNavigator != null && progressNavigator!.canPop()) {
@@ -185,15 +211,14 @@ class SettingsScreen extends StatelessWidget {
       if (!context.mounted) return;
 
       final raw = error.toString().replaceFirst('Exception: ', '').trim();
+      final cs = Theme.of(context).colorScheme;
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            raw.isEmpty
-                ? 'No fue posible cambiar la contraseña.'
-                : raw,
+            raw.isEmpty ? 'No fue posible cambiar la contraseña.' : raw,
           ),
-          backgroundColor: Colors.red.shade700,
+          backgroundColor: cs.error,
         ),
       );
     }
@@ -219,9 +244,7 @@ class SettingsScreen extends StatelessWidget {
       return;
     }
 
-    // ⚠️ Usamos la fecha comercial del servidor, no DateTime.now().
-    final rawBusinessDate =
-        await AppStorage().getServerBusinessDate();
+    final rawBusinessDate = await AppStorage().getServerBusinessDate();
 
     final businessDate =
         DateTime.tryParse(rawBusinessDate ?? '') ?? DateTime.now();
@@ -250,7 +273,7 @@ class SettingsScreen extends StatelessWidget {
   }
 
   // ============================================================
-  // SINCRONIZAR
+  // SINCRONIZAR (orquestador único)
   // ============================================================
 
   Future<void> _syncNow(BuildContext context) async {
@@ -269,44 +292,254 @@ class SettingsScreen extends StatelessWidget {
       return;
     }
 
-    final String? rawBusinessDate =
-        await AppStorage().getServerBusinessDate();
+    final rawBusinessDate = await AppStorage().getServerBusinessDate();
 
-    final DateTime businessDate =
+    final businessDate =
         DateTime.tryParse(rawBusinessDate ?? '') ?? DateTime.now();
 
+    if (!context.mounted) return;
+
+    final progressNotifier = ValueNotifier<String>(
+      'Iniciando sincronización...',
+    );
+
+    NavigatorState? progressNavigator;
+
+    unawaited(
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) {
+          progressNavigator = Navigator.of(ctx, rootNavigator: true);
+
+          return SyncProgressDialog(progressNotifier: progressNotifier);
+        },
+      ),
+    );
+
+    await Future.delayed(const Duration(milliseconds: 120));
+
     try {
-      await SyncService().syncPendingSales(
+      final report = await SyncOrchestrator().syncAll(
         companyId: companyId,
         userId: userId,
         businessDate: businessDate,
+        onProgress: (stage, message) {
+          progressNotifier.value = message;
+        },
       );
+
+      if (progressNavigator != null && progressNavigator!.canPop()) {
+        progressNavigator!.pop();
+      }
+
+      progressNotifier.dispose();
 
       if (!context.mounted) return;
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Sincronización manual completada.')),
+      await showSyncResultDialog(
+        context,
+        report: report,
+        onRetry: () => _syncNow(context),
       );
     } catch (error) {
+      if (progressNavigator != null && progressNavigator!.canPop()) {
+        progressNavigator!.pop();
+      }
+
+      progressNotifier.dispose();
+
       if (!context.mounted) return;
 
+      final cs = Theme.of(context).colorScheme;
+
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No fue posible sincronizar: $error')),
+        SnackBar(
+          content: Text('No fue posible sincronizar: $error'),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: cs.error,
+        ),
       );
     }
   }
 
   // ============================================================
+  // SINCRONIZAR TODOS LOS DÍAS CON PENDIENTES
+  // ============================================================
+  //
+  // Recorre todas las business_date distintas con pendientes
+  // en LocalDb (días anteriores incluidos) y las sincroniza.
+  //
+  // Devuelve un resumen consolidado:
+  //
+  //   {
+  //     'total': int,
+  //     'synced': int,
+  //     'failed': int,
+  //     'skipped': int,
+  //     'dates': List<String>,
+  //   }
+  //
+  // NO toca catálogos. Solo ventas y sus pendientes.
+  Future<Map<String, dynamic>> _syncAllBusinessDates({
+    required int companyId,
+    required int userId,
+    required DateTime currentBusinessDate,
+    required void Function(String message) onProgress,
+  }) async {
+    final db = LocalDb();
+
+    final totalSynced = <int>[0];
+    final totalFailed = <int>[0];
+    final totalSkipped = <int>[0];
+    final totalCount = <int>[0];
+    final processedDates = <String>[];
+
+    // ----------------------------------------------------------
+    // 1. DÍA ACTUAL
+    // ----------------------------------------------------------
+    onProgress('Sincronizando día actual...');
+
+    try {
+      final result = await SyncService().syncPendingSales(
+        companyId: companyId,
+        userId: userId,
+        businessDate: currentBusinessDate,
+      );
+
+      totalCount[0] += result.total;
+      totalSynced[0] += result.synced;
+      totalFailed[0] += result.failed;
+      totalSkipped[0] += result.skipped;
+
+      processedDates.add(_businessDateKey(currentBusinessDate));
+    } catch (e) {
+      debugPrint('⚠️ Sync del día actual falló: $e');
+    }
+
+    // ----------------------------------------------------------
+    // 2. DÍAS ANTERIORES CON PENDIENTES
+    // ----------------------------------------------------------
+    //
+    // En LocalDb ya existe getDistinctBusinessDatesWithPendingSales().
+    // Trae solo días con sync_status en pending/failed/syncing.
+    final pendingDates = await db.getDistinctBusinessDatesWithPendingSales();
+
+    final currentKey = _businessDateKey(currentBusinessDate);
+
+    for (final rawDate in pendingDates) {
+      final dateStr = rawDate.trim();
+
+      if (dateStr.isEmpty) continue;
+      if (dateStr == currentKey) continue; // ya procesado arriba
+
+      onProgress('Sincronizando pendientes del $dateStr...');
+
+      final parsed = DateTime.tryParse(dateStr);
+
+      if (parsed == null) continue;
+
+      try {
+        final result = await SyncService().syncPendingSales(
+          companyId: companyId,
+          userId: userId,
+          businessDate: parsed,
+        );
+
+        totalCount[0] += result.total;
+        totalSynced[0] += result.synced;
+        totalFailed[0] += result.failed;
+        totalSkipped[0] += result.skipped;
+
+        processedDates.add(dateStr);
+      } catch (e) {
+        debugPrint('⚠️ Sync del día $dateStr falló: $e');
+      }
+    }
+
+    // ----------------------------------------------------------
+    // 3. PURGAR COLA CON LA REGLA DE 3
+    // ----------------------------------------------------------
+    //
+    // LocalDb.purgeOldSyncQueue() ya implementa:
+    //   - Borrar items synced > 7 días.
+    //   - Borrar items failed > 30 días.
+    //   - Borrar items failed con attempts >= 3 (la 4ª no sube → fuera).
+    //   - Recortar a máximo 500.
+    onProgress('Purgando cola de sincronización...');
+
+    try {
+      await db.purgeOldSyncQueue();
+    } catch (e) {
+      debugPrint('⚠️ Purga de cola falló: $e');
+    }
+
+    return {
+      'total': totalCount[0],
+      'synced': totalSynced[0],
+      'failed': totalFailed[0],
+      'skipped': totalSkipped[0],
+      'dates': processedDates,
+    };
+  }
+
+  String _businessDateKey(DateTime d) {
+    return '${d.year.toString().padLeft(4, '0')}-'
+        '${d.month.toString().padLeft(2, '0')}-'
+        '${d.day.toString().padLeft(2, '0')}';
+  }
+
+  // ============================================================
   // LIMPIAR DATOS DEL DÍA
   // ============================================================
+  //
+  // Reglas aplicadas:
+  //
+  //   1. Sincroniza GLOBALMENTE con SyncOrchestrator().syncAll
+  //      (Sync Queue + ventas pendientes + outbox + pull).
+  //   2. Barre días anteriores con pendientes
+  //      (_syncAllBusinessDates) y purga la cola con la regla
+  //      de 3 intentos (la 4ª se borra).
+  //   3. Borra SOLO datos contables del día:
+  //         - LocalDb: sales, sale_items, sale_payments,
+  //                    cash_registers, cash_movements
+  //         - Pos DB del día: borra el archivo de base diaria.
+  //      NO toca catálogos.
+  //   4. logOutForCleanup() borra usuario/empresa/credenciales
+  //      offline y preserva únicamente:
+  //         - license_snapshot (licencia del dispositivo)
+  //         - ticket_config (config global del dispositivo)
+  //         - terms_accepted_user_* (consentimiento T&C)
+  //   5. Regresa al login usando el Navigator raíz capturado
+  //      al inicio, para que el push no sea descartado por
+  //      rebuilds del árbol.
+  //
+  // Requiere Internet para poder sincronizar antes de borrar.
 
   Future<void> _limpiarDia(BuildContext context) async {
+    // ==========================================================
+    // CAPTURA DE ESTADO ANTES DE CUALQUIER AWAIT
+    // ==========================================================
+    //
+    // Todo lo que toque `context` debe ocurrir AQUÍ, antes de
+    // cualquier await, para no disparar warnings de
+    // use_build_context_synchronously.
+    //
+    // Además:
+    //   • El push final no será sobrescrito por rebuilds del
+    //     árbol disparados por logOut() (AuthGate, etc.).
+    //   • El messenger sobrevive aunque el árbol se reconstruya.
+    //   • Usamos rootNavigator.context para abrir diálogos,
+    //     evitando referenciar el `context` original del método
+    //     después de un async gap.
+    final rootNavigator = Navigator.of(context, rootNavigator: true);
+    final messenger = ScaffoldMessenger.of(context);
+    final cs = Theme.of(context).colorScheme;
+
     final networkMonitor = NetworkMonitor();
 
     if (!networkMonitor.isOnline) {
-      if (!context.mounted) return;
-
-      ScaffoldMessenger.of(context).showSnackBar(
+      messenger.showSnackBar(
         const SnackBar(
           content: Text(
             'No hay conexión a Internet. Conéctate para sincronizar antes de limpiar.',
@@ -319,116 +552,201 @@ class SettingsScreen extends StatelessWidget {
     }
 
     final confirm = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Limpiar datos del día'),
-        content: const Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Esta acción eliminará todas las ventas y datos de la jornada '
-              'actual de este dispositivo. La sesión permanece activa.',
-              style: TextStyle(fontSize: 13),
-            ),
-            SizedBox(height: 10),
-            Text(
-              'Antes de limpiar, se sincronizarán automáticamente las ventas '
-              'pendientes con el servidor.',
-              style: TextStyle(fontSize: 13),
-            ),
-            SizedBox(height: 12),
-            Text(
-              '⚠️ Esta operación no se puede deshacer.',
-              style: TextStyle(
-                color: Colors.red,
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
+      context: rootNavigator.context,
+      builder: (dialogContext) {
+        final dialogCs = Theme.of(dialogContext).colorScheme;
+
+        return AlertDialog(
+          title: const Text('Limpiar datos del día'),
+          content: const Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Se sincronizarán primero TODOS los pendientes '
+                '(día actual y días anteriores).',
+                style: TextStyle(fontSize: 13),
               ),
+              SizedBox(height: 10),
+              Text(
+                'Después se eliminarán ventas, movimientos de caja y '
+                'registros de caja del dispositivo. Los catálogos '
+                '(productos, clientes, categorías, etc.) NO se tocan.',
+                style: TextStyle(fontSize: 13),
+              ),
+              SizedBox(height: 10),
+              Text(
+                'Al final, la sesión se cerrará y volverás al login.',
+                style: TextStyle(fontSize: 13),
+              ),
+              SizedBox(height: 12),
+              Text(
+                '⚠️ Esta operación no se puede deshacer.',
+                style: TextStyle(
+                  color: Colors.red,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: dialogCs.error,
+                foregroundColor: dialogCs.onError,
+              ),
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Limpiar y salir'),
             ),
           ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('Cancelar'),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(
-              backgroundColor: Colors.red,
-              foregroundColor: Colors.white,
-            ),
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('Limpiar de todos modos'),
-          ),
-        ],
-      ),
+        );
+      },
     );
 
-    if (confirm != true || !context.mounted) {
+    if (confirm != true) {
       return;
     }
 
-    // ============================================================
-    // DIÁLOGO DE PROGRESO
-    // ============================================================
+    final progressNotifier = ValueNotifier<String>('Iniciando limpieza...');
 
     NavigatorState? progressNavigator;
 
     unawaited(
       showDialog<void>(
-        context: context,
+        // ignore: use_build_context_synchronously
+        context: rootNavigator.context,
         barrierDismissible: false,
-        builder: (ctx) {
-          progressNavigator = Navigator.of(ctx, rootNavigator: true);
-
-          return const AlertDialog(
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                CircularProgressIndicator(),
-                SizedBox(height: 16),
-                Text('Sincronizando ventas pendientes...'),
-              ],
-            ),
+        builder: (progressContext) {
+          progressNavigator = Navigator.of(
+            progressContext,
+            rootNavigator: true,
           );
+
+          return SyncProgressDialog(progressNotifier: progressNotifier);
         },
       ),
     );
 
+    // --------------------------------------------------------
+    // A PARTIR DE AQUÍ: SOLO VARIABLES LOCALES, NO `context`
+    // --------------------------------------------------------
+
+    final companyId = await AppStorage().getEmpresaId() ?? 0;
+    final userId = await AppStorage().getUserId() ?? 0;
+
+    if (companyId <= 0 || userId <= 0) {
+      if (progressNavigator != null && progressNavigator!.canPop()) {
+        progressNavigator!.pop();
+      }
+
+      progressNotifier.dispose();
+
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('No hay sesión activa para limpiar datos.'),
+        ),
+      );
+
+      return;
+    }
+
+    final rawBusinessDate = await AppStorage().getServerBusinessDate();
+
+    final businessDate =
+        DateTime.tryParse(rawBusinessDate ?? '') ?? DateTime.now();
+
     await Future.delayed(const Duration(milliseconds: 120));
 
     try {
-      final companyId = await AppStorage().getEmpresaId() ?? 0;
-      final userId = await AppStorage().getUserId() ?? 0;
+      // ========================================================
+      // 1. SINCRONIZACIÓN GLOBAL CON EL ORQUESTADOR
+      // ========================================================
+      //
+      // SyncOrchestrator().syncAll es la ruta canónica:
+      //   • Sync Queue (categorías, productos, cajas, movimientos)
+      //   • Ventas pendientes
+      //   • Outbox del día
+      //   • Pull de cambios del servidor
+      //
+      // Se ejecuta ANTES de cualquier borrado.
+      progressNotifier.value = 'Sincronizando pendientes...';
 
-      final String? rawBusinessDate =
-          await AppStorage().getServerBusinessDate();
+      try {
+        final report = await SyncOrchestrator().syncAll(
+          companyId: companyId,
+          userId: userId,
+          businessDate: businessDate,
+          onProgress: (stage, message) {
+            progressNotifier.value = message;
+          },
+        );
 
-      final DateTime businessDate =
-          DateTime.tryParse(rawBusinessDate ?? '') ?? DateTime.now();
-
-      if (companyId <= 0 || userId <= 0) {
-        throw Exception('No hay sesión activa.');
+        debugPrint(
+          '✅ SyncOrchestrator.syncAll en limpieza: '
+          '$report',
+        );
+      } catch (e) {
+        debugPrint('⚠️ SyncOrchestrator.syncAll falló: $e');
+        // No abortamos: seguimos con el barrido de días
+        // anteriores y la purga.
       }
 
-      final syncResult = await SyncService().syncPendingSales(
+      // ========================================================
+      // 2. BARRIDO DE DÍAS ANTERIORES CON PENDIENTES
+      // ========================================================
+      //
+      // syncAll suele tocar solo el día actual. Aquí iteramos
+      // todas las business_date distintas con pendientes en
+      // LocalDb para cubrir días anteriores.
+      progressNotifier.value = 'Revisando días anteriores...';
+
+      final syncSummary = await _syncAllBusinessDates(
         companyId: companyId,
         userId: userId,
-        businessDate: businessDate,
+        currentBusinessDate: businessDate,
+        onProgress: (msg) => progressNotifier.value = msg,
       );
 
-      if (syncResult.failed > 0 && context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+      final failed = syncSummary['failed'] as int;
+      final synced = syncSummary['synced'] as int;
+
+      if (failed > 0) {
+        messenger.showSnackBar(
           SnackBar(
             content: Text(
-              '⚠️ Se sincronizaron ${syncResult.synced} ventas, '
-              'pero ${syncResult.failed} fallaron. La limpieza continuará.',
+              '⚠️ Se sincronizaron $synced operaciones, '
+              'pero $failed fallaron. Se purgarán automáticamente '
+              'los pendientes con 3 intentos fallidos.',
             ),
-            backgroundColor: Colors.orange,
+            backgroundColor: cs.tertiary,
           ),
         );
       }
+
+      // ========================================================
+      // 3. ARCHIVAR PENDIENTES DEL DÍA (a LocalDb) ANTES DE BORRAR
+      // ========================================================
+      progressNotifier.value = 'Archivando pendientes del día...';
+
+      try {
+        await SyncService().archivePendingSalesFromDay(
+          companyId: companyId,
+          userId: userId,
+          businessDate: businessDate,
+        );
+      } catch (e) {
+        debugPrint('⚠️ Archivar pendientes falló: $e');
+      }
+
+      // ========================================================
+      // 4. BORRAR BASE DIARIA
+      // ========================================================
+      progressNotifier.value = 'Eliminando base diaria...';
 
       await PosDatabaseService().deleteDatabaseFile(
         companyId: companyId,
@@ -436,47 +754,70 @@ class SettingsScreen extends StatelessWidget {
         businessDate: businessDate,
       );
 
+      // ========================================================
+      // 5. LIMPIAR OPERATION STATE
+      // ========================================================
       await AppStorage().saveOperationState({});
+
+      // ========================================================
+      // 6. BORRAR SOLO DATOS CONTABLES EN LOCALDB
+      // ========================================================
+      //
+      // clearDailyData() borra exactamente:
+      //   sales, sale_items, sale_payments,
+      //   cash_registers, cash_movements
+      //
+      // NO toca catálogos ni company.
+      progressNotifier.value = 'Eliminando ventas y cajas locales...';
+
+      await LocalDb().clearDailyData();
+
+      // ========================================================
+      // 7. CERRAR SESIÓN Y BORRAR USUARIO/EMPRESA
+      // ========================================================
+      //
+      // logOutForCleanup() preserva ÚNICAMENTE:
+      //   • license_snapshot  → licencia del dispositivo
+      //   • ticket_config     → config global del dispositivo
+      //   • terms_accepted_*  → consentimiento T&C
+      //
+      // Borra usuario, empresa, credenciales offline y fecha
+      // comercial para que el auto-login no pueda reentrar.
+      progressNotifier.value = 'Cerrando sesión...';
+
+      await AppStorage().logOutForCleanup();
 
       if (progressNavigator != null && progressNavigator!.canPop()) {
         progressNavigator!.pop();
       }
 
-      if (!context.mounted) return;
+      progressNotifier.dispose();
 
-      await showDialog<void>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('Datos del día eliminados'),
-          content: const Text(
-            'La base de datos del día se ha limpiado correctamente. '
-            'La sesión sigue activa.',
-          ),
-          actions: [
-            FilledButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('Aceptar'),
-            ),
-          ],
-        ),
+      // ========================================================
+      // 8. REGRESAR AL LOGIN
+      // ========================================================
+      //
+      // Usamos el rootNavigator capturado al inicio para que el
+      // push no sea descartado por rebuilds del árbol.
+      rootNavigator.pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const LoginScreen()),
+        (route) => false,
       );
     } catch (error) {
       if (progressNavigator != null && progressNavigator!.canPop()) {
         progressNavigator!.pop();
       }
 
-      if (!context.mounted) return;
+      progressNotifier.dispose();
 
-      ScaffoldMessenger.of(context).showSnackBar(
+      messenger.showSnackBar(
         SnackBar(
           content: Text('Error al limpiar: $error'),
-          backgroundColor: Colors.red,
+          backgroundColor: cs.error,
         ),
       );
     }
-  }
-
-  // ============================================================
+  } // ============================================================
   // DISPOSITIVO ACTUAL
   // ============================================================
 
@@ -585,12 +926,14 @@ class SettingsScreen extends StatelessWidget {
     String label,
     String value,
   ) {
+    final cs = Theme.of(context).colorScheme;
+
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 7),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, size: 18, color: Theme.of(context).colorScheme.primary),
+          Icon(icon, size: 18, color: cs.primary),
           const SizedBox(width: 10),
           Expanded(
             child: Column(
@@ -598,9 +941,9 @@ class SettingsScreen extends StatelessWidget {
               children: [
                 Text(
                   label,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 11,
-                    color: Colors.black54,
+                    color: cs.onSurfaceVariant,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
@@ -1163,13 +1506,7 @@ class SettingsScreen extends StatelessWidget {
   }
 
   // ============================================================
-  // [PASSWORD] BANNER PERSISTENTE
-  // ============================================================
-  //
-  // Si el usuario tiene el flag `requiere_cambio_password` activo,
-  // mostramos un banner rojo al inicio de la pantalla.
-  //
-  // El banner se carga desde AppStorage.
+  // BANNER PERSISTENTE DE CAMBIO DE CONTRASEÑA
   // ============================================================
 
   Widget _buildRequierePasswordChangeBanner(
@@ -1264,7 +1601,6 @@ class SettingsScreen extends StatelessWidget {
             keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
             padding: const EdgeInsets.all(16),
             children: [
-              // [PASSWORD] Banner persistente si requiere cambio.
               if (requiereCambio)
                 _buildRequierePasswordChangeBanner(
                   context,
@@ -1289,7 +1625,7 @@ class SettingsScreen extends StatelessWidget {
                 title: 'Cambiar contraseña',
                 subtitle:
                     'Actualiza tu contraseña periódicamente por seguridad. '
-                    'Requiere Internet.',
+                    'Requiere Internet y cierra la sesión actual.',
                 icon: Icons.lock_reset_outlined,
                 onTap: () => _cambiarPassword(context),
               ),
@@ -1317,8 +1653,7 @@ class SettingsScreen extends StatelessWidget {
               const _SectionTitle('Dispositivo'),
               _SettingTile(
                 title: 'Dispositivo actual',
-                subtitle:
-                    'Sistema operativo, versión de app, red y datos de instalación.',
+                subtitle: 'Sistema operativo, versión de app, red y datos de instalación.',
                 icon: Icons.devices_outlined,
                 onTap: () => _showDeviceInfo(context),
               ),
@@ -1336,20 +1671,18 @@ class SettingsScreen extends StatelessWidget {
               const _SectionTitle('Sistema'),
               _SettingTile(
                 title: 'Administrar catálogo',
-                subtitle:
-                    'Crear, editar o desactivar categorías, productos y formas de pago.',
+                subtitle: 'Crear, editar o desactivar categorías, productos y formas de pago.',
                 icon: Icons.inventory_2_outlined,
                 onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) => const CatalogAdminScreen(),
-                  ),
+                  MaterialPageRoute(builder: (_) => const CatalogAdminScreen()),
                 ),
               ),
               _SettingTile(
                 title: 'Limpiar datos del día',
                 subtitle:
-                    'Elimina las ventas y datos de la jornada actual de este dispositivo. '
-                    'La sesión permanece activa. Requiere Internet.',
+                    'Sincroniza todos los pendientes, elimina ventas y cajas '
+                    'del dispositivo (los catálogos no se tocan) y cierra '
+                    'la sesión. Requiere Internet.',
                 icon: Icons.cleaning_services_outlined,
                 onTap: () => _limpiarDia(context),
               ),
@@ -1367,8 +1700,7 @@ class SettingsScreen extends StatelessWidget {
               ),
               _SettingTile(
                 title: 'Cerrar sesión',
-                subtitle:
-                    'Borra la sesión local y los datos del día del dispositivo.',
+                subtitle: 'Borra la sesión local y los datos del día del dispositivo.',
                 icon: Icons.logout,
                 onTap: () => _logout(context),
               ),
@@ -1381,7 +1713,7 @@ class SettingsScreen extends StatelessWidget {
 }
 
 // ============================================================
-// [PASSWORD] DIÁLOGO CAMBIAR CONTRASEÑA
+// DIÁLOGO CAMBIAR CONTRASEÑA
 // ============================================================
 
 class _ChangePasswordDialog extends StatefulWidget {
@@ -1454,8 +1786,8 @@ class _ChangePasswordDialogState extends State<_ChangePasswordDialog> {
 
     if (nueva == actual) {
       setState(
-        () => _errorNueva =
-            'La nueva contraseña debe ser diferente a la actual.',
+        () =>
+            _errorNueva = 'La nueva contraseña debe ser diferente a la actual.',
       );
       return;
     }
@@ -1470,10 +1802,10 @@ class _ChangePasswordDialogState extends State<_ChangePasswordDialog> {
       return;
     }
 
-    Navigator.of(context, rootNavigator: true).pop(<String, dynamic>{
-      'actual': actual,
-      'nueva': nueva,
-    });
+    Navigator.of(
+      context,
+      rootNavigator: true,
+    ).pop(<String, dynamic>{'actual': actual, 'nueva': nueva});
   }
 
   Widget _passwordField({
@@ -1537,8 +1869,7 @@ class _ChangePasswordDialogState extends State<_ChangePasswordDialog> {
               controller: _actualController,
               label: 'Contraseña actual',
               obscureText: !_mostrarActual,
-              onToggle: () =>
-                  setState(() => _mostrarActual = !_mostrarActual),
+              onToggle: () => setState(() => _mostrarActual = !_mostrarActual),
               errorText: _errorActual,
               onChanged: (_) {
                 if (_errorActual != null) {
@@ -1560,11 +1891,14 @@ class _ChangePasswordDialogState extends State<_ChangePasswordDialog> {
               },
             ),
             const SizedBox(height: 6),
-            const Padding(
-              padding: EdgeInsets.only(left: 4),
+            Padding(
+              padding: const EdgeInsets.only(left: 4),
               child: Text(
                 'Mín. 8 caracteres, con mayúscula, minúscula y número.',
-                style: TextStyle(fontSize: 11, color: Color(0xFF888888)),
+                style: TextStyle(
+                  fontSize: 11,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
               ),
             ),
             const SizedBox(height: 14),
@@ -1587,8 +1921,7 @@ class _ChangePasswordDialogState extends State<_ChangePasswordDialog> {
       ),
       actions: [
         TextButton(
-          onPressed: () =>
-              Navigator.of(context, rootNavigator: true).pop(),
+          onPressed: () => Navigator.of(context, rootNavigator: true).pop(),
           child: const Text('Cancelar'),
         ),
         FilledButton.icon(
@@ -1713,6 +2046,7 @@ class _UserProfileDialogState extends State<_UserProfileDialog> {
     required String value,
     required IconData icon,
   }) {
+    final cs = Theme.of(context).colorScheme;
     final displayValue = value.trim().isEmpty ? 'No disponible' : value.trim();
 
     return InputDecorator(
@@ -1720,7 +2054,7 @@ class _UserProfileDialogState extends State<_UserProfileDialog> {
         labelText: label,
         prefixIcon: Icon(icon),
         filled: true,
-        fillColor: Colors.grey.shade100,
+        fillColor: cs.surfaceContainerHighest,
         border: const OutlineInputBorder(),
         enabledBorder: const OutlineInputBorder(),
         focusedBorder: const OutlineInputBorder(),
@@ -1729,7 +2063,7 @@ class _UserProfileDialogState extends State<_UserProfileDialog> {
         displayValue,
         maxLines: 3,
         overflow: TextOverflow.ellipsis,
-        style: const TextStyle(color: Colors.black87),
+        style: TextStyle(color: cs.onSurface),
       ),
     );
   }
@@ -1779,29 +2113,29 @@ class _UserProfileDialogState extends State<_UserProfileDialog> {
             if (widget.empresaId.trim().isNotEmpty)
               Text(
                 'ID: ${widget.empresaId.trim()}',
-                style: const TextStyle(fontSize: 12, color: Colors.black54),
+                style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
               ),
             if (widget.empresaRfc.trim().isNotEmpty)
               Text(
                 'RFC: ${widget.empresaRfc.trim()}',
-                style: const TextStyle(fontSize: 12, color: Colors.black54),
+                style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
               ),
             if (widget.empresaTelefono.trim().isNotEmpty)
               Text(
                 'Teléfono: ${widget.empresaTelefono.trim()}',
-                style: const TextStyle(fontSize: 12, color: Colors.black54),
+                style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
               ),
             if (widget.empresaEmail.trim().isNotEmpty)
               Text(
                 'Correo: ${widget.empresaEmail.trim()}',
-                style: const TextStyle(fontSize: 12, color: Colors.black54),
+                style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
               ),
             if (widget.empresaDireccion.trim().isNotEmpty)
               Text(
                 'Dirección: ${widget.empresaDireccion.trim()}',
                 maxLines: 3,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 12, color: Colors.black54),
+                style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
               ),
           ],
         ],
@@ -1811,6 +2145,8 @@ class _UserProfileDialogState extends State<_UserProfileDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
     return Dialog(
       insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
       child: SafeArea(
@@ -1832,12 +2168,12 @@ class _UserProfileDialogState extends State<_UserProfileDialog> {
                       width: 46,
                       height: 46,
                       decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.primaryContainer,
+                        color: cs.primaryContainer,
                         borderRadius: BorderRadius.circular(14),
                       ),
                       child: Icon(
                         Icons.person_outline,
-                        color: Theme.of(context).colorScheme.onPrimaryContainer,
+                        color: cs.onPrimaryContainer,
                         size: 26,
                       ),
                     ),
@@ -1916,24 +2252,29 @@ class _UserProfileDialogState extends State<_UserProfileDialog> {
                 Container(
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: Colors.blue.withAlpha(12),
+                    color: cs.secondary.withValues(alpha: 0.10),
                     borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.blue.withAlpha(35)),
+                    border: Border.all(
+                      color: cs.secondary.withValues(alpha: 0.35),
+                    ),
                   ),
-                  child: const Row(
+                  child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Icon(
                         Icons.info_outline,
                         size: 18,
-                        color: Colors.blueGrey,
+                        color: cs.onSurfaceVariant,
                       ),
-                      SizedBox(width: 8),
+                      const SizedBox(width: 8),
                       Expanded(
                         child: Text(
                           'El correo, número de usuario, rol e ID son administrados por '
                           'el sistema y no pueden modificarse desde este dispositivo.',
-                          style: TextStyle(fontSize: 12, color: Colors.black54),
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: cs.onSurfaceVariant,
+                          ),
                         ),
                       ),
                     ],
@@ -2420,25 +2761,26 @@ class _TicketConfigDialogState extends State<_TicketConfigDialog> {
 
   Widget _buildQrPreview(BuildContext context) {
     final content = _qrContent.text.trim();
+    final cs = Theme.of(context).colorScheme;
 
     if (!_showQr || content.isEmpty) {
       return Container(
         padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
-          color: Colors.blueGrey.withAlpha(12),
+          color: cs.surfaceContainerHighest.withValues(alpha: 0.4),
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: Colors.blueGrey.withAlpha(30)),
+          border: Border.all(color: cs.outlineVariant.withValues(alpha: 0.5)),
         ),
-        child: const Row(
+        child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(Icons.info_outline, size: 18, color: Colors.blueGrey),
-            SizedBox(width: 8),
+            Icon(Icons.info_outline, size: 18, color: cs.onSurfaceVariant),
+            const SizedBox(width: 8),
             Expanded(
               child: Text(
                 'Activa el QR e ingresa su contenido para '
                 'ver la previsualización.',
-                style: TextStyle(fontSize: 12, color: Colors.black54),
+                style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
               ),
             ),
           ],
@@ -2451,7 +2793,7 @@ class _TicketConfigDialogState extends State<_TicketConfigDialog> {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+        border: Border.all(color: cs.outlineVariant),
       ),
       child: Column(
         children: [
@@ -2479,10 +2821,7 @@ class _TicketConfigDialogState extends State<_TicketConfigDialog> {
           Text(
             'Este es el QR que se enviará a la impresora.',
             textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 12,
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
-            ),
+            style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
           ),
         ],
       ),
@@ -2491,6 +2830,8 @@ class _TicketConfigDialogState extends State<_TicketConfigDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
     return Dialog(
       insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
       child: SafeArea(
@@ -2509,33 +2850,33 @@ class _TicketConfigDialogState extends State<_TicketConfigDialog> {
                       width: 46,
                       height: 46,
                       decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.primaryContainer,
+                        color: cs.primaryContainer,
                         borderRadius: BorderRadius.circular(14),
                       ),
                       child: Icon(
                         Icons.receipt_long_outlined,
-                        color: Theme.of(context).colorScheme.onPrimaryContainer,
+                        color: cs.onPrimaryContainer,
                         size: 25,
                       ),
                     ),
                     const SizedBox(width: 12),
-                    const Expanded(
+                    Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
+                          const Text(
                             'Ticket y formato',
                             style: TextStyle(
                               fontSize: 20,
                               fontWeight: FontWeight.w800,
                             ),
                           ),
-                          SizedBox(height: 2),
+                          const SizedBox(height: 2),
                           Text(
                             'Configura la apariencia y los datos impresos.',
                             style: TextStyle(
                               fontSize: 12,
-                              color: Colors.black54,
+                              color: cs.onSurfaceVariant,
                             ),
                           ),
                         ],
@@ -2708,8 +3049,7 @@ class _TicketConfigDialogState extends State<_TicketConfigDialog> {
                             const SizedBox(height: 8),
                             _switchTile(
                               title: 'Cortar ticket automáticamente',
-                              subtitle:
-                                  'Envía la orden de corte al finalizar la impresión.',
+                              subtitle: 'Envía la orden de corte al finalizar la impresión.',
                               value: _cutTicket,
                               icon: Icons.content_cut_outlined,
                               onChanged: (value) {
@@ -2737,8 +3077,7 @@ class _TicketConfigDialogState extends State<_TicketConfigDialog> {
                               scrollPadding: const EdgeInsets.only(bottom: 140),
                               decoration: const InputDecoration(
                                 labelText: 'Cabecera',
-                                hintText:
-                                    'Texto que aparecerá debajo de los datos de empresa.',
+                                hintText: 'Texto que aparecerá debajo de los datos de empresa.',
                                 prefixIcon: Icon(
                                   Icons.vertical_align_top_outlined,
                                 ),
@@ -2771,16 +3110,14 @@ class _TicketConfigDialogState extends State<_TicketConfigDialog> {
                       _sectionCard(
                         context: context,
                         title: 'Código QR',
-                        subtitle:
-                            'Configura el contenido que aparecerá como código QR en el ticket.',
+                        subtitle: 'Configura el contenido que aparecerá como código QR en el ticket.',
                         icon: Icons.qr_code_2_outlined,
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
                             _switchTile(
                               title: 'Mostrar código QR',
-                              subtitle:
-                                  'El QR aparecerá al final del ticket impreso.',
+                              subtitle: 'El QR aparecerá al final del ticket impreso.',
                               value: _showQr,
                               icon: Icons.qr_code_2_outlined,
                               onChanged: (value) {
@@ -2798,8 +3135,7 @@ class _TicketConfigDialogState extends State<_TicketConfigDialog> {
                               textInputAction: TextInputAction.newline,
                               decoration: const InputDecoration(
                                 labelText: 'Contenido del QR',
-                                hintText:
-                                    'Ejemplo: https://miempresa.com/consulta/12345',
+                                hintText: 'Ejemplo: https://miempresa.com/consulta/12345',
                                 prefixIcon: Icon(Icons.link_outlined),
                                 border: OutlineInputBorder(),
                                 alignLabelWithHint: true,
@@ -2816,8 +3152,7 @@ class _TicketConfigDialogState extends State<_TicketConfigDialog> {
                       _sectionCard(
                         context: context,
                         title: 'Información de empresa',
-                        subtitle:
-                            'Selecciona qué datos de la empresa aparecerán impresos.',
+                        subtitle: 'Selecciona qué datos de la empresa aparecerán impresos.',
                         icon: Icons.business_outlined,
                         child: Column(
                           children: [
@@ -2842,8 +3177,7 @@ class _TicketConfigDialogState extends State<_TicketConfigDialog> {
                             ),
                             _switchTile(
                               title: 'Dirección',
-                              subtitle:
-                                  'Muestra la dirección registrada de la empresa.',
+                              subtitle: 'Muestra la dirección registrada de la empresa.',
                               value: _showAddress,
                               icon: Icons.location_on_outlined,
                               onChanged: (value) {
@@ -2874,8 +3208,7 @@ class _TicketConfigDialogState extends State<_TicketConfigDialog> {
                       _sectionCard(
                         context: context,
                         title: 'Información de venta',
-                        subtitle:
-                            'Controla los datos operativos visibles en el ticket.',
+                        subtitle: 'Controla los datos operativos visibles en el ticket.',
                         icon: Icons.point_of_sale_outlined,
                         child: Column(
                           children: [

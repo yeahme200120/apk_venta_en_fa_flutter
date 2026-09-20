@@ -62,6 +62,8 @@ class _CartScreenState extends State<CartScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Carrito de compra'),
@@ -82,24 +84,24 @@ class _CartScreenState extends State<CartScreen> {
           );
 
           if (items.isEmpty) {
-            return const Center(
+            return Center(
               child: Padding(
-                padding: EdgeInsets.all(24),
+                padding: const EdgeInsets.all(24),
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Icon(
                       Icons.shopping_cart_outlined,
                       size: 80,
-                      color: Colors.grey,
+                      color: cs.onSurfaceVariant,
                     ),
-                    SizedBox(height: 16),
+                    const SizedBox(height: 16),
                     Text(
                       'Agrega productos desde la caja para comenzar.',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         fontSize: 16,
-                        color: Colors.grey,
+                        color: cs.onSurfaceVariant,
                       ),
                     ),
                   ],
@@ -164,6 +166,8 @@ class _CartScreenState extends State<CartScreen> {
     CartItem item, {
     required bool isMobile,
   }) {
+    final cs = Theme.of(context).colorScheme;
+
     return Card(
       elevation: 2,
       child: Padding(
@@ -189,17 +193,17 @@ class _CartScreenState extends State<CartScreen> {
                             const SizedBox(height: 4),
                             Text(
                               '\$${item.product.price.toStringAsFixed(2)} c/u',
-                              style: const TextStyle(
-                                color: Colors.grey,
+                              style: TextStyle(
+                                color: cs.onSurfaceVariant,
                               ),
                             ),
                             const SizedBox(height: 4),
                             Text(
                               '\$${item.subtotal.toStringAsFixed(2)}',
-                              style: const TextStyle(
+                              style: TextStyle(
                                 fontWeight: FontWeight.bold,
                                 fontSize: 16,
-                                color: Color(0xFF9AC53B),
+                                color: cs.primary,
                               ),
                             ),
                           ],
@@ -301,9 +305,9 @@ class _CartScreenState extends State<CartScreen> {
                     flex: 1,
                     child: Text(
                       '\$${item.subtotal.toStringAsFixed(2)}',
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontWeight: FontWeight.bold,
-                        color: Color(0xFF9AC53B),
+                        color: cs.primary,
                       ),
                     ),
                   ),
@@ -326,6 +330,8 @@ class _CartScreenState extends State<CartScreen> {
     double total,
     bool hasItems,
   ) {
+    final cs = Theme.of(context).colorScheme;
+
     final puedeCobrar = widget.canCheckout?.call() ?? true;
     final botonActivo = hasItems && !_isProcessing && puedeCobrar;
 
@@ -343,10 +349,10 @@ class _CartScreenState extends State<CartScreen> {
                 vertical: 12,
               ),
               decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.error.withAlpha(20),
+                color: cs.error.withAlpha(20),
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(
-                  color: Theme.of(context).colorScheme.error.withAlpha(90),
+                  color: cs.error.withAlpha(90),
                 ),
               ),
               child: Row(
@@ -354,7 +360,7 @@ class _CartScreenState extends State<CartScreen> {
                   Icon(
                     Icons.lock_outline,
                     size: 22,
-                    color: Theme.of(context).colorScheme.error,
+                    color: cs.error,
                   ),
                   const SizedBox(width: 10),
                   Expanded(
@@ -366,7 +372,7 @@ class _CartScreenState extends State<CartScreen> {
                           style: TextStyle(
                             fontSize: 13,
                             fontWeight: FontWeight.w800,
-                            color: Theme.of(context).colorScheme.error,
+                            color: cs.error,
                           ),
                         ),
                         const SizedBox(height: 2),
@@ -374,8 +380,7 @@ class _CartScreenState extends State<CartScreen> {
                           'Abre la caja para poder cobrar esta venta.',
                           style: TextStyle(
                             fontSize: 12,
-                            color:
-                                Theme.of(context).colorScheme.onSurfaceVariant,
+                            color: cs.onSurfaceVariant,
                           ),
                         ),
                       ],
@@ -399,12 +404,12 @@ class _CartScreenState extends State<CartScreen> {
                 child: ElevatedButton.icon(
                   onPressed: botonActivo ? _processCheckout : null,
                   icon: _isProcessing
-                      ? const SizedBox(
+                      ? SizedBox(
                           width: 20,
                           height: 20,
                           child: CircularProgressIndicator(
                             strokeWidth: 2,
-                            color: Colors.white,
+                            color: cs.onPrimary,
                           ),
                         )
                       : const Icon(Icons.check_circle_outline),
@@ -414,8 +419,8 @@ class _CartScreenState extends State<CartScreen> {
                         : 'Cobrar \$${total.toStringAsFixed(2)}',
                   ),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF9AC53B),
-                    foregroundColor: Colors.white,
+                    backgroundColor: cs.primary,
+                    foregroundColor: cs.onPrimary,
                     minimumSize: const Size(double.infinity, 48),
                   ),
                 ),

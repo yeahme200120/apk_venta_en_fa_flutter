@@ -4,12 +4,14 @@ import 'package:flutter/material.dart';
 
 import '../core/database/local_db.dart';
 import '../core/network/api_client.dart';
+import '../core/services/sync_orchestrator.dart';
 import '../core/storage/app_storage.dart';
 import 'caja/cash_management_screen.dart';
 import 'daily_stats/daily_stats_screen.dart';
 import 'operacion/operation_screen.dart';
 import 'pos/pos_screen.dart';
 import 'settings/settings_screen.dart';
+import 'widgets/sync_progress_dialog.dart';
 
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key});
@@ -35,6 +37,9 @@ class _HomeShellState extends State<HomeShell>
 
   // 🆕 Escucha cambios de operación en tiempo real.
   StreamSubscription<void>? _operationSub;
+
+  // 🆕 SYNC: bandera para el botón global de la sección Caja.
+  bool _isSyncing = false;
 
   @override
   void initState() {
@@ -129,6 +134,137 @@ class _HomeShellState extends State<HomeShell>
   }
 
   // ============================================================
+  // SINCRONIZACIÓN GLOBAL (orquestador único)
+  // ============================================================
+  //
+  // Comparte la misma lógica que SettingsScreen.
+  //
+  //   1. Sube TODO lo pendiente (sync_queue + ventas históricas
+  //      + outbox del día) respetando la fecha comercial original.
+  //   2. Baja TODO lo que la app necesita.
+  //   3. Nunca borra. Solo upsert.
+  //
+  // El botón está en el AppBar de la sección Caja, por lo que
+  // está disponible tanto en "Operación" como en "Movimientos".
+
+  Future<void> _runGlobalSync() async {
+    if (_isSyncing) return;
+
+    final storage = AppStorage();
+
+    final companyId = await storage.getEmpresaId() ?? 0;
+    final userId = await storage.getUserId() ?? 0;
+
+    if (companyId <= 0 || userId <= 0) {
+      _snack('No hay empresa o usuario activo.', error: true);
+      return;
+    }
+
+    if (!mounted) return;
+
+    final businessDateKey = await storage.getServerBusinessDateKey();
+    final businessDate = businessDateKey != null && businessDateKey.isNotEmpty
+        ? (DateTime.tryParse(businessDateKey) ?? DateTime.now())
+        : DateTime.now();
+
+    if (!mounted) return;
+
+    setState(() => _isSyncing = true);
+
+    // ============================================================
+    // DIÁLOGO DE PROGRESO
+    // ============================================================
+
+    final progressNotifier = ValueNotifier<String>(
+      'Iniciando sincronización...',
+    );
+
+    NavigatorState? progressNavigator;
+
+    unawaited(
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) {
+          progressNavigator = Navigator.of(ctx, rootNavigator: true);
+          return SyncProgressDialog(progressNotifier: progressNotifier);
+        },
+      ),
+    );
+
+    await Future.delayed(const Duration(milliseconds: 120));
+
+    try {
+      final report = await SyncOrchestrator().syncAll(
+        companyId: companyId,
+        userId: userId,
+        businessDate: businessDate,
+        onProgress: (stage, message) {
+          progressNotifier.value = message;
+        },
+      );
+
+      // Cerrar diálogo de progreso.
+      if (progressNavigator != null && progressNavigator!.canPop()) {
+        progressNavigator!.pop();
+      }
+
+      progressNotifier.dispose();
+
+      if (!mounted) return;
+
+      // ============================================================
+      // RESULTADO
+      // ============================================================
+
+      if (report.skipped) {
+        _snack(report.summary);
+      } else if (report.hasErrors) {
+        _snack(
+          'Sincronización con avisos: '
+          '${report.upload.synced}/${report.upload.total} subidas · '
+          '${report.download.okCount}/${SyncDownloadReport.totalSteps} bajadas',
+          error: true,
+        );
+      } else {
+        _snack(
+          'Sincronización completada. '
+          'Subidas: ${report.upload.synced}/${report.upload.total} · '
+          'Bajadas: ${report.download.okCount}/'
+          '${SyncDownloadReport.totalSteps}',
+        );
+      }
+
+      // Refrescar el estado operativo.
+      await _loadOperationState();
+    } catch (e) {
+      if (progressNavigator != null && progressNavigator!.canPop()) {
+        progressNavigator!.pop();
+      }
+
+      progressNotifier.dispose();
+
+      if (!mounted) return;
+
+      _snack('Error al sincronizar: $e', error: true);
+    } finally {
+      if (mounted) {
+        setState(() => _isSyncing = false);
+      }
+    }
+  }
+
+  void _snack(String msg, {bool error = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg),
+        backgroundColor: error ? Colors.red.shade700 : null,
+      ),
+    );
+  }
+
+  // ============================================================
   // LÓGICA DE NAVEGACIÓN
   // ============================================================
 
@@ -210,6 +346,28 @@ class _HomeShellState extends State<HomeShell>
                 _cashSubIndex == 0 ? 'Operación' : 'Movimientos',
                 style: const TextStyle(fontWeight: FontWeight.w800),
               ),
+              // 🆕 Botón de sincronización global.
+              //
+              // Vive en el AppBar de la sección Caja para estar
+              // disponible tanto en "Operación" como en "Movimientos".
+              //
+              // Solo se deshabilita mientras corre una sync.
+              actions: [
+                IconButton(
+                  tooltip: 'Sincronizar todo',
+                  onPressed: _isSyncing ? null : _runGlobalSync,
+                  icon: _isSyncing
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Icon(Icons.cloud_sync_outlined),
+                ),
+              ],
               bottom: _cashTabController != null
                   ? TabBar(
                       controller: _cashTabController,

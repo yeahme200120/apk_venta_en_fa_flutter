@@ -10,21 +10,16 @@ import '../auth/login_screen.dart';
 import '../home_shell.dart';
 
 class SplashScreen extends StatefulWidget {
-  const SplashScreen({
-    super.key,
-  });
+  const SplashScreen({super.key});
 
   @override
-  State<SplashScreen> createState() =>
-      _SplashScreenState();
+  State<SplashScreen> createState() => _SplashScreenState();
 }
 
-class _SplashScreenState
-    extends State<SplashScreen> {
+class _SplashScreenState extends State<SplashScreen> {
   Timer? _timer;
 
-  final AuthService _authService =
-      AuthService();
+  final AuthService _authService = AuthService();
 
   @override
   void initState() {
@@ -52,9 +47,7 @@ class _SplashScreenState
       final enabled = await service.isLocationServiceEnabled();
 
       if (!enabled) {
-        debugPrint(
-          '📍 Splash: servicio de ubicación deshabilitado.',
-        );
+        debugPrint('📍 Splash: servicio de ubicación deshabilitado.');
         return;
       }
 
@@ -84,55 +77,33 @@ class _SplashScreenState
   // ============================================================
 
   void _verificarSesion() {
-    _timer = Timer(
-      const Duration(seconds: 2),
-      () async {
-        if (!mounted) {
-          return;
-        }
+    _timer = Timer(const Duration(seconds: 2), () async {
+      if (!mounted) return;
 
-        try {
-          final hasSession =
-              await _authService.hasSession();
+      bool hasSession = false;
 
-          if (!mounted) {
-            return;
-          }
+      try {
+        hasSession = await _authService.hasSession();
+      } catch (_) {
+        hasSession = false;
+      }
 
-          if (hasSession) {
-            Navigator.of(context)
-                .pushReplacement(
-              MaterialPageRoute(
-                builder: (_) =>
-                    const HomeShell(),
-              ),
-            );
+      // 🔑 CRÍTICO: volver a verificar `mounted` DESPUÉS del await.
+      // Sin esto, Flutter lanza:
+      //   "Looking up a deactivated widget's ancestor is unsafe."
+      if (!mounted) return;
 
-            return;
-          }
+      if (hasSession) {
+        Navigator.of(
+          context,
+        ).pushReplacement(MaterialPageRoute(builder: (_) => const HomeShell()));
+        return;
+      }
 
-          Navigator.of(context)
-              .pushReplacement(
-            MaterialPageRoute(
-              builder: (_) =>
-                  const LoginScreen(),
-            ),
-          );
-        } catch (_) {
-          if (!mounted) {
-            return;
-          }
-
-          Navigator.of(context)
-              .pushReplacement(
-            MaterialPageRoute(
-              builder: (_) =>
-                  const LoginScreen(),
-            ),
-          );
-        }
-      },
-    );
+      Navigator.of(
+        context,
+      ).pushReplacement(MaterialPageRoute(builder: (_) => const LoginScreen()));
+    });
   }
 
   @override
@@ -144,15 +115,11 @@ class _SplashScreenState
   }
 
   @override
-  Widget build(
-    BuildContext context,
-  ) {
-    final colors =
-        Theme.of(context).colorScheme;
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
 
     return Scaffold(
-      backgroundColor:
-          colors.surface,
+      backgroundColor: colors.surface,
       body: Center(
         child: Image.asset(
           'assets/images/logo.png',

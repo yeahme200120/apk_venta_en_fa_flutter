@@ -3,9 +3,15 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:internet_connection_checker_plus/internet_connection_checker_plus.dart';
 
+// ✅ NUEVO: modal reutilizable de términos
+import '../legal/terms_screen.dart';
+
 import '../../core/services/auth_service.dart';
 // 🆕 UBICACIÓN
 import '../../core/services/location_service.dart';
+// ✅ NUEVO: para guardar el consentimiento por usuario
+import '../../core/storage/app_storage.dart';
+import '../../core/constants/legal_text.dart';
 
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
@@ -59,7 +65,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
     final email = value.trim();
     if (email.isEmpty) return false;
 
-    // Validación simple y robusta.
     final regex = RegExp(r'^[\w\.\-\+]+@[\w\-]+(\.[\w\-]+)+$');
     return regex.hasMatch(email);
   }
@@ -139,13 +144,28 @@ class _RegisterScreenState extends State<RegisterScreen> {
     }
 
     if (!_aceptaTerminos) {
-      setState(
-        () => _errorTerminos = 'Debes aceptar los términos para continuar.',
-      );
+      setState(() {
+        _errorTerminos =
+            'Debes aceptar los términos y condiciones para continuar.';
+      });
       hayError = true;
     }
 
-    if (hayError) return;
+    if (hayError) {
+      // Feedback adicional para el caso de términos.
+      if (_errorTerminos != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text(
+              'Debes aceptar los términos y condiciones para continuar.',
+            ),
+            backgroundColor: Colors.red.shade700,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+      return;
+    }
 
     // ----------------------------------------------------------
     // VERIFICAR INTERNET
@@ -182,14 +202,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
     // ----------------------------------------------------------
     // 🆕 UBICACIÓN (OPCIONAL)
     // ----------------------------------------------------------
-    //
-    // Reglas:
-    //   - GPS activo + permiso OK + precisión ≤ 100m → se envía
-    //   - Permiso denegado / GPS deshabilitado / timeout / sin
-    //     precisión suficiente → se registra SIN ubicación
-    //
-    // El backend acepta lat/lng como opcionales. El registro NO
-    // se bloquea por falta de GPS.
 
     final location = await LocationService().getCurrentLocation();
 
@@ -207,12 +219,42 @@ class _RegisterScreenState extends State<RegisterScreen> {
         macAddress: mac,
         telefono: telefono.isEmpty ? null : telefono,
         rfc: rfc.isEmpty ? null : rfc,
-        // 🆕 UBICACIÓN (opcional)
         latitude: location?.latitude,
         longitude: location?.longitude,
         accuracy: location?.accuracy,
         locationProvider: location?.provider,
+        // ✅ T&C OBLIGATORIOS
+        terminosAceptados: _aceptaTerminos, // ya validaste que sea true arriba
+        terminosVersion: LegalText.version, // '2026-09-19' según el modal
       );
+
+      if (!mounted) return;
+
+      // ============================================================
+      // ✅ FIX: guardar el consentimiento de T&C POR USUARIO.
+      // ============================================================
+      //
+      // El backend ya creó al usuario y devolvió sus datos en
+      // `payload['user']`. Extraemos el id y guardamos el flag
+      // `terms_accepted_user_{userId} = true` para auditoría.
+      //
+      // Si por algún motivo el userId no viene en la respuesta,
+      // no bloqueamos el registro: el usuario lo verá en el
+      // próximo login si decides agregar la verificación allí.
+
+      final userIdRaw = payload['user']?['id'];
+      final userId = userIdRaw is num
+          ? userIdRaw.toInt()
+          : int.tryParse('$userIdRaw') ?? 0;
+
+      if (userId > 0) {
+        await AppStorage().markTermsAccepted(userId);
+        debugPrint('✅ T&C aceptados guardados para userId=$userId');
+      } else {
+        debugPrint(
+          '⚠️ No se pudo obtener userId del payload para guardar T&C.',
+        );
+      }
 
       if (!mounted) return;
 
@@ -233,7 +275,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
       final raw = error.toString().replaceFirst('Exception: ', '').trim();
       final rawLower = raw.toLowerCase();
 
-      // Mapeo específico según spec §5 (Manejo de errores).
       if (rawLower.contains('correo') ||
           rawLower.contains('email') ||
           rawLower.contains('email_exists')) {
@@ -270,6 +311,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
     } finally {
       if (mounted) setState(() => _cargando = false);
     }
+  }
+
+  // ============================================================
+  // ABRIR TÉRMINOS COMPLETOS
+  // ============================================================
+
+  Future<void> _abrirTerminosCompletos() async {
+    await LegalTermsModal.open(context);
   }
 
   // ============================================================
@@ -504,57 +553,119 @@ class _RegisterScreenState extends State<RegisterScreen> {
               const SizedBox(height: 18),
 
               // ==================================================
-              // TÉRMINOS
+              // ✅ TÉRMINOS Y CONDICIONES (checkbox + link)
               // ==================================================
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  SizedBox(
-                    width: 24,
-                    height: 24,
-                    child: Checkbox(
-                      value: _aceptaTerminos,
-                      onChanged: _cargando
-                          ? null
-                          : (value) {
-                              setState(() {
-                                _aceptaTerminos = value ?? false;
-                                if (_aceptaTerminos) {
-                                  _errorTerminos = null;
-                                }
-                              });
-                            },
-                    ),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 10,
+                ),
+                decoration: BoxDecoration(
+                  color: _aceptaTerminos
+                      ? const Color(0xFFE8F5E9)
+                      : Colors.white,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: _errorTerminos != null
+                        ? Colors.red.shade400
+                        : _aceptaTerminos
+                        ? const Color(0xFF4CAF50)
+                        : const Color(0xFFE0E0E0),
+                    width: _errorTerminos != null || _aceptaTerminos ? 1.5 : 1,
                   ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: GestureDetector(
-                      onTap: _cargando
-                          ? null
-                          : () => setState(
-                              () => _aceptaTerminos = !_aceptaTerminos,
-                            ),
-                      child: const Padding(
-                        padding: EdgeInsets.only(top: 3),
-                        child: Text(
-                          'Acepto los términos y condiciones del servicio.',
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: Color(0xFF444444),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: Checkbox(
+                            value: _aceptaTerminos,
+                            onChanged: _cargando
+                                ? null
+                                : (value) {
+                                    setState(() {
+                                      _aceptaTerminos = value ?? false;
+                                      if (_aceptaTerminos) {
+                                        _errorTerminos = null;
+                                      }
+                                    });
+                                  },
                           ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: GestureDetector(
+                            onTap: _cargando
+                                ? null
+                                : () => setState(
+                                    () => _aceptaTerminos = !_aceptaTerminos,
+                                  ),
+                            child: const Padding(
+                              padding: EdgeInsets.only(top: 3),
+                              child: Text(
+                                'He leído y acepto los Términos y Condiciones '
+                                'y el Aviso de Privacidad.',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: Color(0xFF444444),
+                                  height: 1.4,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton.icon(
+                        onPressed: _cargando ? null : _abrirTerminosCompletos,
+                        icon: const Icon(Icons.description_outlined, size: 16),
+                        label: const Text(
+                          'Ver términos completos',
+                          style: TextStyle(fontSize: 12),
+                        ),
+                        style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                         ),
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
               if (_errorTerminos != null) ...[
-                const SizedBox(height: 4),
+                const SizedBox(height: 6),
                 Padding(
                   padding: const EdgeInsets.only(left: 4),
-                  child: Text(
-                    _errorTerminos!,
-                    style: TextStyle(fontSize: 12, color: Colors.red.shade700),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.error_outline,
+                        size: 14,
+                        color: Colors.red.shade700,
+                      ),
+                      const SizedBox(width: 4),
+                      Expanded(
+                        child: Text(
+                          _errorTerminos!,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.red.shade700,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ],

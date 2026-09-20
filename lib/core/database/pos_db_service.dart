@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
+import 'package:flutter/foundation.dart';
 
 /// Base OPERATIVA del día actual.
 ///
@@ -145,12 +146,6 @@ class PosDatabaseService {
     List<Map<String, dynamic>> products,
   ) async {
     await db.transaction((txn) async {
-      // La base diaria contiene el catálogo de UNA SOLA empresa.
-      //
-      // Purgamos antes de insertar para que un cambio de empresa
-      // (o de catálogo) no deje productos viejos mezclados.
-      await txn.delete('products');
-
       for (final product in products) {
         final id = _toInt(product['id']);
         if (id <= 0) continue;
@@ -491,7 +486,7 @@ class PosDatabaseService {
       }
     });
 
-    print('🧹 PosDatabaseService: datos del día limpiados.');
+    debugPrint('🧹 PosDatabaseService: datos del día limpiados.');
   }
 
   Future<String> databasePath({
@@ -521,6 +516,38 @@ class PosDatabaseService {
       ),
     );
     if (await file.exists()) await file.delete();
+  }
+
+  Future<List<DateTime>> listExistingBusinessDates({
+    required int companyId,
+    required int userId,
+  }) async {
+    final root = await getApplicationDocumentsDirectory();
+    final dir = Directory(
+      '${root.path}/app-data/companies/$companyId/users/$userId',
+    );
+
+    if (!await dir.exists()) return const [];
+
+    final files = await dir.list().toList();
+    final result = <DateTime>[];
+
+    final pattern = RegExp(r'pos_day_(\d{4}-\d{2}-\d{2})\.sqlite$');
+
+    for (final file in files) {
+      if (file is! File) continue;
+
+      final match = pattern.firstMatch(file.path);
+      if (match == null) continue;
+
+      final date = DateTime.tryParse(match.group(1)!);
+      if (date != null) {
+        result.add(date);
+      }
+    }
+
+    result.sort();
+    return result;
   }
 
   int _toInt(dynamic v) =>

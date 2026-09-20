@@ -95,7 +95,7 @@ class LicenseService {
     final snapshot = await storage.getLicenseSnapshot();
 
     // Sin snapshot → bloqueo total.
-    if (snapshot == null || snapshot.isEmpty) {
+    if (snapshot.isEmpty) {
       return _emit(
         const LicenseState(
           status: LicenseStatus.sinSnapshot,

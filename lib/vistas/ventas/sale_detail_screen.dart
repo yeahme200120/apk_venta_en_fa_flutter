@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -9,9 +10,12 @@ import '../../core/network/api_client.dart';
 import '../../core/services/catalog_service.dart';
 import '../../core/services/pdf_service.dart';
 import '../../core/services/printer_service.dart';
+import '../../core/services/sync_orchestrator.dart';
 import '../../core/services/sync_service.dart';
 import '../../core/services/whatsapp_service.dart';
 import '../../core/storage/app_storage.dart';
+import '../widgets/sync_progress_dialog.dart';
+import '../widgets/sync_result_dialog.dart';
 import 'pdf_preview_screen.dart';
 
 class SaleDetailScreen extends StatefulWidget {
@@ -26,8 +30,10 @@ class SaleDetailScreen extends StatefulWidget {
 class _SaleDetailScreenState extends State<SaleDetailScreen> {
   final PrinterService _printerService = PrinterService();
 
+  // ignore: unused_field
   final SyncService _syncService = SyncService();
 
+  // ignore: unused_field
   final CatalogService _catalogService = CatalogService();
 
   final LocalDb _localDb = LocalDb();
@@ -36,17 +42,33 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
 
   bool _printing = false;
   bool _syncing = false;
+
+  // ignore: unused_field
   bool _loadingCashOperations = false;
 
   String _currentSyncStatus = '';
 
   String _currentFolio = '';
 
+  // ============================================================
+  // ESTADO DE CAJA (métodos intactos por si se reactivan)
+  // ============================================================
+  //
+  // Estos tres campos son usados por _loadCashOperations() y por
+  // los helpers de impresión de movimientos. Aunque no se llaman
+  // hoy desde la UI, se mantienen para no romper la compilación
+  // y permitir reactivar la funcionalidad sin reescribir código.
+
+  // ignore: unused_field
   List<Map<String, dynamic>> _cashOperations = const [];
 
+  // ignore: unused_field
   double _cashIncome = 0;
+
+  // ignore: unused_field
   double _cashExpense = 0;
 
+  // ignore: unused_field
   final Set<String> _printingCashOperations = <String>{};
 
   @override
@@ -58,7 +80,6 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
     _currentFolio = _resolveInitialSaleNumber();
 
     _loadCurrentSaleStatus();
-    _loadCashOperations();
   }
 
   // ============================================================
@@ -99,9 +120,7 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
     return '-';
   }
 
-  String _resolveSaleNumberFromMap(
-    Map<String, dynamic> sale,
-  ) {
+  String _resolveSaleNumberFromMap(Map<String, dynamic> sale) {
     final candidates = [
       sale['folio'],
       sale['server_folio'],
@@ -172,8 +191,10 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
 
   // ============================================================
   // OPERACIONES DE CAJA
+  // (Métodos intactos por si se reactivan más adelante)
   // ============================================================
 
+  // ignore: unused_element
   Future<void> _loadCashOperations() async {
     if (_loadingCashOperations) {
       return;
@@ -224,13 +245,11 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
         _cashExpense = 0;
       });
     } finally {
-      if (!mounted) {
-        return;
+      if (mounted) {
+        setState(() {
+          _loadingCashOperations = false;
+        });
       }
-
-      setState(() {
-        _loadingCashOperations = false;
-      });
     }
   }
 
@@ -238,6 +257,7 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
   // CLASIFICACIÓN DE MOVIMIENTOS
   // ============================================================
 
+  // ignore: unused_element
   bool _isCashIncome(String type) {
     return type == 'ingreso' ||
         type == 'income' ||
@@ -251,6 +271,7 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
         type == 'cashin';
   }
 
+  // ignore: unused_element
   bool _isCashExpense(String type) {
     return type == 'egreso' ||
         type == 'expense' ||
@@ -265,6 +286,7 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
         type == 'cashout';
   }
 
+  // ignore: unused_element
   bool _isIncomeMovement(Map<String, dynamic> operation) {
     final type = _operationType(operation);
 
@@ -283,6 +305,7 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
     return amount >= 0;
   }
 
+  // ignore: unused_element
   bool _isPrintableMovement(Map<String, dynamic> operation) {
     if (operation.isEmpty) {
       return false;
@@ -320,6 +343,7 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
         .toLowerCase();
   }
 
+  // ignore: unused_element
   String _operationTypeLabel(String type) {
     switch (type) {
       case 'ingreso':
@@ -366,6 +390,7 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
     }
   }
 
+  // ignore: unused_element
   String _operationConcept(Map<String, dynamic> operation) {
     final concept =
         operation['concepto'] ??
@@ -382,6 +407,7 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
     return _operationTypeLabel(_operationType(operation));
   }
 
+  // ignore: unused_element
   String _operationDate(Map<String, dynamic> operation) {
     final value =
         operation['created_at'] ??
@@ -417,6 +443,7 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
         '$hour:$minute';
   }
 
+  // ignore: unused_element
   String _cashOperationKey(Map<String, dynamic> operation, int index) {
     final id =
         operation['id'] ??
@@ -435,8 +462,10 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
 
   // ============================================================
   // IMPRIMIR MOVIMIENTO DE CAJA
+  // (Método intacto por si se reactiva)
   // ============================================================
 
+  // ignore: unused_element
   Future<void> _printCashOperation({
     required Map<String, dynamic> operation,
     required int index,
@@ -513,22 +542,22 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
         error: true,
       );
     } finally {
-      if (!mounted) {
-        return;
+      if (mounted) {
+        setState(() {
+          _printingCashOperations.remove(operationKey);
+
+          _printing = false;
+        });
       }
-
-      setState(() {
-        _printingCashOperations.remove(operationKey);
-
-        _printing = false;
-      });
     }
   }
 
   // ============================================================
   // DETALLE DE MOVIMIENTO
+  // (Método intacto por si se reactiva)
   // ============================================================
 
+  // ignore: unused_element
   Future<void> _showCashMovementDetail({
     required Map<String, dynamic> operation,
     required int index,
@@ -578,11 +607,16 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (context) {
+        final cs = Theme.of(context).colorScheme;
+        final tone = income ? cs.primary : cs.error;
+
         return SafeArea(
           child: Container(
-            decoration: const BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+            decoration: BoxDecoration(
+              color: cs.surface,
+              borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(24),
+              ),
             ),
             padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
             child: Column(
@@ -594,7 +628,7 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
                     width: 42,
                     height: 4,
                     decoration: BoxDecoration(
-                      color: Colors.black12,
+                      color: cs.outlineVariant,
                       borderRadius: BorderRadius.circular(10),
                     ),
                   ),
@@ -608,16 +642,14 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
                       width: 52,
                       height: 52,
                       decoration: BoxDecoration(
-                        color: (income ? Colors.green : Colors.red).withAlpha(
-                          25,
-                        ),
+                        color: tone.withValues(alpha: 0.15),
                         borderRadius: BorderRadius.circular(15),
                       ),
                       child: Icon(
                         income
                             ? Icons.arrow_downward_rounded
                             : Icons.arrow_upward_rounded,
-                        color: income ? Colors.green : Colors.red,
+                        color: tone,
                       ),
                     ),
 
@@ -627,11 +659,11 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text(
+                          Text(
                             'Detalle del movimiento',
                             style: TextStyle(
                               fontSize: 13,
-                              color: Colors.black54,
+                              color: cs.onSurfaceVariant,
                             ),
                           ),
                           const SizedBox(height: 3),
@@ -654,19 +686,20 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
                   width: double.infinity,
                   padding: const EdgeInsets.all(18),
                   decoration: BoxDecoration(
-                    color: (income ? Colors.green : Colors.red).withAlpha(18),
+                    color: tone.withValues(alpha: 0.10),
                     borderRadius: BorderRadius.circular(16),
                     border: Border.all(
-                      color: (income ? Colors.green : Colors.red).withAlpha(
-                        45,
-                      ),
+                      color: tone.withValues(alpha: 0.35),
                     ),
                   ),
                   child: Column(
                     children: [
-                      const Text(
+                      Text(
                         'Importe',
-                        style: TextStyle(fontSize: 13, color: Colors.black54),
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: cs.onSurfaceVariant,
+                        ),
                       ),
                       const SizedBox(height: 4),
                       Text(
@@ -674,7 +707,7 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
                         style: TextStyle(
                           fontSize: 30,
                           fontWeight: FontWeight.bold,
-                          color: income ? Colors.green : Colors.red,
+                          color: tone,
                         ),
                       ),
                     ],
@@ -733,6 +766,8 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
   }
 
   Widget _movementDetailRow(String label, String value) {
+    final cs = Theme.of(context).colorScheme;
+
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 7),
       child: Row(
@@ -742,7 +777,10 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
             width: 105,
             child: Text(
               label,
-              style: const TextStyle(color: Colors.black54, fontSize: 13),
+              style: TextStyle(
+                color: cs.onSurfaceVariant,
+                fontSize: 13,
+              ),
             ),
           ),
 
@@ -761,118 +799,113 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
 
   // ============================================================
   // SINCRONIZAR VENTAS Y CATÁLOGO
+  //
+  // Ya no se invoca desde la UI (la sincronización corre
+  // automáticamente desde AutomaticSyncService y desde el
+  // botón global del HomeShell). Se conserva por si se
+  // requiere reactivar como acción manual.
   // ============================================================
 
+  // ignore: unused_element
   Future<void> _syncPendingSalesAndCatalog() async {
     if (_syncing || _printing) {
       return;
     }
 
+    final companyId = await AppStorage().getEmpresaId() ?? 0;
+    final userId = await AppStorage().getUserId() ?? 0;
+
+    final rawBusinessDate = await AppStorage().getServerBusinessDate();
+    final businessDate =
+        DateTime.tryParse(rawBusinessDate ?? '') ?? DateTime.now();
+
+    if (companyId <= 0 || userId <= 0) {
+      _showMessage(
+        'No existe una sesión válida para sincronizar.',
+        error: true,
+      );
+      return;
+    }
+
+    if (!mounted) return;
+
     setState(() {
       _syncing = true;
     });
 
+    final progressNotifier = ValueNotifier<String>(
+      'Iniciando sincronización...',
+    );
+
+    NavigatorState? progressNavigator;
+
+    unawaited(
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) {
+          progressNavigator = Navigator.of(ctx, rootNavigator: true);
+
+          return SyncProgressDialog(
+            progressNotifier: progressNotifier,
+            title: 'Sincronizando venta',
+          );
+        },
+      ),
+    );
+
+    await Future.delayed(const Duration(milliseconds: 120));
+
     try {
-      final companyId = await AppStorage().getEmpresaId() ?? 0;
-
-      final userId = await AppStorage().getUserId() ?? 0;
-
-      final rawBusinessDate = await AppStorage().getBusinessDate();
-
-      final businessDate =
-          DateTime.tryParse(rawBusinessDate ?? '') ?? DateTime.now();
-
-      if (companyId <= 0) {
-        throw Exception('No se encontró la empresa de la sesión.');
-      }
-
-      if (userId <= 0) {
-        throw Exception('No se encontró el usuario de la sesión.');
-      }
-
-      // ========================================================
-      // IMPORTANTE:
-      // AQUÍ SOLAMENTE SE SUBEN VENTAS PENDIENTES.
-      //
-      // LOS MOVIMIENTOS DE CAJA NO SE AGREGAN AL PAYLOAD,
-      // NO SE GUARDAN EN LA TABLA DE VENTAS Y NO SE MANDAN
-      // A /api/v1/sync/offline.
-      // ========================================================
-
-      await _syncService.syncPendingSales(
+      final report = await SyncOrchestrator().syncAll(
         companyId: companyId,
         userId: userId,
         businessDate: businessDate,
+        onProgress: (stage, message) {
+          progressNotifier.value = message;
+        },
       );
 
-      if (!mounted) {
-        return;
+      if (progressNavigator != null && progressNavigator!.canPop()) {
+        progressNavigator!.pop();
       }
+
+      progressNotifier.dispose();
+
+      if (!mounted) return;
 
       await _loadCurrentSaleStatus();
 
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
 
-      final products = await _catalogService.syncCatalog(
-        companyId: companyId,
-        userId: userId,
-        businessDate: businessDate,
+      await showSyncResultDialog(
+        context,
+        report: report,
+        onRetry: () => _syncPendingSalesAndCatalog(),
       );
-
-      if (!mounted) {
-        return;
-      }
-
-      await _loadCurrentSaleStatus();
-
-      await _loadCashOperations();
-
-      if (!mounted) {
-        return;
-      }
-
-      if (_currentSyncStatus == 'synced') {
-        if (products.isEmpty) {
-          _showMessage(
-            'Venta sincronizada correctamente. '
-            'El catálogo y la caja están actualizados.',
-          );
-        } else {
-          _showMessage(
-            'Venta sincronizada, catálogo actualizado: '
-            '${products.length} productos.',
-          );
-        }
-      } else {
-        _showMessage(
-          'Sincronización finalizada, pero esta venta todavía '
-          'no aparece como sincronizada.',
-          error: true,
-        );
-      }
     } catch (error) {
-      if (!mounted) {
-        return;
+      if (progressNavigator != null && progressNavigator!.canPop()) {
+        progressNavigator!.pop();
       }
+
+      progressNotifier.dispose();
+
+      if (!mounted) return;
 
       await _loadCurrentSaleStatus();
-      await _loadCashOperations();
 
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
 
-      _showMessage('No fue posible sincronizar: $error', error: true);
+      _showMessage(
+        'No fue posible sincronizar: $error',
+        error: true,
+      );
     } finally {
-      if (!mounted) {
-        return;
+      if (mounted) {
+        setState(() {
+          _syncing = false;
+        });
       }
-
-      setState(() {
-        _syncing = false;
-      });
     }
   }
 
@@ -882,11 +915,7 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
 
   void _openPdfPreview() {
     Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => PdfPreviewScreen(
-          sale: widget.sale,
-        ),
-      ),
+      MaterialPageRoute(builder: (_) => PdfPreviewScreen(sale: widget.sale)),
     );
   }
 
@@ -914,10 +943,7 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
     try {
       final config = await _printerService.loadTicketConfig();
 
-      final ticket = TicketData.fromSale(
-        sale: widget.sale,
-        config: config,
-      );
+      final ticket = TicketData.fromSale(sale: widget.sale, config: config);
 
       final Uint8List pdfBytes = await PdfService.generateSalePdf(
         ticket: ticket,
@@ -950,18 +976,13 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
         return;
       }
 
-      _showMessage(
-        'No fue posible compartir el ticket: $error',
-        error: true,
-      );
+      _showMessage('No fue posible compartir el ticket: $error', error: true);
     } finally {
-      if (!mounted) {
-        return;
+      if (mounted) {
+        setState(() {
+          _printing = false;
+        });
       }
-
-      setState(() {
-        _printing = false;
-      });
     }
   }
 
@@ -1054,13 +1075,11 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
 
       _showMessage('No fue posible reimprimir el ticket: $error', error: true);
     } finally {
-      if (!mounted) {
-        return;
+      if (mounted) {
+        setState(() {
+          _printing = false;
+        });
       }
-
-      setState(() {
-        _printing = false;
-      });
     }
   }
 
@@ -1073,12 +1092,14 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
       return;
     }
 
+    final cs = Theme.of(context).colorScheme;
+
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(
         SnackBar(
           content: Text(message),
-          backgroundColor: error ? Colors.red : null,
+          backgroundColor: error ? cs.error : null,
           behavior: SnackBarBehavior.floating,
         ),
       );
@@ -1108,21 +1129,23 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
   }
 
   Color _statusColor(String status) {
+    final cs = Theme.of(context).colorScheme;
+
     switch (status) {
       case 'pending':
-        return Colors.orange;
+        return cs.tertiary;
 
       case 'paid':
-        return Colors.blue;
+        return cs.secondary;
 
       case 'synced':
-        return Colors.green;
+        return cs.primary;
 
       case 'failed':
-        return Colors.red;
+        return cs.error;
 
       default:
-        return Colors.grey;
+        return cs.onSurfaceVariant;
     }
   }
 
@@ -1132,6 +1155,8 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
     final displayedStatus = _currentSyncStatus.isNotEmpty
         ? _currentSyncStatus
         : widget.sale.syncStatus;
@@ -1142,23 +1167,13 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
 
     final busy = _printing || _syncing;
 
+    final isSynced = displayedStatus == 'synced';
+
     return Scaffold(
       appBar: AppBar(
         title: Text('Venta $title'),
 
         actions: [
-          IconButton(
-            tooltip: 'Sincronizar ventas y catálogo',
-            onPressed: busy ? null : _syncPendingSalesAndCatalog,
-            icon: _syncing
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.sync_outlined),
-          ),
-
           IconButton(
             tooltip: 'Ver PDF',
             onPressed: busy ? null : _openPdfPreview,
@@ -1188,7 +1203,6 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
       body: RefreshIndicator(
         onRefresh: () async {
           await _loadCurrentSaleStatus();
-          await _loadCashOperations();
         },
 
         child: SingleChildScrollView(
@@ -1208,9 +1222,11 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
                 width: double.infinity,
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
-                  color: statusColor.withAlpha(25),
+                  color: statusColor.withValues(alpha: 0.10),
                   borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: statusColor.withAlpha(70)),
+                  border: Border.all(
+                    color: statusColor.withValues(alpha: 0.30),
+                  ),
                 ),
                 child: Row(
                   children: [
@@ -1218,11 +1234,11 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
                       width: 46,
                       height: 46,
                       decoration: BoxDecoration(
-                        color: statusColor.withAlpha(35),
+                        color: statusColor.withValues(alpha: 0.15),
                         borderRadius: BorderRadius.circular(13),
                       ),
                       child: Icon(
-                        displayedStatus == 'synced'
+                        isSynced
                             ? Icons.cloud_done_outlined
                             : Icons.receipt_long_outlined,
                         color: statusColor,
@@ -1235,11 +1251,11 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text(
+                          Text(
                             'Estado de la venta',
                             style: TextStyle(
                               fontSize: 12,
-                              color: Colors.black54,
+                              color: cs.onSurfaceVariant,
                             ),
                           ),
                           const SizedBox(height: 3),
@@ -1258,8 +1274,8 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
                       backgroundColor: statusColor,
                       label: Text(
                         _statusLabel(displayedStatus),
-                        style: const TextStyle(
-                          color: Colors.white,
+                        style: TextStyle(
+                          color: cs.onPrimary,
                           fontWeight: FontWeight.w600,
                         ),
                       ),
@@ -1277,7 +1293,7 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
                 elevation: 0,
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(14),
-                  side: BorderSide(color: Colors.grey.shade200),
+                  side: BorderSide(color: cs.outlineVariant),
                 ),
                 child: Padding(
                   padding: const EdgeInsets.all(16),
@@ -1310,386 +1326,6 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
                 ),
               ),
 
-              const SizedBox(height: 20),
-
-              // ==================================================
-              // SINCRONIZACIÓN
-              // ==================================================
-              Card(
-                elevation: 0,
-                color: Colors.blue.shade50,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
-                  side: BorderSide(color: Colors.blue.shade100),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Container(
-                            width: 42,
-                            height: 42,
-                            decoration: BoxDecoration(
-                              color: Colors.blue.shade100,
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Icon(
-                              _syncing
-                                  ? Icons.sync
-                                  : displayedStatus == 'synced'
-                                  ? Icons.cloud_done_outlined
-                                  : Icons.cloud_sync_outlined,
-                              color: Colors.blue.shade700,
-                            ),
-                          ),
-
-                          const SizedBox(width: 12),
-
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const Text(
-                                  'Sincronización',
-                                  style: TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                                const SizedBox(height: 3),
-                                Text(
-                                  _syncing
-                                      ? 'Subiendo ventas pendientes y actualizando catálogo...'
-                                      : displayedStatus == 'synced'
-                                      ? 'Esta venta ya está sincronizada con el servidor.'
-                                      : 'Hay información pendiente de sincronizar.',
-                                  style: const TextStyle(
-                                    fontSize: 13,
-                                    color: Colors.black54,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-
-                      const SizedBox(height: 14),
-
-                      SizedBox(
-                        width: double.infinity,
-                        child: FilledButton.icon(
-                          onPressed: busy ? null : _syncPendingSalesAndCatalog,
-                          icon: _syncing
-                              ? const SizedBox(
-                                  width: 18,
-                                  height: 18,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: Colors.white,
-                                  ),
-                                )
-                              : Icon(
-                                  displayedStatus == 'synced'
-                                      ? Icons.cloud_done_outlined
-                                      : Icons.sync_outlined,
-                                ),
-                          label: Text(
-                            _syncing
-                                ? 'Sincronizando...'
-                                : displayedStatus == 'synced'
-                                ? 'Sincronizar nuevamente'
-                                : 'Sincronizar ventas y catálogo',
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 24),
-
-              // ==================================================
-              // CAJA
-              // ==================================================
-              const Text(
-                'Caja',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-              ),
-
-              const SizedBox(height: 8),
-
-              const Text(
-                'Ingresos y egresos registrados en caja.',
-                style: TextStyle(fontSize: 13, color: Colors.black54),
-              ),
-
-              const SizedBox(height: 12),
-
-              Row(
-                children: [
-                  Expanded(
-                    child: _cashSummaryCard(
-                      title: 'Ingresos',
-                      amount: _cashIncome,
-                      icon: Icons.arrow_downward_rounded,
-                      color: Colors.green,
-                    ),
-                  ),
-
-                  const SizedBox(width: 12),
-
-                  Expanded(
-                    child: _cashSummaryCard(
-                      title: 'Egresos',
-                      amount: _cashExpense,
-                      icon: Icons.arrow_upward_rounded,
-                      color: Colors.red,
-                    ),
-                  ),
-                ],
-              ),
-
-              const SizedBox(height: 12),
-
-              Card(
-                elevation: 0,
-                color: Colors.grey.shade50,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
-                  side: BorderSide(color: Colors.grey.shade200),
-                ),
-                child: ListTile(
-                  leading: const Icon(Icons.account_balance_wallet_outlined),
-                  title: const Text(
-                    'Neto de caja',
-                    style: TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                  trailing: Text(
-                    '\$${(_cashIncome - _cashExpense).toStringAsFixed(2)}',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: (_cashIncome - _cashExpense) >= 0
-                          ? Colors.green
-                          : Colors.red,
-                    ),
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 12),
-
-              // ==================================================
-              // MOVIMIENTOS DE CAJA
-              // ==================================================
-              if (_loadingCashOperations)
-                const Card(
-                  child: Padding(
-                    padding: EdgeInsets.all(20),
-                    child: Center(child: CircularProgressIndicator()),
-                  ),
-                )
-              else if (_cashOperations.isEmpty)
-                Card(
-                  elevation: 0,
-                  color: Colors.grey.shade50,
-                  child: const Padding(
-                    padding: EdgeInsets.all(16),
-                    child: Row(
-                      children: [
-                        Icon(Icons.info_outline, color: Colors.black45),
-                        SizedBox(width: 10),
-                        Expanded(
-                          child: Text(
-                            'No hay movimientos de caja disponibles en este momento.',
-                            style: TextStyle(color: Colors.black54),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                )
-              else
-                ListView.separated(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  itemCount: _cashOperations.length,
-                  separatorBuilder: (_, _) => const SizedBox(height: 8),
-                  itemBuilder: (context, index) {
-                    final operation = _cashOperations[index];
-
-                    final type = _operationType(operation);
-
-                    final income = _isIncomeMovement(operation);
-
-                    final amount = _toDouble(
-                      operation['importe'] ??
-                          operation['monto'] ??
-                          operation['amount'],
-                    );
-
-                    final concept = _operationConcept(operation);
-
-                    final date = _operationDate(operation);
-
-                    final operationKey = _cashOperationKey(operation, index);
-
-                    final printingThis = _printingCashOperations.contains(
-                      operationKey,
-                    );
-
-                    final reference =
-                        operation['referencia'] ?? operation['reference'];
-
-                    final subtitle = StringBuffer(concept);
-
-                    if (reference != null &&
-                        reference.toString().trim().isNotEmpty) {
-                      subtitle.write(' · Ref. ${reference.toString().trim()}');
-                    }
-
-                    subtitle.write(' · $date');
-
-                    final printable = _isPrintableMovement(operation);
-
-                    return Card(
-                      elevation: 0,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14),
-                        side: BorderSide(color: Colors.grey.shade200),
-                      ),
-                      child: ListTile(
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 4,
-                        ),
-
-                        onTap: () => _showCashMovementDetail(
-                          operation: operation,
-                          index: index,
-                        ),
-
-                        leading: Container(
-                          width: 46,
-                          height: 46,
-                          decoration: BoxDecoration(
-                            color: (income ? Colors.green : Colors.red)
-                                .withAlpha(25),
-                            borderRadius: BorderRadius.circular(13),
-                          ),
-                          child: Icon(
-                            income
-                                ? Icons.arrow_downward_rounded
-                                : Icons.arrow_upward_rounded,
-                            color: income ? Colors.green : Colors.red,
-                          ),
-                        ),
-
-                        title: Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                _operationTypeLabel(type),
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                            ),
-
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 4,
-                              ),
-                              decoration: BoxDecoration(
-                                color: (income ? Colors.green : Colors.red)
-                                    .withAlpha(18),
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: Text(
-                                income ? 'INGRESO' : 'EGRESO',
-                                style: TextStyle(
-                                  fontSize: 9,
-                                  fontWeight: FontWeight.bold,
-                                  color: income ? Colors.green : Colors.red,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-
-                        subtitle: Padding(
-                          padding: const EdgeInsets.only(top: 4),
-                          child: Text(
-                            subtitle.toString(),
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              crossAxisAlignment: CrossAxisAlignment.end,
-                              children: [
-                                Text(
-                                  '${income ? '+' : '-'}\$${amount.abs().toStringAsFixed(2)}',
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    color: income ? Colors.green : Colors.red,
-                                  ),
-                                ),
-
-                                const SizedBox(height: 3),
-
-                                const Text(
-                                  'Detalle',
-                                  style: TextStyle(
-                                    fontSize: 10,
-                                    color: Colors.black45,
-                                  ),
-                                ),
-                              ],
-                            ),
-
-                            if (printable)
-                              IconButton(
-                                tooltip: 'Imprimir movimiento',
-                                onPressed: busy || printingThis
-                                    ? null
-                                    : () => _printCashOperation(
-                                        operation: operation,
-                                        index: index,
-                                      ),
-                                icon: printingThis
-                                    ? const SizedBox(
-                                        width: 20,
-                                        height: 20,
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                        ),
-                                      )
-                                    : const Icon(Icons.print_outlined),
-                              ),
-
-                            const Icon(
-                              Icons.chevron_right_rounded,
-                              color: Colors.black38,
-                            ),
-                          ],
-                        ),
-                      ),
-                    );
-                  },
-                ),
-
               const SizedBox(height: 24),
 
               // ==================================================
@@ -1703,12 +1339,12 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
               const SizedBox(height: 8),
 
               if (widget.sale.payments.isEmpty)
-                const Card(
+                Card(
                   child: Padding(
-                    padding: EdgeInsets.all(16),
+                    padding: const EdgeInsets.all(16),
                     child: Text(
                       'Esta venta no tiene pagos registrados.',
-                      style: TextStyle(color: Colors.black54),
+                      style: TextStyle(color: cs.onSurfaceVariant),
                     ),
                   ),
                 )
@@ -1716,9 +1352,9 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
                 ...widget.sale.payments.map(
                   (payment) => Card(
                     child: ListTile(
-                      leading: const Icon(
+                      leading: Icon(
                         Icons.payments_outlined,
-                        color: Color(0xFF9AC53B),
+                        color: cs.primary,
                       ),
                       title: Text(payment.method),
                       trailing: Text(
@@ -1732,17 +1368,17 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
                 if (widget.sale.changeDue != null &&
                     widget.sale.changeDue! > 0.005)
                   Card(
-                    color: Colors.blue.shade50,
+                    color: cs.secondaryContainer.withValues(alpha: 0.5),
                     child: ListTile(
-                      leading: const Icon(
+                      leading: Icon(
                         Icons.undo_outlined,
-                        color: Colors.blue,
+                        color: cs.secondary,
                       ),
                       title: const Text('Cambio devuelto'),
                       trailing: Text(
                         '- \$${widget.sale.changeDue!.toStringAsFixed(2)}',
-                        style: const TextStyle(
-                          color: Colors.blue,
+                        style: TextStyle(
+                          color: cs.secondary,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
@@ -1763,12 +1399,12 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
               const SizedBox(height: 8),
 
               if (widget.sale.items.isEmpty)
-                const Card(
+                Card(
                   child: Padding(
-                    padding: EdgeInsets.all(16),
+                    padding: const EdgeInsets.all(16),
                     child: Text(
                       'Esta venta no contiene productos.',
-                      style: TextStyle(color: Colors.black54),
+                      style: TextStyle(color: cs.onSurfaceVariant),
                     ),
                   ),
                 )
@@ -1805,12 +1441,12 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
                 child: FilledButton.icon(
                   onPressed: busy ? null : _reprintTicket,
                   icon: _printing
-                      ? const SizedBox(
+                      ? SizedBox(
                           width: 19,
                           height: 19,
                           child: CircularProgressIndicator(
                             strokeWidth: 2,
-                            color: Colors.white,
+                            color: cs.onPrimary,
                           ),
                         )
                       : const Icon(Icons.print_outlined),
@@ -1831,14 +1467,16 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
                   width: double.infinity,
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: Colors.red.withAlpha(25),
+                    color: cs.error.withValues(alpha: 0.10),
                     borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: Colors.red.withAlpha(60)),
+                    border: Border.all(
+                      color: cs.error.withValues(alpha: 0.35),
+                    ),
                   ),
                   child: Text(
                     'Error de sincronización: '
                     '${widget.sale.errorMessage}',
-                    style: const TextStyle(color: Colors.red),
+                    style: TextStyle(color: cs.error),
                   ),
                 ),
 
@@ -1855,13 +1493,18 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
   // ============================================================
 
   Widget _infoRow(String label, String value, {bool valueBold = false}) {
+    final cs = Theme.of(context).colorScheme;
+
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Expanded(
           child: Text(
             label,
-            style: const TextStyle(color: Colors.black54, fontSize: 13),
+            style: TextStyle(
+              color: cs.onSurfaceVariant,
+              fontSize: 13,
+            ),
           ),
         ),
 
@@ -1883,8 +1526,10 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
 
   // ============================================================
   // RESUMEN DE CAJA
+  // (Método intacto por si se reactiva)
   // ============================================================
 
+  // ignore: unused_element
   Widget _cashSummaryCard({
     required String title,
     required double amount,
@@ -1896,7 +1541,7 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
       margin: EdgeInsets.zero,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(14),
-        side: BorderSide(color: color.withAlpha(60)),
+        side: BorderSide(color: color.withValues(alpha: 0.35)),
       ),
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -1907,7 +1552,7 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
               width: 40,
               height: 40,
               decoration: BoxDecoration(
-                color: color.withAlpha(25),
+                color: color.withValues(alpha: 0.15),
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Icon(icon, color: color),
@@ -1917,7 +1562,10 @@ class _SaleDetailScreenState extends State<SaleDetailScreen> {
 
             Text(
               title,
-              style: const TextStyle(fontSize: 13, color: Colors.black54),
+              style: TextStyle(
+                fontSize: 13,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
             ),
 
             const SizedBox(height: 4),

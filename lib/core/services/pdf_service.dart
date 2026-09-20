@@ -6,6 +6,7 @@ import 'package:pdf/widgets.dart' as pw;
 
 import '../models/ticket_data.dart';
 import 'ticket_renderer.dart';
+import 'printer_service.dart';
 
 class PdfService {
   const PdfService._();
@@ -702,5 +703,835 @@ class PdfService {
 
   static bool _hasText(String? value) {
     return value != null && value.trim().isNotEmpty;
+  }
+
+  // ============================================================
+  // PDF DE MOVIMIENTO DE CAJA
+  // ============================================================
+  //
+  // Genera un PDF de una sola hoja con la misma estética que el
+  // ticket de venta.
+  //
+  // Parámetros:
+  //   • movement: Map con los datos del movimiento:
+  //       - tipo          (String)  ingreso | egreso | retiro | ajuste
+  //       - concepto      (String)
+  //       - monto         (double)
+  //       - referencia    (String?)
+  //       - notas         (String?)
+  //       - forma_pago    (String?)
+  //       - registrado_at (String ISO8601)
+  //       - usuario       (String?)
+  //       - folio         (String?)
+  //       - fecha_comercial (String)  YYYY-MM-DD
+  //       - caja_nombre   (String?)
+  //   • config: TicketConfig ya cargado (empresa, logo, colores).
+  //
+  // NO crea dependencias nuevas. Reutiliza:
+  //   - _loadLogo
+  //   - _pageFormat
+  //   - _separator
+  //   - _moneyRow
+  //   - _centeredText
+  //   - _hasText
+
+  static Future<Uint8List> generateCashMovementPdf({
+    required Map<String, dynamic> movement,
+    required TicketConfig config,
+  }) async {
+    final pdf = pw.Document();
+
+    final logo = await _loadLogo(config.logoPath);
+
+    final pageFormat = _pageFormat(config.paperSize);
+
+    final is80mm = _is80mm(config.paperSize);
+
+    final fontSize = is80mm ? 8.5 : 7.5;
+    final titleSize = is80mm ? 12.0 : 10.5;
+    final totalSize = is80mm ? 11.0 : 10.0;
+
+    pdf.addPage(
+      pw.Page(
+        pageFormat: pageFormat,
+        margin: const pw.EdgeInsets.symmetric(
+          horizontal: 4,
+          vertical: 6,
+        ),
+        build: (context) {
+          return pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+            children: [
+              _movementHeader(
+                config: config,
+                logo: logo,
+                titleSize: titleSize,
+                fontSize: fontSize,
+              ),
+              _separator(fontSize),
+              _movementTitle(
+                movement: movement,
+                fontSize: titleSize,
+              ),
+              _movementInfo(
+                movement: movement,
+                fontSize: fontSize,
+              ),
+              _separator(fontSize),
+              _movementConcept(
+                movement: movement,
+                fontSize: fontSize,
+              ),
+              _separator(fontSize),
+              _movementTotal(
+                movement: movement,
+                fontSize: totalSize,
+              ),
+              _movementFooter(
+                config: config,
+                fontSize: fontSize,
+              ),
+            ],
+          );
+        },
+      ),
+    );
+
+    return pdf.save();
+  }
+
+  // ============================================================
+  // PDF DE RESUMEN DE CAJA (por secciones)
+  // ============================================================
+  //
+  // Genera un PDF del resumen completo de la caja del día:
+  //
+  //   1. Encabezado (empresa, logo, RFC, dirección) — usa la
+  //      MISMA configuración de ticket global.
+  //   2. Datos de la caja (apertura, cierre, estado, fecha
+  //      comercial).
+  //   3. Ventas del día por método de pago.
+  //   4. Movimientos manuales por tipo y método.
+  //   5. Resumen (ingresos, egresos, ajustes, neto).
+  //
+  // No depende de TicketData: recibe los mapas crudos tal como
+  // los devuelve LocalDb / CashService.
+  static Future<Uint8List> generateCashSummaryPdf({
+    required Map<String, dynamic>? caja,
+    required Map<String, dynamic> resumen,
+    required List<Map<String, dynamic>> ventasPorMetodo,
+    required List<Map<String, dynamic>> movimientosPorTipoMetodo,
+    required TicketConfig config,
+    required String fechaComercial,
+  }) async {
+    final pdf = pw.Document();
+
+    final logo = await _loadLogo(config.logoPath);
+
+    final pageFormat = _pageFormat(config.paperSize);
+
+    final is80mm = _is80mm(config.paperSize);
+
+    final fontSize = is80mm ? 8.5 : 7.5;
+    final titleSize = is80mm ? 12.0 : 10.5;
+    final totalSize = is80mm ? 11.0 : 10.0;
+
+    pdf.addPage(
+      pw.Page(
+        pageFormat: pageFormat,
+        margin: const pw.EdgeInsets.symmetric(
+          horizontal: 4,
+          vertical: 6,
+        ),
+        build: (context) {
+          return pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+            children: [
+              _summaryHeader(
+                config: config,
+                logo: logo,
+                titleSize: titleSize,
+                fontSize: fontSize,
+              ),
+              _separator(fontSize),
+              _summaryTitle(titleSize),
+              _summaryBoxInfo(
+                caja: caja,
+                fechaComercial: fechaComercial,
+                fontSize: fontSize,
+              ),
+              _separator(fontSize),
+              _summarySectionVentas(
+                ventasPorMetodo: ventasPorMetodo,
+                fontSize: fontSize,
+              ),
+              _separator(fontSize),
+              _summarySectionMovimientos(
+                movimientosPorTipoMetodo: movimientosPorTipoMetodo,
+                fontSize: fontSize,
+              ),
+              _separator(fontSize),
+              _summarySectionResumen(
+                resumen: resumen,
+                fontSize: fontSize,
+                totalSize: totalSize,
+              ),
+              _summaryFooter(
+                config: config,
+                fontSize: fontSize,
+              ),
+            ],
+          );
+        },
+      ),
+    );
+
+    return pdf.save();
+  }
+
+  // ============================================================
+  // HELPERS INTERNOS DEL PDF DE MOVIMIENTO
+  // ============================================================
+
+  static pw.Widget _movementHeader({
+    required TicketConfig config,
+    required pw.ImageProvider? logo,
+    required double titleSize,
+    required double fontSize,
+  }) {
+    final children = <pw.Widget>[];
+
+    if (config.mostrarLogo && logo != null) {
+      children.add(
+        pw.Center(
+          child: pw.Container(
+            constraints: const pw.BoxConstraints(
+              maxHeight: 70,
+              maxWidth: 180,
+            ),
+            child: pw.Image(logo, fit: pw.BoxFit.contain),
+          ),
+        ),
+      );
+
+      children.add(pw.SizedBox(height: 4));
+    }
+
+    final mostrarNombre = config.campos['nombre_negocio'] ?? true;
+
+    if (mostrarNombre && config.empresa.trim().isNotEmpty) {
+      children.add(
+        pw.Center(
+          child: pw.Text(
+            config.empresa.trim(),
+            textAlign: pw.TextAlign.center,
+            style: pw.TextStyle(
+              fontSize: titleSize,
+              fontWeight: pw.FontWeight.bold,
+            ),
+          ),
+        ),
+      );
+    }
+
+    if (_hasText(config.rfc)) {
+      children.add(_centeredText('RFC: ${config.rfc!.trim()}', fontSize));
+    }
+
+    if (config.mostrarDireccion && _hasText(config.direccion)) {
+      children.add(_centeredText(config.direccion!.trim(), fontSize));
+    }
+
+    if (config.mostrarTelefono && _hasText(config.telefono)) {
+      children.add(_centeredText('Tel: ${config.telefono!.trim()}', fontSize));
+    }
+
+    if (config.mostrarEmail && _hasText(config.email)) {
+      children.add(_centeredText(config.email!.trim(), fontSize));
+    }
+
+    if (_hasText(config.encabezado)) {
+      children.add(pw.SizedBox(height: 3));
+
+      children.add(
+        pw.Center(
+          child: pw.Text(
+            config.encabezado!.trim(),
+            textAlign: pw.TextAlign.center,
+            style: pw.TextStyle(
+              fontSize: fontSize,
+              fontWeight: pw.FontWeight.bold,
+            ),
+          ),
+        ),
+      );
+    }
+
+    return pw.Column(
+      crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+      children: children,
+    );
+  }
+
+  static pw.Widget _movementTitle({
+    required Map<String, dynamic> movement,
+    required double fontSize,
+  }) {
+    final tipo = movement['tipo']?.toString().toLowerCase().trim() ?? '';
+
+    final label = switch (tipo) {
+      'ingreso' => 'INGRESO',
+      'egreso' => 'EGRESO',
+      'retiro' => 'RETIRO',
+      'ajuste' => 'AJUSTE',
+      _ => tipo.toUpperCase(),
+    };
+
+    return pw.Padding(
+      padding: const pw.EdgeInsets.symmetric(vertical: 3),
+      child: pw.Center(
+        child: pw.Text(
+          label,
+          textAlign: pw.TextAlign.center,
+          style: pw.TextStyle(
+            fontSize: fontSize,
+            fontWeight: pw.FontWeight.bold,
+          ),
+        ),
+      ),
+    );
+  }
+
+  static pw.Widget _movementInfo({
+    required Map<String, dynamic> movement,
+    required double fontSize,
+  }) {
+    final rows = <pw.Widget>[];
+
+    final folio = movement['folio']?.toString().trim() ?? '';
+    if (folio.isNotEmpty) {
+      rows.add(_infoRow('Folio', folio, fontSize));
+    }
+
+    final fecha = movement['registrado_at']?.toString().trim() ??
+        movement['fecha']?.toString().trim() ??
+        '';
+    if (fecha.isNotEmpty) {
+      rows.add(_infoRow('Fecha', _formatMovementDate(fecha), fontSize));
+    }
+
+    final usuario = movement['usuario']?.toString().trim() ?? '';
+    if (usuario.isNotEmpty) {
+      rows.add(_infoRow('Usuario', usuario, fontSize));
+    }
+
+    final caja = movement['caja_nombre']?.toString().trim() ?? '';
+    if (caja.isNotEmpty) {
+      rows.add(_infoRow('Caja', caja, fontSize));
+    }
+
+    final fechaComercial =
+        movement['fecha_comercial']?.toString().trim() ?? '';
+    if (fechaComercial.isNotEmpty) {
+      rows.add(_infoRow('Fecha comercial', fechaComercial, fontSize));
+    }
+
+    if (rows.isEmpty) {
+      return pw.SizedBox();
+    }
+
+    return pw.Padding(
+      padding: const pw.EdgeInsets.only(top: 3),
+      child: pw.Column(children: rows),
+    );
+  }
+
+  static pw.Widget _movementConcept({
+    required Map<String, dynamic> movement,
+    required double fontSize,
+  }) {
+    final children = <pw.Widget>[];
+
+    final concepto = movement['concepto']?.toString().trim() ?? '';
+    if (concepto.isNotEmpty) {
+      children.add(
+        pw.Text(
+          'Concepto',
+          style: pw.TextStyle(
+            fontSize: fontSize,
+            fontWeight: pw.FontWeight.bold,
+          ),
+        ),
+      );
+
+      children.add(pw.SizedBox(height: 2));
+
+      children.add(
+        pw.Text(
+          concepto,
+          style: pw.TextStyle(fontSize: fontSize),
+        ),
+      );
+    }
+
+    final referencia = movement['referencia']?.toString().trim() ?? '';
+    if (referencia.isNotEmpty) {
+      children.add(pw.SizedBox(height: 4));
+
+      children.add(
+        _infoRow('Referencia', referencia, fontSize),
+      );
+    }
+
+    final formaPago = movement['forma_pago']?.toString().trim() ?? '';
+    if (formaPago.isNotEmpty) {
+      children.add(
+        _infoRow('Forma de pago', formaPago, fontSize),
+      );
+    }
+
+    final notas = movement['notas']?.toString().trim() ?? '';
+    if (notas.isNotEmpty) {
+      children.add(pw.SizedBox(height: 4));
+
+      children.add(
+        pw.Text(
+          'Notas',
+          style: pw.TextStyle(
+            fontSize: fontSize,
+            fontWeight: pw.FontWeight.bold,
+          ),
+        ),
+      );
+
+      children.add(pw.SizedBox(height: 2));
+
+      children.add(
+        pw.Text(
+          notas,
+          style: pw.TextStyle(fontSize: fontSize),
+        ),
+      );
+    }
+
+    if (children.isEmpty) {
+      return pw.SizedBox();
+    }
+
+    return pw.Padding(
+      padding: const pw.EdgeInsets.only(top: 3),
+      child: pw.Column(
+        crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+        children: children,
+      ),
+    );
+  }
+
+  static pw.Widget _movementTotal({
+    required Map<String, dynamic> movement,
+    required double fontSize,
+  }) {
+    final monto = _toDouble(movement['monto']);
+
+    return pw.Padding(
+      padding: const pw.EdgeInsets.symmetric(vertical: 4),
+      child: _moneyRow(
+        'MONTO',
+        _money(monto),
+        fontSize,
+        bold: true,
+      ),
+    );
+  }
+
+  static pw.Widget _movementFooter({
+    required TicketConfig config,
+    required double fontSize,
+  }) {
+    final pie = config.pie?.trim() ?? '';
+
+    if (pie.isEmpty) {
+      return pw.SizedBox();
+    }
+
+    return pw.Padding(
+      padding: const pw.EdgeInsets.only(top: 4),
+      child: pw.Center(
+        child: pw.Text(
+          pie,
+          textAlign: pw.TextAlign.center,
+          style: pw.TextStyle(fontSize: fontSize),
+        ),
+      ),
+    );
+  }
+
+  static String _formatMovementDate(String value) {
+    final parsed = DateTime.tryParse(value);
+
+    if (parsed == null) return value;
+
+    final local = parsed.toLocal();
+
+    return '${local.day.toString().padLeft(2, '0')}/'
+        '${local.month.toString().padLeft(2, '0')}/'
+        '${local.year} '
+        '${local.hour.toString().padLeft(2, '0')}:'
+        '${local.minute.toString().padLeft(2, '0')}';
+  }
+
+  static double _toDouble(dynamic value) {
+    if (value is num) return value.toDouble();
+    return double.tryParse(value?.toString().replaceAll(',', '') ?? '') ?? 0;
+  }
+
+  static String _money(double value) {
+    return '\$${value.toStringAsFixed(2)}';
+  }
+
+  // ============================================================
+  // HELPERS INTERNOS DEL PDF DE RESUMEN DE CAJA
+  // ============================================================
+
+  static pw.Widget _summaryHeader({
+    required TicketConfig config,
+    required pw.ImageProvider? logo,
+    required double titleSize,
+    required double fontSize,
+  }) {
+    final children = <pw.Widget>[];
+
+    if (config.mostrarLogo && logo != null) {
+      children.add(
+        pw.Center(
+          child: pw.Container(
+            constraints: const pw.BoxConstraints(
+              maxHeight: 70,
+              maxWidth: 180,
+            ),
+            child: pw.Image(logo, fit: pw.BoxFit.contain),
+          ),
+        ),
+      );
+      children.add(pw.SizedBox(height: 4));
+    }
+
+    final mostrarNombre = config.campos['nombre_negocio'] ?? true;
+
+    if (mostrarNombre && config.empresa.trim().isNotEmpty) {
+      children.add(
+        pw.Center(
+          child: pw.Text(
+            config.empresa.trim(),
+            textAlign: pw.TextAlign.center,
+            style: pw.TextStyle(
+              fontSize: titleSize,
+              fontWeight: pw.FontWeight.bold,
+            ),
+          ),
+        ),
+      );
+    }
+
+    if (_hasText(config.rfc)) {
+      children.add(_centeredText('RFC: ${config.rfc!.trim()}', fontSize));
+    }
+
+    if (config.mostrarDireccion && _hasText(config.direccion)) {
+      children.add(_centeredText(config.direccion!.trim(), fontSize));
+    }
+
+    if (config.mostrarTelefono && _hasText(config.telefono)) {
+      children.add(_centeredText('Tel: ${config.telefono!.trim()}', fontSize));
+    }
+
+    if (config.mostrarEmail && _hasText(config.email)) {
+      children.add(_centeredText(config.email!.trim(), fontSize));
+    }
+
+    return pw.Column(
+      crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+      children: children,
+    );
+  }
+
+  static pw.Widget _summaryTitle(double fontSize) {
+    return pw.Padding(
+      padding: const pw.EdgeInsets.symmetric(vertical: 3),
+      child: pw.Center(
+        child: pw.Text(
+          'RESUMEN DE CAJA',
+          textAlign: pw.TextAlign.center,
+          style: pw.TextStyle(
+            fontSize: fontSize,
+            fontWeight: pw.FontWeight.bold,
+          ),
+        ),
+      ),
+    );
+  }
+
+  static pw.Widget _summaryBoxInfo({
+    required Map<String, dynamic>? caja,
+    required String fechaComercial,
+    required double fontSize,
+  }) {
+    final rows = <pw.Widget>[];
+
+    rows.add(_infoRow('Fecha comercial', fechaComercial, fontSize));
+
+    if (caja != null) {
+      final estado = (caja['estado'] ?? '').toString();
+      if (estado.isNotEmpty) {
+        rows.add(_infoRow('Estado', estado.toUpperCase(), fontSize));
+      }
+
+      final montoApertura = _toDouble(caja['monto_apertura']);
+      rows.add(_infoRow('Monto apertura', _money(montoApertura), fontSize));
+
+      final abiertaAt = caja['abierta_at']?.toString();
+      if (abiertaAt != null && abiertaAt.isNotEmpty) {
+        rows.add(_infoRow('Apertura', _formatMovementDate(abiertaAt), fontSize));
+      }
+
+      final cerradaAt = caja['cerrada_at']?.toString();
+      if (cerradaAt != null && cerradaAt.isNotEmpty) {
+        rows.add(_infoRow('Cierre', _formatMovementDate(cerradaAt), fontSize));
+
+        final declarado = _toDouble(caja['monto_declarado']);
+        rows.add(_infoRow('Monto declarado', _money(declarado), fontSize));
+
+        final diferencia = _toDouble(caja['diferencia']);
+        rows.add(_infoRow('Diferencia', _money(diferencia), fontSize));
+      }
+    }
+
+    return pw.Padding(
+      padding: const pw.EdgeInsets.only(top: 3),
+      child: pw.Column(children: rows),
+    );
+  }
+
+  static pw.Widget _summarySectionVentas({
+    required List<Map<String, dynamic>> ventasPorMetodo,
+    required double fontSize,
+  }) {
+    final children = <pw.Widget>[];
+
+    children.add(
+      pw.Text(
+        'VENTAS DEL DÍA POR MÉTODO',
+        style: pw.TextStyle(
+          fontSize: fontSize,
+          fontWeight: pw.FontWeight.bold,
+        ),
+      ),
+    );
+
+    children.add(pw.SizedBox(height: 3));
+
+    if (ventasPorMetodo.isEmpty) {
+      children.add(
+        pw.Text(
+          'Sin ventas registradas.',
+          style: pw.TextStyle(fontSize: fontSize),
+        ),
+      );
+      return pw.Column(
+        crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+        children: children,
+      );
+    }
+
+    double total = 0;
+
+    for (final v in ventasPorMetodo) {
+      final label = v['method_label']?.toString() ?? '—';
+      final tickets = (v['tickets'] is num)
+          ? (v['tickets'] as num).toInt()
+          : int.tryParse(v['tickets']?.toString() ?? '') ?? 0;
+      final monto = _toDouble(v['total']);
+      total += monto;
+
+      children.add(
+        _moneyRow(
+          '$label ($tickets ticket${tickets == 1 ? '' : 's'})',
+          _money(monto),
+          fontSize,
+        ),
+      );
+    }
+
+    children.add(pw.SizedBox(height: 2));
+
+    children.add(
+      _moneyRow('Total ventas', _money(total), fontSize, bold: true),
+    );
+
+    return pw.Column(
+      crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+      children: children,
+    );
+  }
+
+  static pw.Widget _summarySectionMovimientos({
+    required List<Map<String, dynamic>> movimientosPorTipoMetodo,
+    required double fontSize,
+  }) {
+    final children = <pw.Widget>[];
+
+    children.add(
+      pw.Text(
+        'MOVIMIENTOS MANUALES',
+        style: pw.TextStyle(
+          fontSize: fontSize,
+          fontWeight: pw.FontWeight.bold,
+        ),
+      ),
+    );
+
+    children.add(pw.SizedBox(height: 3));
+
+    if (movimientosPorTipoMetodo.isEmpty) {
+      children.add(
+        pw.Text(
+          'Sin movimientos manuales.',
+          style: pw.TextStyle(fontSize: fontSize),
+        ),
+      );
+      return pw.Column(
+        crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+        children: children,
+      );
+    }
+
+    final porTipo = <String, List<Map<String, dynamic>>>{};
+
+    for (final m in movimientosPorTipoMetodo) {
+      final tipo = (m['tipo'] ?? '').toString();
+      porTipo.putIfAbsent(tipo, () => []);
+      porTipo[tipo]!.add(m);
+    }
+
+    const orden = ['ingreso', 'ajuste', 'egreso', 'retiro'];
+
+    for (final tipo in orden) {
+      final items = porTipo[tipo];
+      if (items == null || items.isEmpty) continue;
+
+      children.add(pw.SizedBox(height: 4));
+
+      children.add(
+        pw.Text(
+          tipo.toUpperCase(),
+          style: pw.TextStyle(
+            fontSize: fontSize,
+            fontWeight: pw.FontWeight.bold,
+          ),
+        ),
+      );
+
+      for (final m in items) {
+        final label = m['method_label']?.toString() ?? '—';
+        final cantidad = (m['cantidad'] is num)
+            ? (m['cantidad'] as num).toInt()
+            : int.tryParse(m['cantidad']?.toString() ?? '') ?? 0;
+        final total = _toDouble(m['total']);
+
+        children.add(
+          _moneyRow(
+            '  $label (${cantidad}x)',
+            _money(total),
+            fontSize,
+          ),
+        );
+      }
+    }
+
+    return pw.Column(
+      crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+      children: children,
+    );
+  }
+
+  static pw.Widget _summarySectionResumen({
+    required Map<String, dynamic> resumen,
+    required double fontSize,
+    required double totalSize,
+  }) {
+    final ingresos = _toDouble(resumen['ingresos']);
+    final egresos = _toDouble(resumen['retiros_gastos']);
+    final ajustes = _toDouble(resumen['ajustes']);
+    final ventasEfectivo = _toDouble(resumen['ventas_efectivo']);
+    final ventasTotal = _toDouble(resumen['ventas_total']);
+    final neto = _toDouble(resumen['neto']);
+
+    final children = <pw.Widget>[];
+
+    children.add(
+      pw.Text(
+        'RESUMEN',
+        style: pw.TextStyle(
+          fontSize: fontSize,
+          fontWeight: pw.FontWeight.bold,
+        ),
+      ),
+    );
+
+    children.add(pw.SizedBox(height: 3));
+
+    children.add(
+      _moneyRow('Ventas en efectivo', _money(ventasEfectivo), fontSize),
+    );
+
+    if (ventasTotal > ventasEfectivo) {
+      children.add(
+        _moneyRow(
+          'Ventas otros métodos',
+          _money(ventasTotal - ventasEfectivo),
+          fontSize,
+        ),
+      );
+    }
+
+    children.add(_moneyRow('Ingresos manuales', _money(ingresos), fontSize));
+    children.add(_moneyRow('Retiros / gastos', _money(egresos), fontSize));
+
+    if (ajustes != 0) {
+      children.add(_moneyRow('Ajustes', _money(ajustes), fontSize));
+    }
+
+    children.add(pw.SizedBox(height: 3));
+
+    children.add(
+      _moneyRow('NETO EN CAJA', _money(neto), totalSize, bold: true),
+    );
+
+    return pw.Column(
+      crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+      children: children,
+    );
+  }
+
+  static pw.Widget _summaryFooter({
+    required TicketConfig config,
+    required double fontSize,
+  }) {
+    final pie = config.pie?.trim() ?? '';
+
+    if (pie.isEmpty) {
+      return pw.SizedBox();
+    }
+
+    return pw.Padding(
+      padding: const pw.EdgeInsets.only(top: 6),
+      child: pw.Center(
+        child: pw.Text(
+          pie,
+          textAlign: pw.TextAlign.center,
+          style: pw.TextStyle(fontSize: fontSize),
+        ),
+      ),
+    );
   }
 }

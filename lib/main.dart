@@ -63,9 +63,7 @@ class _PuntoVentaAppState extends State<PuntoVentaApp> {
 
           theme: ThemeData(
             useMaterial3: true,
-
             colorScheme: colorScheme,
-
             scaffoldBackgroundColor: colorScheme.surface,
 
             appBarTheme: AppBarTheme(
@@ -84,7 +82,6 @@ class _PuntoVentaAppState extends State<PuntoVentaApp> {
               actionsIconTheme: IconThemeData(color: colorScheme.onPrimary),
             ),
 
-            // 👇 NUEVO: TabBarTheme global
             tabBarTheme: TabBarThemeData(
               labelColor: colorScheme.onPrimary,
               unselectedLabelColor:
@@ -120,12 +117,10 @@ class _PuntoVentaAppState extends State<PuntoVentaApp> {
                 borderRadius: BorderRadius.circular(14),
                 borderSide: BorderSide(color: colorScheme.outline),
               ),
-
               enabledBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(14),
                 borderSide: BorderSide(color: colorScheme.outline),
               ),
-
               focusedBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(14),
                 borderSide: BorderSide(color: colorScheme.primary, width: 2),

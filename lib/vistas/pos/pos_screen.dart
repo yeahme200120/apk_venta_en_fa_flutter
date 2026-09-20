@@ -9,7 +9,7 @@ import '../../core/models/sale_model.dart';
 import '../../core/network/api_client.dart';
 import '../../core/payments/payment_breakdown.dart';
 import '../../core/storage/app_storage.dart';
-import '../../core/services/sync_service.dart';
+import '../../core/services/sync_orchestrator.dart';
 import '../../core/services/printer_service.dart';
 // [LICENCIA-OFFLINE] Import para evaluar el estado de licencia desde snapshot local.
 import '../../core/services/license_service.dart';
@@ -17,6 +17,8 @@ import '../operacion/operation_screen.dart';
 import 'cart_screen.dart';
 import '../ventas/sale_detail_screen.dart';
 import '../widgets/app_scaffold.dart';
+import '../widgets/sync_progress_dialog.dart';
+import '../widgets/sync_result_dialog.dart';
 import '../../core/services/cash_service.dart';
 
 class PosScreen extends StatefulWidget {
@@ -53,6 +55,10 @@ class PosScreenState extends State<PosScreen> {
   bool _isCardView = false;
   bool _isLoadingCategories = false;
   bool _isLoading = true;
+
+  // ✅ FIX: métodos de pago cargados desde el catálogo local
+  // (tabla payment_methods) en lugar de estar hardcodeados.
+  List<Map<String, dynamic>> _paymentMethods = const [];
 
   int _todaySales = 0;
   int _pendingSales = 0;
@@ -101,6 +107,8 @@ class PosScreenState extends State<PosScreen> {
       _handleCashChanged();
     });
 
+    // ✅ FIX: cargar métodos de pago antes que el resto.
+    _loadPaymentMethods();
     _loadProducts();
     _loadCategories();
     _loadOperationState();
@@ -130,6 +138,24 @@ class PosScreenState extends State<PosScreen> {
   // ============================================================
   // CARGA DE DATOS
   // ============================================================
+
+  // ✅ FIX: cargar métodos de pago desde la tabla local.
+  // Si la tabla está vacía, el diálogo usará un fallback ['Efectivo'].
+  Future<void> _loadPaymentMethods() async {
+    try {
+      final rows = await _db.getPaymentMethods();
+
+      if (!mounted) return;
+
+      setState(() {
+        _paymentMethods = rows
+            .map((row) => Map<String, dynamic>.from(row))
+            .toList();
+      });
+    } catch (error) {
+      debugPrint('⚠️ No se pudieron cargar los métodos de pago: $error');
+    }
+  }
 
   Future<void> _loadCategories() async {
     if (_isLoadingCategories) return;
@@ -247,40 +273,118 @@ class PosScreenState extends State<PosScreen> {
     await _handleSalesChanged();
   }
 
+  // ============================================================
+  // ACTUALIZAR CAJA
+  // ============================================================
+  //
+  // Usa el orquestador global, igual que Settings y SaleDetail.
+  //
+  //   1. Sube TODO lo pendiente (sync_queue + ventas históricas
+  //      + outbox del día) respetando la fecha comercial original.
+  //   2. Baja TODO lo que la app necesita.
+  //   3. Nunca borra. Solo upsert.
+  //
+  // El diálogo modal de progreso se cierra al terminar.
+  // El resultado se muestra con showSyncResultDialog.
+
   Future<void> _refreshAll() async {
     if (!mounted || _syncing) return;
+
+    final companyId = await AppStorage().getEmpresaId() ?? 0;
+    final userId = await AppStorage().getUserId() ?? 0;
+
+    if (companyId <= 0 || userId <= 0) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No existe una sesión válida para sincronizar.'),
+        ),
+      );
+
+      return;
+    }
+
+    final rawBusinessDate = await AppStorage().getServerBusinessDate();
+    final businessDate =
+        DateTime.tryParse(rawBusinessDate ?? '') ?? DateTime.now();
+
+    if (!mounted) return;
 
     setState(() {
       _syncing = true;
     });
 
+    // ============================================================
+    // DIÁLOGO DE PROGRESO
+    // ============================================================
+
+    final progressNotifier = ValueNotifier<String>(
+      'Iniciando sincronización...',
+    );
+
+    NavigatorState? progressNavigator;
+
+    unawaited(
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) {
+          progressNavigator = Navigator.of(ctx, rootNavigator: true);
+
+          return SyncProgressDialog(
+            progressNotifier: progressNotifier,
+          );
+        },
+      ),
+    );
+
+    await Future.delayed(const Duration(milliseconds: 120));
+
     try {
-      try {
-        final offline = await AppStorage().isOfflineSession();
-        if (!offline) {
-          await SyncService().syncPull();
-        }
-      } catch (error) {
-        debugPrint('ℹ️ Actualización remota omitida: $error');
+      final report = await SyncOrchestrator().syncAll(
+        companyId: companyId,
+        userId: userId,
+        businessDate: businessDate,
+        onProgress: (stage, message) {
+          progressNotifier.value = message;
+        },
+      );
+
+      if (progressNavigator != null && progressNavigator!.canPop()) {
+        progressNavigator!.pop();
       }
 
+      progressNotifier.dispose();
+
+      if (!mounted) return;
+
+      // Refrescar datos locales tras la sincronización.
       await _loadProducts();
       await _loadCategories();
+      await _loadPaymentMethods();
       await _loadOperationState();
 
       if (!mounted) return;
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Caja actualizada correctamente.'),
-          duration: Duration(seconds: 2),
-        ),
+      await showSyncResultDialog(
+        context,
+        report: report,
+        onRetry: () => _refreshAll(),
       );
     } catch (error) {
+      if (progressNavigator != null && progressNavigator!.canPop()) {
+        progressNavigator!.pop();
+      }
+
+      progressNotifier.dispose();
+
       if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No fue posible actualizar la caja: $error')),
+        SnackBar(
+          content: Text('No fue posible actualizar la caja: $error'),
+        ),
       );
     } finally {
       if (mounted) {
@@ -304,9 +408,7 @@ class PosScreenState extends State<PosScreen> {
   Future<void> _loadOperationState() async {
     final savedState = await AppStorage().getOperationState();
 
-    Map<String, dynamic> state = savedState is Map
-        ? Map<String, dynamic>.from(savedState)
-        : <String, dynamic>{};
+    Map<String, dynamic> state = Map<String, dynamic>.from(savedState);
 
     try {
       final remote = await ApiClient().getOperationStatus();
@@ -593,6 +695,8 @@ class PosScreenState extends State<PosScreen> {
   // Método reservado para uso futuro.
   // ignore: unused_element
   Future<void> _savePendingSale() async {
+    final businessDate = await AppStorage().getServerBusinessDateKey();
+
     if (_cartNotifier.value.isEmpty || !await _canOperateSale()) return;
 
     try {
@@ -605,6 +709,7 @@ class PosScreenState extends State<PosScreen> {
           status: 'pending',
           tableId: _tableIdForSale,
           tableName: _tableNameForSale,
+          businessDate: businessDate,
         );
       } else {
         final updated = await _db.updatePendingSale(
@@ -613,6 +718,7 @@ class PosScreenState extends State<PosScreen> {
           total: _total,
           tableId: _tableIdForSale,
           tableName: _tableNameForSale,
+          businessDate: businessDate,
         );
 
         if (!updated) {
@@ -692,16 +798,21 @@ class PosScreenState extends State<PosScreen> {
       final cashAmount = breakdown.cashAmount;
       final change = breakdown.change;
 
-      var saleId = _pendingSaleId;
-
+      // ✅ FIX: separar en dos ramas con variable tipada no-null.
+      // Así evitamos los checks de null redundantes y el analyzer
+      // queda limpio.
+      late final int saleId;
+      // Obtener la fecha comercial del servidor ANTES de guardar.
+      final businessDate = await AppStorage().getServerBusinessDateKey();
       try {
-        if (saleId != null) {
+        if (_pendingSaleId != null) {
           final paid = await _db.payPendingSale(
-            saleId,
+            _pendingSaleId!,
             payments: payments,
             paymentMethod: _paymentMethodLabel(payments),
             cashReceived: cashAmount,
             changeDue: change,
+            businessDate: businessDate,
           );
 
           if (!paid) {
@@ -714,6 +825,8 @@ class PosScreenState extends State<PosScreen> {
             }
             return false;
           }
+
+          saleId = _pendingSaleId!;
         } else {
           saleId = await _db.saveSale(
             uuid: uuid,
@@ -727,6 +840,7 @@ class PosScreenState extends State<PosScreen> {
             changeDue: change,
             tableId: _tableIdForSale,
             tableName: _tableNameForSale,
+            businessDate: businessDate,
           );
         }
       } on StateError catch (error) {
@@ -737,34 +851,41 @@ class PosScreenState extends State<PosScreen> {
         return false;
       }
 
-      if (saleId != null) {
-        final printResult = await _printSaleAutomatically(
-          saleId: saleId,
-          saleItems: saleItems,
-          payments: payments,
-          total: _total,
-          cashAmount: cashAmount,
-          change: change,
-          uuid: uuid,
-        );
+      final printResult = await _printSaleAutomatically(
+        saleId: saleId,
+        saleItems: saleItems,
+        payments: payments,
+        total: _total,
+        cashAmount: cashAmount,
+        change: change,
+        uuid: uuid,
+      );
 
-        if (mounted && !printResult.success) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                'Venta guardada correctamente, pero no se imprimió el ticket: ${printResult.message}',
-              ),
+      if (mounted && !printResult.success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Venta guardada correctamente, pero no se imprimió el ticket: ${printResult.message}',
             ),
-          );
-        }
+          ),
+        );
       }
 
       // FIX: Abrimos la venta recién guardada para mostrarla en detalle.
-      if (saleId != null && mounted) {
+      if (mounted) {
         final generatedSale = await _db.getSaleById(saleId);
 
         if (generatedSale != null && mounted) {
           final sale = generatedSale;
+
+          // ✅ FIX: leer business_date del registro recién guardado,
+          // con fallback a la fecha comercial del servidor.
+          final businessDateForDetail =
+              sale['business_date']?.toString().trim().isNotEmpty == true
+              ? sale['business_date'].toString()
+              : (businessDate ??
+                    DateTime.now().toIso8601String().substring(0, 10));
+
           Navigator.of(context).push(
             MaterialPageRoute(
               builder: (_) => SaleDetailScreen(
@@ -772,10 +893,7 @@ class PosScreenState extends State<PosScreen> {
                   id: int.tryParse('${sale['id'] ?? 0}') ?? 0,
                   uuidLocal: sale['uuid_local']?.toString() ?? uuid,
                   serverId: null,
-                  businessDate: DateTime.now().toIso8601String().substring(
-                    0,
-                    10,
-                  ),
+                  businessDate: businessDateForDetail, // 👈 FIX
                   total: (sale['total'] is num)
                       ? (sale['total'] as num).toDouble()
                       : _total,
@@ -813,8 +931,12 @@ class PosScreenState extends State<PosScreen> {
                         ),
                       )
                       .toList(),
-                  createdAt: DateTime.now().toIso8601String(),
-                  updatedAt: DateTime.now().toIso8601String(),
+                  createdAt:
+                      sale['created_at']?.toString() ??
+                      DateTime.now().toIso8601String(),
+                  updatedAt:
+                      sale['updated_at']?.toString() ??
+                      DateTime.now().toIso8601String(),
                 ),
               ),
             ),
@@ -941,7 +1063,11 @@ class PosScreenState extends State<PosScreen> {
     return showDialog<Map<String, dynamic>>(
       context: context,
       barrierDismissible: false,
-      builder: (_) => _PaymentDialog(total: _total),
+      builder: (_) => _PaymentDialog(
+        total: _total,
+        // ✅ FIX: pasar los métodos de pago cargados desde la DB.
+        paymentMethods: _paymentMethods,
+      ),
     );
   }
 
@@ -1406,7 +1532,8 @@ class PosScreenState extends State<PosScreen> {
 
   Widget _buildLicenciaBloqueadaBanner(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    final mensaje = _licenseState?.mensaje ??
+    final mensaje =
+        _licenseState?.mensaje ??
         'Tu licencia está vencida. Inicia sesión con Internet para '
             'reactivar.';
 
@@ -1525,7 +1652,8 @@ class PosScreenState extends State<PosScreen> {
     final orange = Colors.orange.shade800;
     final colorScheme = Theme.of(context).colorScheme;
 
-    final mensaje = _licenseState?.mensaje ??
+    final mensaje =
+        _licenseState?.mensaje ??
         'Tu licencia está vencida. Regulariza antes de que se bloquee.';
 
     return Container(
@@ -1545,11 +1673,7 @@ class PosScreenState extends State<PosScreen> {
               color: orange.withAlpha(30),
               borderRadius: BorderRadius.circular(11),
             ),
-            child: Icon(
-              Icons.warning_amber_rounded,
-              color: orange,
-              size: 22,
-            ),
+            child: Icon(Icons.warning_amber_rounded, color: orange, size: 22),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -2327,9 +2451,14 @@ class _OpenCashDialogState extends State<_OpenCashDialog> {
 // ============================================================
 
 class _PaymentDialog extends StatefulWidget {
-  const _PaymentDialog({required this.total});
+  const _PaymentDialog({
+    required this.total,
+    // ✅ FIX: métodos de pago recibidos desde el catálogo local.
+    required this.paymentMethods,
+  });
 
   final double total;
+  final List<Map<String, dynamic>> paymentMethods;
 
   @override
   State<_PaymentDialog> createState() => _PaymentDialogState();
@@ -2348,12 +2477,10 @@ class _PaymentRowData {
 }
 
 class _PaymentDialogState extends State<_PaymentDialog> {
-  static const List<String> _methods = [
-    'Efectivo',
-    'Tarjeta',
-    'Transferencia',
-    'Cheque',
-  ];
+  // ✅ FIX: los métodos ya NO están hardcodeados.
+  // Se construyen desde el catálogo local en initState.
+  // Si el catálogo viene vacío, el fallback es solo 'Efectivo'.
+  late final List<String> _methods;
 
   final List<_PaymentRowData> _rows = [];
   int _nextRowId = 0;
@@ -2361,12 +2488,36 @@ class _PaymentDialogState extends State<_PaymentDialog> {
   @override
   void initState() {
     super.initState();
+
+    final nombres = widget.paymentMethods
+        .where((m) {
+          final active = m['is_active'];
+          return active == 1 || active == true;
+        })
+        .map((m) {
+          return (m['name'] ?? m['nombre'] ?? '').toString().trim();
+        })
+        .where((s) => s.isNotEmpty)
+        .toList();
+
+    _methods = nombres.isNotEmpty
+        ? List<String>.unmodifiable(nombres)
+        : const ['Efectivo'];
+
     _addInitialCashRow();
   }
 
   void _addInitialCashRow() {
+    // Si existe 'Efectivo' en el catálogo, se usa. Si no, se usa el primero.
+    final initialMethod = _methods.contains('Efectivo')
+        ? 'Efectivo'
+        : _methods.first;
+
     _rows.add(
-      _createRow(method: 'Efectivo', amount: widget.total.toStringAsFixed(2)),
+      _createRow(
+        method: initialMethod,
+        amount: widget.total.toStringAsFixed(2),
+      ),
     );
   }
 
@@ -2399,7 +2550,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
     }
 
     setState(() {
-      _rows.add(_createRow());
+      _rows.add(_createRow(method: _methods.first));
     });
   }
 
@@ -2637,6 +2788,22 @@ class _PaymentDialogState extends State<_PaymentDialog> {
   }
 
   Widget _buildMethodDropdown(_PaymentRowData row) {
+    // ✅ FIX: si el método guardado en la fila ya no está en el catálogo,
+    // lo mostramos igual como item para no romper el DropdownButton.
+    final safeValue = _methods.contains(row.method)
+        ? row.method
+        : _methods.first;
+
+    if (safeValue != row.method) {
+      // Se sincroniza de forma diferida para no llamar setState en build.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        if (row.method != safeValue) {
+          row.method = safeValue;
+        }
+      });
+    }
+
     return Container(
       height: 56,
       decoration: BoxDecoration(
@@ -2646,7 +2813,7 @@ class _PaymentDialogState extends State<_PaymentDialog> {
       child: DropdownButtonHideUnderline(
         child: DropdownButton<String>(
           key: ValueKey<String>('method-${row.id}'),
-          value: _methods.contains(row.method) ? row.method : _methods.first,
+          value: safeValue,
           isExpanded: true,
           padding: const EdgeInsets.symmetric(horizontal: 12),
           items: _methods

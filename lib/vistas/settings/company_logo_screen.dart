@@ -843,7 +843,7 @@ class _CompanyLogoScreenState
           _selectedLogo!,
           fit: BoxFit.contain,
           errorBuilder:
-              (_, __, ___) =>
+              (_, _, _) =>
                   _buildEmptyLogo(
             message:
                 'No se pudo mostrar la imagen seleccionada',
@@ -866,7 +866,7 @@ class _CompanyLogoScreenState
           _localLogo!,
           fit: BoxFit.contain,
           errorBuilder:
-              (_, __, ___) =>
+              (_, _, _) =>
                   _buildMemoryLogo(),
         ),
       );
@@ -894,7 +894,7 @@ class _CompanyLogoScreenState
           _currentLogoUrl!,
           fit: BoxFit.contain,
           errorBuilder:
-              (_, __, ___) =>
+              (_, _, _) =>
                   _buildEmptyLogo(),
           loadingBuilder:
               (
@@ -936,7 +936,7 @@ class _CompanyLogoScreenState
         fit: BoxFit.contain,
         gaplessPlayback: true,
         errorBuilder:
-            (_, __, ___) =>
+            (_, _, _) =>
                 _buildNetworkFallback(),
       ),
     );
@@ -956,7 +956,7 @@ class _CompanyLogoScreenState
       _currentLogoUrl!,
       fit: BoxFit.contain,
       errorBuilder:
-          (_, __, ___) =>
+          (_, _, _) =>
               _buildEmptyLogo(),
     );
   }

@@ -8,9 +8,6 @@ import '../../core/services/cash_service.dart';
 // [LICENCIA-OFFLINE] Import para evaluar el estado de licencia desde
 // el snapshot local (offline-first).
 import '../../core/services/license_service.dart';
-// 🆕 SYNC: import del SyncService global para el botón de sincronización.
-import '../../core/services/sync_service.dart';
-import '../../core/storage/app_storage.dart';
 
 class OperationScreen extends StatefulWidget {
   const OperationScreen({super.key});
@@ -23,8 +20,6 @@ class _OperationScreenState extends State<OperationScreen> {
   final ApiClient _api = ApiClient();
   final LocalDb _localDb = LocalDb();
   final CashService _cash = CashService();
-  // 🆕 SYNC: instancia única del coordinador de sincronización.
-  final SyncService _sync = SyncService();
 
   bool _loading = true;
   bool _cajasActivas = false;
@@ -49,9 +44,6 @@ class _OperationScreenState extends State<OperationScreen> {
   StreamSubscription<void>? _salesSub;
 
   bool _isReloading = false;
-
-  // 🆕 SYNC: bandera para deshabilitar los botones mientras corre.
-  bool _isSyncing = false;
 
   @override
   void initState() {
@@ -111,30 +103,46 @@ class _OperationScreenState extends State<OperationScreen> {
       Map<String, dynamic> state = const {};
       List<Map<String, dynamic>> tables = const [];
 
+      // ============================================================
+      // LLAMADAS DE RED CON TIMEOUT
+      // ============================================================
+      //
+      // Cada llamada de red tiene un timeout para que _load() nunca
+      // se quede colgado. Si algo falla o tarda, seguimos con lo que
+      // tengamos. El spinner siempre desaparece.
       try {
-        state = await _api.getOperationStatus();
-        // CORREGIDO: eliminada variable local 'remoteCash' que no se usaba.
-        // Se conserva la llamada porque el efecto secundario (caché/estado
-        // del servidor) sigue siendo necesario.
-        await _api.getCurrentCashRegister();
+        state = await _api.getOperationStatus().timeout(
+          const Duration(seconds: 10),
+          onTimeout: () => const <String, dynamic>{},
+        );
+
+        await _api.getCurrentCashRegister().timeout(
+          const Duration(seconds: 10),
+          onTimeout: () => null,
+        );
 
         final tablesEnabled = state['mesas_activas'] == true;
         tables = tablesEnabled
-            ? await _api.getTables()
+            ? await _api.getTables().timeout(
+                const Duration(seconds: 10),
+                onTimeout: () => const <Map<String, dynamic>>[],
+              )
             : const <Map<String, dynamic>>[];
       } catch (_) {
-        // Offline.
+        // Offline o timeout. Seguimos con lo que tengamos.
       }
 
       final tablesEnabled = state['mesas_activas'] == true;
 
       final pendingByTable = <int, int>{};
 
-      for (final sale in await _localDb.getTodaySales()) {
-        if (sale['status'] != 'pending' || sale['mesa_id'] is! num) continue;
-        final tableId = (sale['mesa_id'] as num).toInt();
-        pendingByTable[tableId] = (pendingByTable[tableId] ?? 0) + 1;
-      }
+      try {
+        for (final sale in await _localDb.getTodaySales()) {
+          if (sale['status'] != 'pending' || sale['mesa_id'] is! num) continue;
+          final tableId = (sale['mesa_id'] as num).toInt();
+          pendingByTable[tableId] = (pendingByTable[tableId] ?? 0) + 1;
+        }
+      } catch (_) {}
 
       if (!mounted) return;
 
@@ -142,7 +150,19 @@ class _OperationScreenState extends State<OperationScreen> {
       // No se consulta al servidor. El POS sigue funcionando offline.
       LicenseState? licencia;
       try {
-        licencia = await LicenseService().evaluate();
+        licencia = await LicenseService().evaluate().timeout(
+          const Duration(seconds: 5),
+          onTimeout: () =>
+              _licenseState ??
+              const LicenseState(
+                status: LicenseStatus.sinSnapshot,
+                tipo: '',
+                fechaFin: null,
+                diasRestantes: null,
+                diasVencidos: 0,
+                mensaje: 'Sin información de licencia.',
+              ),
+        );
       } catch (e) {
         debugPrint('⚠️ No se pudo evaluar la licencia local: $e');
         licencia = _licenseState;
@@ -153,7 +173,7 @@ class _OperationScreenState extends State<OperationScreen> {
       setState(() {
         _cashRegister = localCash;
         _cashSummary = summary;
-        _cajasActivas  = state['cajas_activas'] == true;
+        _cajasActivas = state['cajas_activas'] == true;
         _tablesEnabled = tablesEnabled;
         _tables = tables;
         _pendingByTable = pendingByTable;
@@ -162,72 +182,13 @@ class _OperationScreenState extends State<OperationScreen> {
       });
     } catch (error) {
       if (!mounted) return;
+
+      debugPrint('⚠️ Error en OperationScreen._load: $error');
+
+      // 🔑 Garantizar que el spinner desaparezca aunque algo falle.
       setState(() => _loading = false);
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(error.toString())));
     } finally {
       _isReloading = false;
-    }
-  }
-
-  // ============================================================
-  // 🆕 SINCRONIZACIÓN GLOBAL MANUAL
-  // ============================================================
-  //
-  // Ejecuta el flujo completo de SyncService.syncManual():
-  //
-  //   1. Sync Queue       (categorías, productos, cajas, movimientos)
-  //   2. Ventas históricas pendientes
-  //   3. Outbox del día
-  //
-  // Muestra el spinner EN EL BOTÓN y deshabilita mientras corre.
-  // Al terminar, recarga la pantalla para reflejar cambios.
-  // ============================================================
-
-  Future<void> _runGlobalSync() async {
-    if (_isSyncing) return;
-
-    setState(() => _isSyncing = true);
-
-    try {
-      final storage = AppStorage();
-
-      final companyId = await storage.getEmpresaId() ?? 0;
-      final userId = await storage.getUserId() ?? 0;
-
-      if (companyId <= 0 || userId <= 0) {
-        _snack('No hay empresa o usuario activo.', error: true);
-        return;
-      }
-
-      final businessDateKey = await storage.getServerBusinessDateKey();
-      final businessDate = businessDateKey != null && businessDateKey.isNotEmpty
-          ? (DateTime.tryParse(businessDateKey) ?? DateTime.now())
-          : DateTime.now();
-
-      final result = await _sync.syncManual(
-        companyId: companyId,
-        userId: userId,
-        businessDate: businessDate,
-      );
-
-      if (!mounted) return;
-
-      _snack(
-        'Sincronización completada: '
-        '${result.synced} sincronizadas, '
-        '${result.failed} fallidas, '
-        '${result.skipped} omitidas.',
-        error: result.failed > 0,
-      );
-
-      await _load(silent: true);
-    } catch (e) {
-      _snack('Error al sincronizar: $e', error: true);
-    } finally {
-      if (mounted) {
-        setState(() => _isSyncing = false);
-      }
     }
   }
 
@@ -242,10 +203,7 @@ class _OperationScreenState extends State<OperationScreen> {
     //
     // NO bloquea sinSnapshot ni enGracia.
     if (_licenseState?.status == LicenseStatus.bloqueada) {
-      _snack(
-        _licenseState!.mensaje,
-        error: true,
-      );
+      _snack(_licenseState!.mensaje, error: true);
       return;
     }
 
@@ -510,35 +468,7 @@ class _OperationScreenState extends State<OperationScreen> {
                     ],
                   ),
                 ),
-                // 🆕 SYNC: botón de sincronización global.
-                IconButton(
-                  onPressed: (_isSyncing || _isReloading)
-                      ? null
-                      : _runGlobalSync,
-                  tooltip: 'Sincronizar todo',
-                  icon: _isSyncing
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.cloud_sync_outlined),
-                ),
-                // 🆕 SYNC: botón de refresh con preload.
-                IconButton(
-                  onPressed: (_isReloading || _isSyncing)
-                      ? null
-                      : () => _load(),
-                  tooltip: 'Actualizar',
-                  icon: _isReloading
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.refresh),
-                ),
-                if (_cajasActivas )
+                if (_cajasActivas)
                   FilledButton(
                     onPressed: abierta ? _closeCashDialog : _openCashDialog,
                     child: Text(abierta ? 'Cerrar' : 'Abrir'),
@@ -630,7 +560,7 @@ class _OperationScreenState extends State<OperationScreen> {
               // El retiro parcial solo se habilita cuando la caja está
               // abierta y el usuario puede operarla.
               //
-              if (_cajasActivas ) ...[
+              if (_cajasActivas) ...[
                 const SizedBox(height: 16),
                 SizedBox(
                   width: double.infinity,
@@ -680,7 +610,8 @@ class _OperationScreenState extends State<OperationScreen> {
 
   Widget _buildLicenciaBloqueadaBanner(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    final mensaje = _licenseState?.mensaje ??
+    final mensaje =
+        _licenseState?.mensaje ??
         'Tu licencia está vencida. Inicia sesión con Internet para '
             'reactivar.';
 
@@ -797,7 +728,8 @@ class _OperationScreenState extends State<OperationScreen> {
     final orange = Colors.orange.shade800;
     final colorScheme = Theme.of(context).colorScheme;
 
-    final mensaje = _licenseState?.mensaje ??
+    final mensaje =
+        _licenseState?.mensaje ??
         'Tu licencia está vencida. Regulariza antes de que se bloquee.';
 
     return Container(
@@ -817,11 +749,7 @@ class _OperationScreenState extends State<OperationScreen> {
               color: orange.withAlpha(30),
               borderRadius: BorderRadius.circular(11),
             ),
-            child: Icon(
-              Icons.warning_amber_rounded,
-              color: orange,
-              size: 22,
-            ),
+            child: Icon(Icons.warning_amber_rounded, color: orange, size: 22),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -1131,15 +1059,16 @@ class _RetiroParcialDialogState extends State<_RetiroParcialDialog> {
                 ),
                 child: Row(
                   children: [
-                    const Icon(Icons.error_outline, color: Colors.red, size: 18),
+                    const Icon(
+                      Icons.error_outline,
+                      color: Colors.red,
+                      size: 18,
+                    ),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
                         _error!,
-                        style: const TextStyle(
-                          color: Colors.red,
-                          fontSize: 12,
-                        ),
+                        style: const TextStyle(color: Colors.red, fontSize: 12),
                       ),
                     ),
                   ],

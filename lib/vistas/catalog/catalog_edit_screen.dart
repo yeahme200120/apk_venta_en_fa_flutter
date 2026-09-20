@@ -1,8 +1,13 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
 
 import '../../core/database/local_db.dart';
+import '../../core/services/sync_orchestrator.dart';
+import '../../core/storage/app_storage.dart';
+import '../widgets/sync_progress_dialog.dart';
+import '../widgets/sync_result_dialog.dart';
 
 class CatalogEditScreen extends StatefulWidget {
   const CatalogEditScreen({
@@ -630,6 +635,124 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
   }
 
   // ===========================================================================
+  // SYNC GLOBAL POST-GUARDADO (Opción A)
+  // ===========================================================================
+  //
+  // Se llama DESPUÉS de guardar exitosamente en LocalDb + sync_queue.
+  //
+  // Flujo:
+  //   1. Abre SyncProgressDialog.
+  //   2. Corre SyncOrchestrator.syncAll (sube el sync_queue pendiente).
+  //   3. Muestra showSyncResultDialog con el resumen.
+  //   4. Cierra esta pantalla con pop(true).
+  //
+  // Si la sesión no es válida o está offline, se salta el modal
+  // y simplemente se cierra la pantalla. El sync_queue queda
+  // pendiente para reintentar después.
+
+  Future<void> _syncAfterSave() async {
+    final companyId = await AppStorage().getEmpresaId() ?? 0;
+    final userId = await AppStorage().getUserId() ?? 0;
+
+    if (companyId <= 0 || userId <= 0) {
+      // Sesión inválida: cerramos sin sync. La cola queda pendiente.
+      if (mounted) Navigator.of(context).pop(true);
+      return;
+    }
+
+    // Si estamos offline, no disparamos el modal:
+    // el sync_queue se procesará cuando haya red.
+    final offline = await AppStorage().isOfflineSession();
+
+    if (offline) {
+      if (mounted) Navigator.of(context).pop(true);
+      return;
+    }
+
+    final rawBusinessDate = await AppStorage().getServerBusinessDate();
+    final businessDate =
+        DateTime.tryParse(rawBusinessDate ?? '') ?? DateTime.now();
+
+    if (!mounted) return;
+
+    // ============================================================
+    // DIÁLOGO DE PROGRESO
+    // ============================================================
+
+    final progressNotifier = ValueNotifier<String>(
+      'Sincronizando catálogo...',
+    );
+
+    NavigatorState? progressNavigator;
+
+    unawaited(
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) {
+          progressNavigator = Navigator.of(ctx, rootNavigator: true);
+
+          return SyncProgressDialog(
+            progressNotifier: progressNotifier,
+            title: 'Sincronizando catálogo',
+          );
+        },
+      ),
+    );
+
+    await Future.delayed(const Duration(milliseconds: 120));
+
+    try {
+      final report = await SyncOrchestrator().syncAll(
+        companyId: companyId,
+        userId: userId,
+        businessDate: businessDate,
+        onProgress: (stage, message) {
+          progressNotifier.value = message;
+        },
+      );
+
+      if (progressNavigator != null && progressNavigator!.canPop()) {
+        progressNavigator!.pop();
+      }
+
+      progressNotifier.dispose();
+
+      if (!mounted) return;
+
+      // ============================================================
+      // RESULTADO
+      // ============================================================
+
+      // Cerrar la pantalla ANTES de mostrar el diálogo de resultado,
+      // para que el snack/dialog aparezca sobre el listado del catálogo.
+      // ignore: use_build_context_synchronously
+      Navigator.of(context).pop(true);
+
+      // Esperar a que se complete el pop antes de mostrar el resultado.
+      await Future.delayed(const Duration(milliseconds: 250));
+
+      if (!context.mounted) return;
+      await showSyncResultDialog(
+      // ignore: use_build_context_synchronously
+        context,
+        report: report,
+      );
+    } catch (error) {
+      if (progressNavigator != null && progressNavigator!.canPop()) {
+        progressNavigator!.pop();
+      }
+
+      progressNotifier.dispose();
+
+      if (!mounted) return;
+
+      // Aun si falla, el guardado local ya quedó.
+      Navigator.of(context).pop(true);
+    }
+  }
+
+  // ===========================================================================
   // SAVE
   // ===========================================================================
 
@@ -887,7 +1010,22 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
         return;
       }
 
-      Navigator.of(context).pop(true);
+      // =======================================================================
+      // SYNC GLOBAL POST-GUARDADO
+      // =======================================================================
+      //
+      // El guardado local + cola ya está completo.
+      //
+      // Ahora disparamos syncAll para subir el sync_queue pendiente
+      // y mostrar el modal de progreso + resultado.
+      //
+      // _syncAfterSave se encarga de:
+      //   1. Verificar sesión + online.
+      //   2. Abrir SyncProgressDialog.
+      //   3. Correr syncAll.
+      //   4. Cerrar esta pantalla y mostrar el resultado.
+
+      await _syncAfterSave();
     } catch (e) {
       if (!mounted) {
         return;
@@ -962,6 +1100,8 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
     final isProduct = widget.isProduct;
     final isClient = widget.isClient;
 
@@ -1059,7 +1199,7 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
 
               if (isProduct) ...[
                 DropdownButtonFormField<int>(
-                  value: _selectedCategoryId,
+                  initialValue: _selectedCategoryId,
                   isExpanded: true,
                   decoration: const InputDecoration(
                     labelText: 'Categoría',
@@ -1095,17 +1235,22 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
                 ),
 
                 if (_loadingCategories)
-                  const Padding(
-                    padding: EdgeInsets.only(top: 8),
-                    child: LinearProgressIndicator(),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: LinearProgressIndicator(
+                      color: cs.primary,
+                    ),
                   ),
 
                 if (!_loadingCategories && _categories.isEmpty)
-                  const Padding(
-                    padding: EdgeInsets.only(top: 8),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
                     child: Text(
                       'No hay categorías disponibles. '
                       'Crea una categoría antes de registrar productos.',
+                      style: TextStyle(
+                        color: cs.onSurfaceVariant,
+                      ),
                     ),
                   ),
 
@@ -1260,11 +1405,12 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
                     child: ElevatedButton(
                       onPressed: _saving ? null : _save,
                       child: _saving
-                          ? const SizedBox(
+                          ? SizedBox(
                               width: 20,
                               height: 20,
                               child: CircularProgressIndicator(
                                 strokeWidth: 2,
+                                color: cs.onPrimary,
                               ),
                             )
                           : const Text('Guardar'),

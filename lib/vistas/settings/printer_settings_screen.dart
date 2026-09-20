@@ -608,10 +608,13 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
           FilledButton.icon(
             onPressed: _loading ? null : _refreshBluetooth,
             icon: _loading
-                ? const SizedBox(
+                ? SizedBox(
                     width: 18,
                     height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: cs.onPrimary,
+                    ),
                   )
                 : const Icon(Icons.search),
             label: Text(
@@ -631,12 +634,12 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
             FilledButton.icon(
               onPressed: _printingTest ? null : _testBluetooth,
               icon: _printingTest
-                  ? const SizedBox(
+                  ? SizedBox(
                       width: 18,
                       height: 18,
                       child: CircularProgressIndicator(
                         strokeWidth: 2,
-                        color: Colors.white,
+                        color: cs.onPrimary,
                       ),
                     )
                   : const Icon(Icons.print_outlined),
@@ -705,20 +708,23 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
         color: cs.surfaceContainerHighest.withValues(alpha: 0.45),
         borderRadius: BorderRadius.circular(14),
       ),
-      child: const Column(
+      child: Column(
         children: [
-          Icon(Icons.print_disabled_outlined, size: 36),
-          SizedBox(height: 10),
-          Text(
+          const Icon(Icons.print_disabled_outlined, size: 36),
+          const SizedBox(height: 10),
+          const Text(
             'No hay impresoras vinculadas',
             textAlign: TextAlign.center,
             style: TextStyle(fontWeight: FontWeight.w700),
           ),
-          SizedBox(height: 5),
+          const SizedBox(height: 5),
           Text(
             'Primero vincula la impresora desde los ajustes Bluetooth de Android y después pulsa "Buscar impresoras vinculadas".',
             textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 12, color: Colors.black54),
+            style: TextStyle(
+              fontSize: 12,
+              color: cs.onSurfaceVariant,
+            ),
           ),
         ],
       ),
@@ -969,27 +975,38 @@ class _PrinterSettingsScreenState extends State<PrinterSettingsScreen> {
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: cs.outlineVariant),
       ),
-      child: const Column(
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
+          const Row(
             children: [
               Icon(Icons.info_outline, size: 19),
               SizedBox(width: 8),
-              Text('Importante', style: TextStyle(fontWeight: FontWeight.w800)),
+              Text(
+                'Importante',
+                style: TextStyle(fontWeight: FontWeight.w800),
+              ),
             ],
           ),
-          SizedBox(height: 10),
+          const SizedBox(height: 10),
           Text(
             'La impresora debe estar vinculada previamente en Android. '
             'Esta pantalla administra la conexión de la aplicación.',
-            style: TextStyle(fontSize: 12, height: 1.45),
+            style: TextStyle(
+              fontSize: 12,
+              height: 1.45,
+              color: cs.onSurfaceVariant,
+            ),
           ),
-          SizedBox(height: 7),
+          const SizedBox(height: 7),
           Text(
             'La impresora seleccionada se guarda en el dispositivo '
             'para utilizarla posteriormente desde el punto de venta.',
-            style: TextStyle(fontSize: 12, height: 1.45),
+            style: TextStyle(
+              fontSize: 12,
+              height: 1.45,
+              color: cs.onSurfaceVariant,
+            ),
           ),
         ],
       ),

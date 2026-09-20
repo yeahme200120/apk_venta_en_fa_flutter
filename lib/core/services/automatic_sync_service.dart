@@ -34,6 +34,7 @@ class AutomaticSyncService {
 
   bool _started = false;
   bool _syncInProgress = false;
+  bool? _lastKnownOnlineState;
 
   // ============================================================
   // INICIAR
@@ -52,18 +53,28 @@ class AutomaticSyncService {
 
     _networkMonitor.addListener(_networkListener!);
 
-    _timer = Timer.periodic(
-      _syncInterval,
-      (_) {
-        unawaited(_syncIfPossible());
-      },
-    );
+    _timer = Timer.periodic(_syncInterval, (_) {
+      unawaited(_syncIfPossible());
+    });
 
-    // Intento inicial.
+    // 🔑 FIX: ya no se dispara `_syncIfPossible()` de inmediato.
     //
-    // Si todavía no hay conexión, simplemente se omite.
-    // Cuando NetworkMonitor detecte online, volverá a intentarlo.
-    await _syncIfPossible();
+    // Motivo:
+    //   • `NetworkMonitor.initialize()` corre en paralelo (ver main.dart)
+    //     y su primer cambio de estado dispara `_onNetworkStatusChanged()`,
+    //     que a su vez llama a `_syncIfPossible()`. Resultado: dos
+    //     sincronizaciones en el arranque.
+    //
+    //   • Además, en el arranque puede no haber sesión o token aún,
+    //     y `_syncIfPossible()` fallaría o generaría ruido.
+    //
+    // Se hace un intento diferido tras 3 segundos para dar tiempo a que
+    // `NetworkMonitor` se estabilice y a que el login (si aplica) termine.
+    Timer(const Duration(seconds: 3), () {
+      if (_started) {
+        unawaited(_syncIfPossible());
+      }
+    });
   }
 
   // ============================================================
@@ -75,7 +86,22 @@ class AutomaticSyncService {
       return;
     }
 
-    if (!_networkMonitor.isOnline) {
+    final isOnlineNow = _networkMonitor.isOnline;
+
+    // Ignorar el primer cambio (es el de la inicialización).
+    if (_lastKnownOnlineState == null) {
+      _lastKnownOnlineState = isOnlineNow;
+      return;
+    }
+
+    // Ignorar si no cambió.
+    if (_lastKnownOnlineState == isOnlineNow) {
+      return;
+    }
+
+    _lastKnownOnlineState = isOnlineNow;
+
+    if (!isOnlineNow) {
       return;
     }
 
@@ -102,35 +128,36 @@ class AutomaticSyncService {
     final storage = AppStorage();
 
     if (await storage.isOfflineSession()) {
-      print(
-        'ℹ️ Sync automática omitida: '
-        'sesión offline.',
-      );
-
+      debugPrint('ℹ️ Sync automática omitida: sesión offline.');
       return;
     }
 
-    final companyId =
-        await storage.getEmpresaId() ?? 0;
-
-    final userId =
-        await storage.getUserId() ?? 0;
+    final companyId = await storage.getEmpresaId() ?? 0;
+    final userId = await storage.getUserId() ?? 0;
 
     if (companyId <= 0 || userId <= 0) {
-      print(
-        'ℹ️ Sync automática omitida: '
-        'no existe una sesión válida.',
-      );
+      debugPrint('ℹ️ Sync automática omitida: no existe una sesión válida.');
+      return;
+    }
 
+    // 🔑 FIX: exigir token online. Si no hay token, no sincronizamos.
+    //
+    // Motivo:
+    //   • La auto-sync no debe intentar sincronizar si el usuario
+    //     no ha hecho login online todavía.
+    //   • Sin token, todas las llamadas al backend devolverían 401
+    //     y llenarían el log de ruido innecesario.
+    final token = await storage.getToken();
+
+    if (token == null || token.trim().isEmpty) {
+      debugPrint('ℹ️ Sync automática omitida: sin token online.');
       return;
     }
 
     _syncInProgress = true;
 
     try {
-      print(
-        '🔄 Iniciando sincronización automática...',
-      );
+      debugPrint('🔄 Iniciando sincronización automática...');
 
       final result = await _syncService.syncManual(
         companyId: companyId,
@@ -138,7 +165,7 @@ class AutomaticSyncService {
         businessDate: DateTime.now(),
       );
 
-      print(
+      debugPrint(
         '✅ Sincronización automática finalizada: '
         'total=${result.total} '
         'synced=${result.synced} '
@@ -147,20 +174,17 @@ class AutomaticSyncService {
       );
 
       if (result.failed > 0) {
-        print(
+        debugPrint(
           '⚠️ Sincronización automática terminó '
           'con ${result.failed} operación(es) fallida(s).',
         );
       }
     } catch (e) {
-      print(
-        '❌ Error en sincronización automática: $e',
-      );
+      debugPrint('❌ Error en sincronización automática: $e');
     } finally {
       _syncInProgress = false;
     }
   }
-
   // ============================================================
   // DETENER
   // ============================================================
@@ -182,9 +206,7 @@ class AutomaticSyncService {
       _networkListener = null;
     }
 
-    print(
-      '⏹️ Sincronización automática detenida.',
-    );
+    debugPrint('⏹️ Sincronización automática detenida.');
   }
 
   // ============================================================

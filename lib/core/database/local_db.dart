@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
@@ -18,14 +19,6 @@ class LocalDb {
 
   // ============================================================
   // STREAMS DE CAMBIOS EN TIEMPO REAL
-  // ============================================================
-  //
-  // Un canal por dominio. La UI escucha solo lo que necesita.
-  //
-  //   salesChanges      → ventas (crear, pagar, cancelar, sync)
-  //   operationChanges  → estado de operación (cajas activas, mesas)
-  //   cashChanges       → cajas (apertura/cierre) y movimientos
-  //
   // ============================================================
 
   static final StreamController<void> _salesChanges =
@@ -53,8 +46,6 @@ class LocalDb {
     if (!_cashChanges.isClosed) _cashChanges.add(null);
   }
 
-  /// Emite todos los eventos. Útil cuando un cambio afecta varios
-  /// dominios a la vez (p. ej. sincronización de catálogos).
   static void notifyAllChanged() {
     notifySalesChanged();
     notifyOperationChanged();
@@ -732,10 +723,6 @@ class LocalDb {
       return;
     }
 
-    // ✅ FIX: garantizar que exista UNA sola empresa en la tabla.
-    // Si el id cambió (empresa distinta), eliminamos cualquier fila
-    // previa antes de insertar para evitar filas huérfanas que
-    // getCompany() pudiera devolver por orden de rowid.
     await executor.delete('company');
 
     dynamic colors = data['colores'];
@@ -777,9 +764,6 @@ class LocalDb {
   Future<Map<String, dynamic>?> getCompany() async {
     final db = await database;
 
-    // ✅ FIX: ordenar explícitamente por updated_at DESC para que,
-    // si por cualquier motivo quedara más de una fila, siempre
-    // devolvamos la más reciente.
     final rows = await db.query(
       'company',
       orderBy: 'updated_at DESC',
@@ -885,9 +869,9 @@ class LocalDb {
     String? updatedAt,
   }) async {
     return (await database).insert('products', {
-      if (id != null) 'id': id,
-      if (serverId != null) 'server_id': serverId,
-      if (categoryId != null) 'category_id': categoryId,
+      'id': ?id,
+      'server_id': ?serverId,
+      'category_id': ?categoryId,
       'code': code,
       'name': name,
       'price': price,
@@ -919,9 +903,9 @@ class LocalDb {
       'stock': stock,
       'is_active': isActive ? 1 : 0,
       'is_inventariable': isInventoriable ? 1 : 0,
-      if (serverId != null) 'server_id': serverId,
-      if (categoryId != null) 'category_id': categoryId,
-      if (data != null) 'data_json': jsonEncode(data),
+      'server_id': ?serverId,
+      'category_id': ?categoryId,
+      'data_json': ?(data == null ? null : jsonEncode(data)),
       'updated_at': updatedAt ?? DateTime.now().toIso8601String(),
     };
 
@@ -1508,7 +1492,7 @@ class LocalDb {
         'code': code?.trim(),
         if (table == 'taxes') 'rate': rate ?? 0,
         'is_active': active ? 1 : 0,
-        if (data != null) 'data_json': jsonEncode(data),
+        'data_json': ?(data == null ? null : jsonEncode(data)),
         'updated_at': DateTime.now().toIso8601String(),
       },
       where: 'id = ?',
@@ -1591,72 +1575,7 @@ class LocalDb {
 
     final db = await database;
 
-    // ============================================================
-    // PURGA POR CAMBIO DE EMPRESA
-    // ============================================================
-    //
-    // El backend ya filtra por empresa_id del token.
-    //
-    // Este dispositivo se usa con UNA SOLA empresa.
-    //
-    // La primera sincronización tras un login purga los catálogos
-    // locales para evitar mezclar datos entre empresas si el
-    // dispositivo cambió de empresa.
-    //
-    // ✅ FIX: además de los catálogos, también se purga la data
-    // operativa (ventas, pagos, cajas y movimientos) y la cola de
-    // sincronización. Si no, quedaban ventas y cajas de la empresa
-    // anterior visibles en estadísticas y afectando el arqueo.
-    //
-    final purge = await AppStorage().consumeCatalogPurgePending();
-
     await db.transaction((txn) async {
-      if (purge) {
-        // Solo purgamos si el server mandó el catálogo.
-        // Si viene null, algo raro pasó y NO borramos datos locales.
-        if (data['productos'] is List) {
-          await txn.delete('products');
-        }
-
-        if (data['categorias'] is List) {
-          await txn.delete('categories');
-        }
-
-        if (data['clientes'] is List) {
-          await txn.delete('clients');
-        }
-
-        if (data['impuestos'] is List) {
-          await txn.delete('taxes');
-        }
-
-        if (data['formas_pago'] is List) {
-          await txn.delete('payment_methods');
-        }
-
-        if (data['unidades_medida'] is List) {
-          await txn.delete('units');
-        }
-
-        if (data['promociones'] is List) {
-          await txn.delete('promotions');
-        }
-
-        if (data['cupones'] is List) {
-          await txn.delete('coupons');
-        }
-
-        // ✅ FIX: purgar data operativa al cambiar de empresa.
-        // Esto evita que ventas/cajas de la empresa anterior sigan
-        // apareciendo en estadísticas y arqueos.
-        await txn.delete('sales');
-        await txn.delete('sale_items');
-        await txn.delete('sale_payments');
-        await txn.delete('cash_registers');
-        await txn.delete('cash_movements');
-        await txn.delete('sync_queue');
-      }
-
       if (data['empresa'] is Map) {
         await _upsertCompanyWithExecutor(
           txn,
@@ -1769,7 +1688,7 @@ class LocalDb {
         'products',
         {
           'server_id': serverId,
-          if (categoryId != null) 'category_id': categoryId,
+          'category_id': ?categoryId,
           'code': code,
           'name': name,
           'price': price,
@@ -1801,7 +1720,7 @@ class LocalDb {
           'products',
           {
             'server_id': serverId,
-            if (categoryId != null) 'category_id': categoryId,
+            'category_id': ?categoryId,
             'code': code,
             'name': name,
             'price': price,
@@ -1821,7 +1740,7 @@ class LocalDb {
 
     await executor.insert('products', {
       'server_id': serverId,
-      if (categoryId != null) 'category_id': categoryId,
+      'category_id': ?categoryId,
       'code': code,
       'name': name,
       'price': price,
@@ -2085,13 +2004,6 @@ class LocalDb {
         });
       }
 
-      // ✅ FIX: el primer pago en efectivo absorbe el cambio.
-      // Así `sale_payments.amount` guarda el efectivo NETO que
-      // realmente entra a la caja, y las queries de arqueo
-      // (getCashSummaryLocal, getSalesByPaymentMethod*) ya no
-      // sobre-estiman el ingreso. El cambio total queda en
-      // `sales.change_due` y el monto entregado por el cliente
-      // se reconstruye sumando `amount + change_due`.
       var cashAdjusted = false;
 
       for (final payment in payments) {
@@ -2127,6 +2039,7 @@ class LocalDb {
 
     if (created) {
       notifySalesChanged();
+      notifyCashChanged();
     }
 
     return saleId;
@@ -2151,39 +2064,55 @@ class LocalDb {
   Future<List<Map<String, dynamic>>> getTodaySales() async {
     final db = await database;
 
+    final hoyKey = await AppStorage().getServerBusinessDateKey();
+
+    if (hoyKey != null && hoyKey.trim().isNotEmpty) {
+      return db.query(
+        'sales',
+        where: 'business_date = ?',
+        whereArgs: [hoyKey.trim()],
+        orderBy: 'created_at DESC',
+      );
+    }
+
     final now = DateTime.now();
 
-    final todayYear = now.year;
-    final todayMonth = now.month;
-    final todayDay = now.day;
+    final todayKey =
+        '${now.year.toString().padLeft(4, '0')}-'
+        '${now.month.toString().padLeft(2, '0')}-'
+        '${now.day.toString().padLeft(2, '0')}';
 
     final rows = await db.query('sales', orderBy: 'created_at DESC');
 
     final result = <Map<String, dynamic>>[];
 
     for (final row in rows) {
-      final createdAt = row['created_at']?.toString();
+      final businessDate = row['business_date']?.toString().trim() ?? '';
 
-      if (createdAt != null && createdAt.trim().isNotEmpty) {
-        final parsed = DateTime.tryParse(createdAt);
-
-        if (parsed != null) {
-          final local = parsed.toLocal();
-
-          if (local.year == todayYear &&
-              local.month == todayMonth &&
-              local.day == todayDay) {
-            result.add(Map<String, dynamic>.from(row));
-          }
-
-          continue;
+      if (businessDate.isNotEmpty) {
+        if (businessDate == todayKey) {
+          result.add(Map<String, dynamic>.from(row));
         }
+        continue;
       }
 
-      if (row['business_date']?.toString() ==
-          '${todayYear.toString().padLeft(4, '0')}-'
-              '${todayMonth.toString().padLeft(2, '0')}-'
-              '${todayDay.toString().padLeft(2, '0')}') {
+      final createdAt = row['created_at']?.toString();
+
+      if (createdAt == null || createdAt.trim().isEmpty) {
+        continue;
+      }
+
+      final parsed = DateTime.tryParse(createdAt);
+
+      if (parsed == null) {
+        continue;
+      }
+
+      final local = parsed.toLocal();
+
+      if (local.year == now.year &&
+          local.month == now.month &&
+          local.day == now.day) {
         result.add(Map<String, dynamic>.from(row));
       }
     }
@@ -2476,6 +2405,7 @@ class LocalDb {
 
     if (cancelled) {
       notifySalesChanged();
+      notifyCashChanged();
     }
 
     return cancelled;
@@ -2519,12 +2449,14 @@ class LocalDb {
     return deleted;
   }
 
+  // ✅ FIX: updatePendingSale ahora acepta businessDate
   Future<bool> updatePendingSale({
     required int saleId,
     required List<Map<String, dynamic>> items,
     required double total,
     int? tableId,
     String? tableName,
+    String? businessDate,   // 👈 NUEVO
   }) async {
     final db = await database;
 
@@ -2535,6 +2467,7 @@ class LocalDb {
           'total': total,
           'mesa_id': tableId,
           'mesa_nombre': tableName,
+          'business_date': ?businessDate,   // 👈 NUEVO
           'updated_at': DateTime.now().toIso8601String(),
           'sync_status': 'pending',
         },
@@ -2576,6 +2509,7 @@ class LocalDb {
     required String paymentMethod,
     required double cashReceived,
     required double changeDue,
+    String? businessDate,
   }) async {
     final db = await database;
 
@@ -2597,10 +2531,6 @@ class LocalDb {
         whereArgs: [saleId],
       );
 
-      // ✅ FIX: mismo criterio que en saveSale. El primer pago en
-      // efectivo absorbe el cambio para que `sale_payments.amount`
-      // represente el efectivo NETO. Sin este fix, una venta de
-      // $50 pagada con $100 dejaría $100 en caja en lugar de $50.
       var cashAdjusted = false;
 
       for (final payment in payments) {
@@ -2640,6 +2570,7 @@ class LocalDb {
           'paid_at': DateTime.now().toIso8601String(),
           'updated_at': DateTime.now().toIso8601String(),
           'print_ticket': 0,
+          'business_date': ?businessDate,
         },
         where: 'id = ?',
         whereArgs: [saleId],
@@ -2650,6 +2581,7 @@ class LocalDb {
 
     if (paid) {
       notifySalesChanged();
+      notifyCashChanged();
     }
 
     return paid;
@@ -2849,12 +2781,6 @@ class LocalDb {
     );
   }
 
-  /// Construye el bloque `ubicacion` que espera SyncService.
-  ///
-  /// Devuelve null si no hay coordenadas válidas.
-  /// NO se incluye el bloque en el payload si no hay ubicación,
-  /// así el backend recibe ausencia del campo (que es distinto
-  /// de enviar un objeto con nulls).
   Map<String, dynamic>? _buildUbicacionJson({
     required double? latitude,
     required double? longitude,
@@ -2872,17 +2798,14 @@ class LocalDb {
     return {
       'lat': latitude,
       'lng': longitude,
-      if (accuracy != null) 'accuracy': accuracy,
-      if (locationProvider != null && locationProvider.trim().isNotEmpty)
-        'provider': locationProvider.trim(),
+      'accuracy': ?accuracy,
+      'provider':
+          ?(locationProvider != null && locationProvider.trim().isNotEmpty
+          ? locationProvider.trim()
+          : null),
     };
   }
 
-  /// Devuelve la caja abierta actual usando la fecha comercial
-  /// AUTORIZADA POR EL SERVIDOR.
-  ///
-  /// Si no hay fecha comercial guardada, retorna null. NO usamos
-  /// DateTime.now() porque la fecha comercial la manda el backend.
   Future<Map<String, dynamic>?> getCurrentCashRegisterLocal() async {
     final db = await database;
 
@@ -2903,17 +2826,10 @@ class LocalDb {
     return rows.isEmpty ? null : Map<String, dynamic>.from(rows.first);
   }
 
-  /// Abre una caja para el día comercial AUTORIZADO POR EL SERVIDOR.
-  ///
-  /// Si ya existe una caja abierta para ese día, lanza excepción.
-  /// Si existe una caja cerrada para ese día, la reabre.
-  ///
-  /// No toca red. Solo SQLite + outbox.
   Future<Map<String, dynamic>> openCashRegisterLocal({
     required double montoApertura,
     String? notas,
     int? usuarioId,
-    // 🆕 UBICACIÓN (opcional)
     double? latitude,
     double? longitude,
     double? accuracy,
@@ -2921,7 +2837,6 @@ class LocalDb {
   }) async {
     final db = await database;
 
-    // ✅ Fuera del transaction: AppStorage es async.
     final hoyKey = await AppStorage().getServerBusinessDateKey();
 
     if (hoyKey == null || hoyKey.isEmpty) {
@@ -2949,7 +2864,6 @@ class LocalDb {
         limit: 1,
       );
 
-      // ---------- CASO 1: no hay caja hoy ----------
       if (existente.isEmpty) {
         final uuid = 'caja_${DateTime.now().microsecondsSinceEpoch}';
 
@@ -3002,7 +2916,7 @@ class LocalDb {
             'monto_apertura': montoApertura,
             'notas': notas,
             'reapertura': false,
-            if (ubicacion != null) 'ubicacion': ubicacion,
+            'ubicacion': ?ubicacion,
           }),
           'status': 'pending',
           'server_status': 'not_sent',
@@ -3024,7 +2938,6 @@ class LocalDb {
         return Map<String, dynamic>.from(rows.first);
       }
 
-      // ---------- CASO 2: hay caja abierta ----------
       final caja = Map<String, dynamic>.from(existente.first);
 
       if (caja['estado'] == 'abierta') {
@@ -3034,7 +2947,6 @@ class LocalDb {
         );
       }
 
-      // ---------- CASO 3: hay caja cerrada → reabrir ----------
       final cierrePrevio = caja['cerrada_at']?.toString() ?? 'sin fecha';
       final declaradoPrevio = caja['monto_declarado'] ?? 0;
       final diferenciaPrevia = caja['diferencia'] ?? 0;
@@ -3108,7 +3020,7 @@ class LocalDb {
           'monto_apertura': montoApertura,
           'notas': notas,
           'reapertura': true,
-          if (ubicacion != null) 'ubicacion': ubicacion,
+          'ubicacion': ?ubicacion,
         }),
         'status': 'pending',
         'server_status': 'not_sent',
@@ -3131,13 +3043,11 @@ class LocalDb {
     });
   }
 
-  /// Cierra una caja por ID. Calcula monto esperado y diferencia.
   Future<Map<String, dynamic>> closeCashRegisterLocal({
     required int cashRegisterId,
     required double montoDeclarado,
     String? notas,
     int? usuarioId,
-    // 🆕 UBICACIÓN (opcional)
     double? latitude,
     double? longitude,
     double? accuracy,
@@ -3256,7 +3166,7 @@ class LocalDb {
           'monto_esperado': esperado,
           'diferencia': diferencia,
           'notas': notas,
-          if (ubicacion != null) 'ubicacion': ubicacion,
+          'ubicacion': ?ubicacion,
         }),
         'status': 'pending',
         'server_status': 'not_sent',
@@ -3279,14 +3189,16 @@ class LocalDb {
     });
   }
 
-  /// Devuelve las ventas del rango agrupadas por método de pago,
-  /// sumando los pagos reales de `sale_payments`. No usa el campo
-  /// `payment_method` (que puede ser "Mixto").
+  // ✅ FIX: normalizar args a YYYY-MM-DD para que BETWEEN
+  // funcione contra business_date (que se guarda sin hora).
   Future<List<Map<String, dynamic>>> getSalesByPaymentMethodInRangeLocal({
     required DateTime desde,
     required DateTime hasta,
   }) async {
     final db = await database;
+
+    final desdeKey = desde.toIso8601String().substring(0, 10);
+    final hastaKey = hasta.toIso8601String().substring(0, 10);
 
     final rows = await db.rawQuery(
       '''
@@ -3297,14 +3209,14 @@ class LocalDb {
       COALESCE(SUM(p.amount), 0)           AS total
     FROM sales s
     INNER JOIN sale_payments p ON p.sale_id = s.id
-    WHERE s.created_at >= ?
-      AND s.created_at <= ?
+    WHERE COALESCE(s.business_date, substr(s.created_at, 1, 10))
+          BETWEEN ? AND ?
       AND LOWER(COALESCE(s.status, '')) NOT IN
           ('cancelled','canceled','cancelado','cancelada','anulado','anulada')
     GROUP BY method_key, method_label
     ORDER BY total DESC
   ''',
-      [desde.toIso8601String(), hasta.toIso8601String()],
+      [desdeKey, hastaKey],
     );
 
     return rows
@@ -3319,7 +3231,6 @@ class LocalDb {
         .toList();
   }
 
-  /// Registra un movimiento manual (ingreso/egreso/retiro/ajuste).
   Future<Map<String, dynamic>> addCashMovementLocal({
     required int cashRegisterId,
     required String tipo,
@@ -3329,7 +3240,6 @@ class LocalDb {
     String? notas,
     String? formaPago,
     int? usuarioId,
-    // 🆕 UBICACIÓN (opcional)
     double? latitude,
     double? longitude,
     double? accuracy,
@@ -3384,7 +3294,7 @@ class LocalDb {
           'referencia': referencia,
           'notas': notas,
           'forma_pago': formaPago,
-          if (ubicacion != null) 'ubicacion': ubicacion,
+          'ubicacion': ?ubicacion,
         }),
         'status': 'pending',
         'server_status': 'not_sent',
@@ -3406,7 +3316,6 @@ class LocalDb {
     });
   }
 
-  /// Movimientos de caja filtrados por caja, rango y/o tipo.
   Future<List<Map<String, dynamic>>> getCashMovementsLocal({
     int? cashRegisterId,
     DateTime? desde,
@@ -3451,9 +3360,6 @@ class LocalDb {
   }) async {
     final db = await database;
 
-    // ------------------------------------------------------------
-    // 1. Datos de la caja (para saber la fecha comercial)
-    // ------------------------------------------------------------
     final cajaRows = await db.query(
       'cash_registers',
       where: 'id = ?',
@@ -3476,9 +3382,6 @@ class LocalDb {
     final caja = Map<String, dynamic>.from(cajaRows.first);
     final fechaComercial = caja['fecha_comercial']?.toString() ?? '';
 
-    // ------------------------------------------------------------
-    // 2. Movimientos manuales (ingreso, egreso, retiro, ajuste)
-    // ------------------------------------------------------------
     final movimientos = await db.query(
       'cash_movements',
       where: 'cash_register_id = ?',
@@ -3489,7 +3392,6 @@ class LocalDb {
     double egresos = 0;
     double ajustes = 0;
 
-    // Desglose adicional sin romper la lógica existente.
     double retirosParciales = 0;
     double egresosOperativos = 0;
     double devoluciones = 0;
@@ -3520,9 +3422,6 @@ class LocalDb {
       }
     }
 
-    // ------------------------------------------------------------
-    // 3. Ventas en efectivo del día comercial
-    // ------------------------------------------------------------
     double ventasEfectivo = 0;
     double ventasTotal = 0;
 
@@ -3563,16 +3462,12 @@ class LocalDb {
       'ventas_total': ventasTotal,
       'movimientos': movimientos.length,
       'neto': neto,
-      // ============================================================
-      // DESGLOSE NUEVO
-      // ============================================================
       'retiros_parciales': retirosParciales,
       'egresos_operativos': egresosOperativos,
       'devoluciones': devoluciones,
     };
   }
 
-  /// Historial de cajas (con o sin filtro de fecha).
   Future<List<Map<String, dynamic>>> getCashRegistersLocal({
     DateTime? desde,
     DateTime? hasta,
@@ -3604,6 +3499,7 @@ class LocalDb {
   // TOP PRODUCTOS (local)
   // ============================================================
 
+  // ✅ FIX: normalizar args a YYYY-MM-DD
   Future<List<Map<String, dynamic>>> getTopProductsLocal({
     required DateTime desde,
     required DateTime hasta,
@@ -3611,24 +3507,27 @@ class LocalDb {
   }) async {
     final db = await database;
 
+    final desdeKey = desde.toIso8601String().substring(0, 10);
+    final hastaKey = hasta.toIso8601String().substring(0, 10);
+
     final rows = await db.rawQuery(
       '''
-    SELECT
+     SELECT
       si.product_id AS product_id,
       si.name AS name,
       SUM(si.quantity) AS total_vendido,
       SUM(si.total) AS total_monto
     FROM sale_items si
     INNER JOIN sales s ON s.id = si.sale_id
-    WHERE s.created_at >= ?
-      AND s.created_at <= ?
+    WHERE COALESCE(s.business_date, substr(s.created_at, 1, 10))
+          BETWEEN ? AND ?
       AND LOWER(COALESCE(s.status,'')) NOT IN
           ('cancelled','canceled','cancelado','cancelada','anulado','anulada')
     GROUP BY si.product_id, si.name
     ORDER BY total_vendido DESC
     LIMIT ?
   ''',
-      [desde.toIso8601String(), hasta.toIso8601String(), limite],
+      [desdeKey, hastaKey, limite],
     );
 
     return rows
@@ -3643,6 +3542,7 @@ class LocalDb {
         .toList();
   }
 
+  // ✅ FIX: normalizar args a YYYY-MM-DD
   Future<Map<String, List<Map<String, dynamic>>>> getTopProductsByDayLocal({
     required DateTime desde,
     required DateTime hasta,
@@ -3650,24 +3550,27 @@ class LocalDb {
   }) async {
     final db = await database;
 
+    final desdeKey = desde.toIso8601String().substring(0, 10);
+    final hastaKey = hasta.toIso8601String().substring(0, 10);
+
     final rows = await db.rawQuery(
       '''
     SELECT
-      substr(s.created_at, 1, 10) AS fecha,
+      COALESCE(s.business_date, substr(s.created_at, 1, 10)) AS fecha,
       si.product_id AS product_id,
       si.name AS name,
       SUM(si.quantity) AS total_vendido,
       SUM(si.total) AS total_monto
     FROM sale_items si
     INNER JOIN sales s ON s.id = si.sale_id
-    WHERE s.created_at >= ?
-      AND s.created_at <= ?
+    WHERE COALESCE(s.business_date, substr(s.created_at, 1, 10))
+          BETWEEN ? AND ?
       AND LOWER(COALESCE(s.status,'')) NOT IN
           ('cancelled','canceled','cancelado','cancelada','anulado','anulada')
     GROUP BY fecha, si.product_id, si.name
     ORDER BY fecha ASC, total_vendido DESC
   ''',
-      [desde.toIso8601String(), hasta.toIso8601String()],
+      [desdeKey, hastaKey],
     );
 
     final agrupado = <String, List<Map<String, dynamic>>>{};
@@ -3694,8 +3597,6 @@ class LocalDb {
     return result;
   }
 
-  /// Devuelve las ventas del día comercial (fecha de la caja) agrupadas
-  /// por método de pago.
   Future<List<Map<String, dynamic>>> getSalesByPaymentMethodLocal({
     required DateTime businessDate,
   }) async {
@@ -3733,8 +3634,6 @@ class LocalDb {
         .toList();
   }
 
-  /// Devuelve los movimientos manuales de la caja agrupados por tipo
-  /// (ingreso, egreso, retiro, ajuste) y por método de pago.
   Future<List<Map<String, dynamic>>> getMovementsByTypeAndMethodLocal({
     required int cashRegisterId,
   }) async {
@@ -3770,10 +3669,6 @@ class LocalDb {
         .toList();
   }
 
-  /// Elimina TODOS los datos locales de la empresa actual.
-  ///
-  /// Se usa SOLO cuando se detecta un cambio de empresa.
-  /// NO se usa para limpieza diaria.
   Future<void> clearAll() async {
     final db = await database;
 
@@ -3804,15 +3699,9 @@ class LocalDb {
 
     notifyAllChanged();
 
-    print('🧹 LocalDb: todas las tablas limpiadas por cambio de empresa.');
+    debugPrint('🧹 LocalDb: todas las tablas limpiadas por cambio de empresa.');
   }
 
-  /// Elimina SOLO los datos operativos del día:
-  /// ventas, caja y movimientos.
-  ///
-  /// NO toca catálogos, productos, configuración ni empresa.
-  ///
-  /// Se usa al iniciar sesión en un nuevo día comercial.
   Future<void> clearDailyData() async {
     final db = await database;
 
@@ -3834,24 +3723,14 @@ class LocalDb {
     notifyCashChanged();
     notifyOperationChanged();
 
-    print('🧹 LocalDb: datos del día limpiados.');
+    debugPrint('🧹 LocalDb: datos del día limpiados.');
   }
 
-  /// Purga la cola de sincronización de operaciones antiguas.
-  ///
-  /// Se usa para evitar que la tabla `sync_queue` crezca indefinidamente.
-  ///
-  /// Reglas:
-  /// - Operaciones `synced` con más de 7 días → eliminar
-  /// - Operaciones `failed` con más de 30 días → eliminar
-  /// - Operaciones `failed` con más de 3 intentos → eliminar
-  /// - Máximo 500 registros en la cola → eliminar los más antiguos
   Future<int> purgeOldSyncQueue() async {
     final db = await database;
 
     final now = DateTime.now();
 
-    // 1. Eliminar synced antiguos (>7 días)
     final syncedCutoff = now
         .subtract(const Duration(days: 7))
         .toIso8601String();
@@ -3862,7 +3741,6 @@ class LocalDb {
       whereArgs: [syncedCutoff],
     );
 
-    // 2. Eliminar failed antiguos (>30 días)
     final failedCutoff = now
         .subtract(const Duration(days: 30))
         .toIso8601String();
@@ -3873,13 +3751,11 @@ class LocalDb {
       whereArgs: [failedCutoff],
     );
 
-    // 3. Eliminar failed con más de 3 intentos
     final deletedFailedRetries = await db.delete(
       'sync_queue',
       where: "status = 'failed' AND attempts >= 3",
     );
 
-    // 4. Si la cola tiene más de 500 registros, eliminar los más antiguos synced
     final countResult = await db.rawQuery(
       'SELECT COUNT(*) as total FROM sync_queue',
     );
@@ -3911,7 +3787,7 @@ class LocalDb {
         deletedOverflow;
 
     if (deletedTotal > 0) {
-      print(
+      debugPrint(
         '🧹 Sync Queue purgada: '
         'synced=$deletedSynced '
         'failed_old=$deletedFailedOld '
@@ -3924,7 +3800,6 @@ class LocalDb {
     return deletedTotal;
   }
 
-  /// Devuelve el conteo de la cola de sincronización por estado.
   Future<Map<String, int>> getSyncQueueCounts() async {
     final db = await database;
 
@@ -3935,5 +3810,40 @@ class LocalDb {
     return {
       for (final row in rows) row['status'].toString(): _toInt(row['total']),
     };
+  }
+
+  Future<List<String>> getDistinctBusinessDatesWithPendingSales() async {
+    final db = await database;
+
+    final rows = await db.rawQuery(
+      "SELECT DISTINCT business_date "
+      "FROM sales "
+      "WHERE sync_status IN ('pending','failed','syncing') "
+      "  AND business_date IS NOT NULL "
+      "  AND business_date != '' "
+      "ORDER BY business_date ASC",
+    );
+
+    return rows
+        .map((r) => r['business_date']?.toString() ?? '')
+        .where((s) => s.isNotEmpty)
+        .toList();
+  }
+
+  Future<List<Map<String, dynamic>>> getPendingSalesByBusinessDate(
+    String businessDate,
+  ) async {
+    if (businessDate.trim().isEmpty) return const [];
+
+    final db = await database;
+
+    return db.query(
+      'sales',
+      where:
+          "business_date = ? "
+          "AND sync_status IN ('pending','failed','syncing')",
+      whereArgs: [businessDate.trim()],
+      orderBy: 'created_at ASC',
+    );
   }
 }

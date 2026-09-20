@@ -11,6 +11,8 @@ import 'license_service.dart';
 import '../database/local_db.dart';
 import '../database/pos_db_service.dart';
 
+import 'dart:async';
+
 class AuthService {
   final ApiClient _apiClient;
 
@@ -110,6 +112,9 @@ class AuthService {
     double? longitude,
     double? accuracy,
     String? locationProvider,
+    // ✅ T&C
+    required bool terminosAceptados,
+    required String terminosVersion,
   }) async {
     final payload = await _apiClient.register(
       empresaNombre: empresaNombre.trim(),
@@ -123,6 +128,9 @@ class AuthService {
       longitude: longitude,
       accuracy: accuracy,
       locationProvider: locationProvider,
+      // ✅ T&C
+      terminosAceptados: terminosAceptados,
+      terminosVersion: terminosVersion,
     );
 
     // 🆕 La contraseña ya no la elige el usuario: la genera el
@@ -436,6 +444,17 @@ class AuthService {
     if (!await storage.isOfflineDayValid()) {
       throw Exception('La sesión offline no quedó habilitada correctamente.');
     }
+    unawaited(() async {
+      try {
+        await SyncService().syncCatalogs(force: true);
+
+        debugPrint('✅ Catálogos iniciales descargados tras login.');
+      } catch (e) {
+        // No rompemos el login si el sync falla.
+        // El sync automático lo reintentará.
+        debugPrint('⚠️ Sync inicial de catálogos falló: $e');
+      }
+    }());
   }
 
   /// Sincroniza lo pendiente del día anterior, archiva los
