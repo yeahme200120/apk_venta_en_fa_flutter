@@ -56,6 +56,8 @@ dependencies:
   file_picker: ^13.1.0
   device_info_plus: ^13.2.0
   geolocator: ^13.0.1  
+  url_launcher: ^6.3.0
+  webview_flutter: ^4.10.0
 
 dev_dependencies:
   flutter_test:

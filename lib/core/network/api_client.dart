@@ -694,17 +694,19 @@ class ApiClient {
     double? accuracy,
     String? locationProvider,
   }) async {
-    final result =
-        await _postOperation('/api/v1/cajas/$cashRegisterId/cerrar', {
-      'monto_cierre_declarado': declaredAmount,
-      if (notes != null && notes.trim().isNotEmpty) 'notas': notes.trim(),
+    final result = await _postOperation(
+      '/api/v1/cajas/$cashRegisterId/cerrar',
+      {
+        'monto_cierre_declarado': declaredAmount,
+        if (notes != null && notes.trim().isNotEmpty) 'notas': notes.trim(),
 
-      // 🆕 UBICACIÓN
-      'latitud': ?latitude,
-      'longitud': ?longitude,
-      'precision_metros': ?accuracy,
-      'ubicacion_provider': ?locationProvider,
-    });
+        // 🆕 UBICACIÓN
+        'latitud': ?latitude,
+        'longitud': ?longitude,
+        'precision_metros': ?accuracy,
+        'ubicacion_provider': ?locationProvider,
+      },
+    );
 
     // 🔑 El estado operativo cambió (caja cerrada).
     invalidateOperationCache();
@@ -766,6 +768,27 @@ class ApiClient {
 
       return const [];
     } on DioException catch (e) {
+      final status = e.response?.statusCode;
+      final message = parseApiError(e.response?.data, fallback: '');
+
+      // Si el backend responde que las mesas no están activas,
+      // lo tratamos como "sin mesas", no como error fatal.
+      final mesasDeshabilitadas =
+          (status == 403 || status == 404 || status == 422) &&
+          message.toLowerCase().contains('mesas no están activas');
+
+      if (mesasDeshabilitadas) {
+        debugPrint(
+          'ℹ️ Mesas deshabilitadas para esta empresa. '
+          'Devolviendo lista vacía.',
+        );
+
+        _cachedTables = const [];
+        _cachedTablesAt = now;
+
+        return const [];
+      }
+
       _throwDioError(e, fallback: 'No se pudieron consultar las mesas');
     }
   }

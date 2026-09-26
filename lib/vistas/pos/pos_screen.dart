@@ -332,9 +332,7 @@ class PosScreenState extends State<PosScreen> {
         builder: (ctx) {
           progressNavigator = Navigator.of(ctx, rootNavigator: true);
 
-          return SyncProgressDialog(
-            progressNotifier: progressNotifier,
-          );
+          return SyncProgressDialog(progressNotifier: progressNotifier);
         },
       ),
     );
@@ -382,9 +380,7 @@ class PosScreenState extends State<PosScreen> {
       if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('No fue posible actualizar la caja: $error'),
-        ),
+        SnackBar(content: Text('No fue posible actualizar la caja: $error')),
       );
     } finally {
       if (mounted) {
@@ -581,21 +577,64 @@ class PosScreenState extends State<PosScreen> {
     _setCart(current);
   }
 
+  /// Devuelve el stock VIVO del producto.
+  ///
+  /// - Si es inventariable: lee `_products` (lista actualizada por
+  ///   `_loadProducts`) y devuelve el stock real.
+  /// - Si NO es inventariable: devuelve `double.infinity`
+  ///   para que el carrito no lo limite nunca.
+  ///
+  /// Si el producto ya no existe en `_products` (por ejemplo se
+  /// desactivó), devuelve 0 para bloquear nuevas unidades.
+  double stockVivoDe(Product product) {
+    if (!product.isInventoriable) {
+      return double.infinity;
+    }
+
+    final live = _products.firstWhere(
+      (p) => p.id == product.id,
+      orElse: () => product,
+    );
+
+    return live.stock;
+  }
+
   void _changeQuantity(int productId, int delta) {
     final current = List<CartItem>.from(_cartNotifier.value);
     final index = current.indexWhere((item) => item.product.id == productId);
     if (index == -1) return;
 
-    final newQty = current[index].quantity + delta;
+    final item = current[index];
+    final newQty = item.quantity + delta;
+
+    // Bajar a 0 o menos: eliminar del carrito.
     if (newQty <= 0) {
       current.removeAt(index);
-    } else {
-      current[index] = CartItem(
-        product: current[index].product,
-        quantity: newQty,
-      );
+      _setCart(current);
+      return;
     }
 
+    // Al AUMENTAR, validar contra el stock VIVO.
+    if (delta > 0 && item.product.isInventoriable) {
+      final stock = stockVivoDe(item.product);
+
+      if (newQty > stock) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'Solo hay ${stock.toStringAsFixed(0)} disponibles '
+                'de ${item.product.name}.',
+              ),
+              duration: const Duration(seconds: 2),
+            ),
+          );
+        }
+        return;
+      }
+    }
+
+    current[index] = CartItem(product: item.product, quantity: newQty);
     _setCart(current);
   }
 
@@ -623,6 +662,7 @@ class PosScreenState extends State<PosScreen> {
           onClear: _clearCart,
           onCheckout: _confirmSale,
           canCheckout: () => _puedeOperar,
+          stockProvider: stockVivoDe,
         ),
       ),
     );
@@ -641,6 +681,7 @@ class PosScreenState extends State<PosScreen> {
           onClear: _clearCart,
           onCheckout: _confirmSale,
           canCheckout: () => _puedeOperar,
+          stockProvider: stockVivoDe,
         ),
       ),
     );
@@ -769,6 +810,28 @@ class PosScreenState extends State<PosScreen> {
 
     if (!await _canOperateSale()) return false;
 
+    // ✅ Revalidar stock contra `_products` (vivo).
+    for (final item in _cartNotifier.value) {
+      if (!item.product.isInventoriable) continue;
+
+      final stock = stockVivoDe(item.product);
+
+      if (item.quantity > stock) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'Stock insuficiente de ${item.product.name}: '
+                'disponible ${stock.toStringAsFixed(0)}, '
+                'en carrito ${item.quantity}.',
+              ),
+              backgroundColor: Colors.red.shade700,
+            ),
+          );
+        }
+        return false;
+      }
+    }
     _processingSale = true;
 
     try {

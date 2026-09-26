@@ -21,6 +21,7 @@ class CatalogAdminScreen extends StatefulWidget {
 class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
   final LocalDb _db = LocalDb();
   final CatalogExcelService _excel = CatalogExcelService();
+  StreamSubscription<void>? _salesChangesSub;
 
   int _selectedCatalog = 0;
   bool _loading = true;
@@ -112,6 +113,15 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
   void initState() {
     super.initState();
 
+    // Refresco en tiempo real: si algo cambia en el catálogo
+    // (otra pantalla, otra importación, otra edición), recargamos.
+    _salesChangesSub = LocalDb.salesChanges.listen((_) {
+      if (_isDisposed || !mounted) return;
+      // Debounce simple: la carga tiene su propio guard con
+      // _loadGeneration, así que es seguro llamar _load().
+      _load();
+    });
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || _isDisposed) return;
       _load();
@@ -121,6 +131,8 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
   @override
   void dispose() {
     _isDisposed = true;
+    _salesChangesSub?.cancel();
+    _salesChangesSub = null;
     _searchCtrl.dispose();
     super.dispose();
   }
@@ -410,9 +422,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
     if (_isPaymentMethod && !newActive) {
       final activeCount = _items
           .where(
-            (i) => _isActive(
-              i['is_active'] ?? i['active'] ?? i['activo'] ?? 1,
-            ),
+            (i) => _isActive(i['is_active'] ?? i['active'] ?? i['activo'] ?? 1),
           )
           .length;
 
@@ -450,9 +460,8 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
     if (_isDisposed || !mounted) return;
     if (_isPaymentMethod) return;
 
-    final name = item['name']?.toString() ??
-        item['nombre']?.toString() ??
-        'registro';
+    final name =
+        item['name']?.toString() ?? item['nombre']?.toString() ?? 'registro';
 
     final id = _toIntOrNull(item['id']);
 
@@ -703,11 +712,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
       ..hideCurrentSnackBar()
       ..showSnackBar(
         SnackBar(
-          content: Text(
-            msg,
-            maxLines: 4,
-            overflow: TextOverflow.ellipsis,
-          ),
+          content: Text(msg, maxLines: 4, overflow: TextOverflow.ellipsis),
           behavior: SnackBarBehavior.floating,
         ),
       );
@@ -792,15 +797,9 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
             return Column(
               children: [
                 if (_isImporting)
-                  LinearProgressIndicator(
-                    minHeight: 3,
-                    color: cs.primary,
-                  ),
+                  LinearProgressIndicator(minHeight: 3, color: cs.primary),
 
-                _buildCatalogSelector(
-                  isDesktop: isDesktop,
-                  isTablet: isTablet,
-                ),
+                _buildCatalogSelector(isDesktop: isDesktop, isTablet: isTablet),
 
                 const Divider(height: 1),
 
@@ -809,8 +808,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
                   child: TextField(
                     controller: _searchCtrl,
                     decoration: InputDecoration(
-                      hintText:
-                          'Buscar en ${catalog.title.toLowerCase()}...',
+                      hintText: 'Buscar en ${catalog.title.toLowerCase()}...',
                       hintStyle: TextStyle(
                         color: cs.onSurfaceVariant,
                         fontSize: 13,
@@ -851,16 +849,13 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
                   child: _loading
                       ? const Center(child: CircularProgressIndicator())
                       : _filteredItems.isEmpty
-                          ? _buildEmptyState(catalog)
-                          : width >= 800
-                              ? RefreshIndicator(
-                                  onRefresh: _load,
-                                  child: _buildGrid(width),
-                                )
-                              : RefreshIndicator(
-                                  onRefresh: _load,
-                                  child: _buildList(),
-                                ),
+                      ? _buildEmptyState(catalog)
+                      : width >= 800
+                      ? RefreshIndicator(
+                          onRefresh: _load,
+                          child: _buildGrid(width),
+                        )
+                      : RefreshIndicator(onRefresh: _load, child: _buildList()),
                 ),
               ],
             );
@@ -968,16 +963,14 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
                           color: selected
                               ? catalog.color
                               : Theme.of(context)
-                                  .colorScheme
-                                  .surfaceContainerHighest,
+                                    .colorScheme
+                                    .surfaceContainerHighest,
                           borderRadius: BorderRadius.circular(14),
                           border: Border.all(
                             color: selected
                                 ? catalog.color
-                                : Theme.of(context)
-                                    .colorScheme
-                                    .outlineVariant
-                                    .withValues(alpha: .35),
+                                : Theme.of(context).colorScheme.outlineVariant
+                                      .withValues(alpha: .35),
                             width: selected ? 1.5 : 1,
                           ),
                           boxShadow: selected
@@ -1002,8 +995,9 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
                             const SizedBox(height: 5),
                             Flexible(
                               child: Padding(
-                                padding:
-                                    const EdgeInsets.symmetric(horizontal: 2),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 2,
+                                ),
                                 child: Text(
                                   catalog.title,
                                   textAlign: TextAlign.center,
@@ -1017,8 +1011,8 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
                                     color: selected
                                         ? Colors.white
                                         : Theme.of(context)
-                                            .colorScheme
-                                            .onSurface,
+                                              .colorScheme
+                                              .onSurface,
                                   ),
                                 ),
                               ),
@@ -1046,10 +1040,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
       padding: const EdgeInsets.all(12),
       itemCount: _filteredItems.length,
       separatorBuilder: (_, _) => const SizedBox(height: 8),
-      itemBuilder: (_, i) => _buildItemCard(
-        _filteredItems[i],
-        compact: true,
-      ),
+      itemBuilder: (_, i) => _buildItemCard(_filteredItems[i], compact: true),
     );
   }
 
@@ -1061,8 +1052,8 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
     final cols = width >= 1400
         ? 4
         : width >= 1050
-            ? 3
-            : 2;
+        ? 3
+        : 2;
 
     return GridView.builder(
       padding: EdgeInsets.all(width >= 1200 ? 24 : 16),
@@ -1073,10 +1064,7 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
         mainAxisExtent: 155,
       ),
       itemCount: _filteredItems.length,
-      itemBuilder: (_, i) => _buildItemCard(
-        _filteredItems[i],
-        compact: false,
-      ),
+      itemBuilder: (_, i) => _buildItemCard(_filteredItems[i], compact: false),
     );
   }
 
@@ -1084,16 +1072,12 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
   // TARJETA
   // ============================================================
 
-  Widget _buildItemCard(
-    Map<String, dynamic> item, {
-    required bool compact,
-  }) {
+  Widget _buildItemCard(Map<String, dynamic> item, {required bool compact}) {
     final cs = Theme.of(context).colorScheme;
     final catalog = _currentCatalog;
 
-    final name = item['name']?.toString() ??
-        item['nombre']?.toString() ??
-        'Sin nombre';
+    final name =
+        item['name']?.toString() ?? item['nombre']?.toString() ?? 'Sin nombre';
 
     final code = item['code']?.toString() ?? '';
 
@@ -1186,13 +1170,12 @@ class _CatalogAdminScreenState extends State<CatalogAdminScreen> {
         parts.add(code);
       }
 
-      final categoryName = _jsonValue(
-        item,
-        ['categoria_nombre', 'category_name'],
-      );
+      final categoryName = _jsonValue(item, [
+        'categoria_nombre',
+        'category_name',
+      ]);
 
-      if (categoryName != null &&
-          categoryName.toString().trim().isNotEmpty) {
+      if (categoryName != null && categoryName.toString().trim().isNotEmpty) {
         parts.add('Cat: ${categoryName.toString()}');
       }
 

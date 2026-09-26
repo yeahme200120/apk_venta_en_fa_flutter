@@ -124,14 +124,10 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
       text: _stringValue(item, ['phone', 'telefono', 'teléfono']),
     );
 
-    _rfcController = TextEditingController(
-      text: _stringValue(item, ['rfc']),
-    );
+    _rfcController = TextEditingController(text: _stringValue(item, ['rfc']));
 
     _rateController = TextEditingController(
-      text: _numberText(
-        item['rate'] ?? item['tasa'] ?? item['porcentaje'],
-      ),
+      text: _numberText(item['rate'] ?? item['tasa'] ?? item['porcentaje']),
     );
 
     if (widget.isProduct) {
@@ -164,10 +160,7 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
   // HELPERS
   // ===========================================================================
 
-  String _stringValue(
-    Map<String, dynamic> data,
-    List<String> keys,
-  ) {
+  String _stringValue(Map<String, dynamic> data, List<String> keys) {
     for (final key in keys) {
       final value = data[key];
 
@@ -190,10 +183,7 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
       return value.toDouble();
     }
 
-    return double.tryParse(
-          value?.toString().replaceAll(',', '.') ?? '',
-        ) ??
-        0;
+    return double.tryParse(value?.toString().replaceAll(',', '.') ?? '') ?? 0;
   }
 
   String _numberText(dynamic value) {
@@ -235,11 +225,7 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
   int? _getExistingCategoryId() {
     final item = widget.item ?? {};
 
-    final directKeys = [
-      'categoria_id',
-      'category_id',
-      'categoryId',
-    ];
+    final directKeys = ['categoria_id', 'category_id', 'categoryId'];
 
     for (final key in directKeys) {
       final value = item[key];
@@ -309,9 +295,7 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
       var selected = _selectedCategoryId;
 
       if (selected != null &&
-          !categories.any(
-            (category) => _toInt(category['id']) == selected,
-          )) {
+          !categories.any((category) => _toInt(category['id']) == selected)) {
         selected = null;
       }
 
@@ -330,11 +314,7 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
       });
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'No se pudieron cargar las categorías: $e',
-          ),
-        ),
+        SnackBar(content: Text('No se pudieron cargar las categorías: $e')),
       );
     }
   }
@@ -343,29 +323,20 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
   // PRODUCT CODE
   // ===========================================================================
 
-  String _buildCategoryPrefix(
-    Map<String, dynamic>? category,
-  ) {
-    final raw = _stringValue(
-      category ?? const {},
-      [
-        'name',
-        'nombre',
-        'code',
-        'codigo',
-      ],
-    );
+  String _buildCategoryPrefix(Map<String, dynamic>? category) {
+    final raw = _stringValue(category ?? const {}, [
+      'name',
+      'nombre',
+      'code',
+      'codigo',
+    ]);
 
     if (raw.isEmpty) {
       return 'PRD';
     }
 
-    final normalized = _removeAccents(
-      raw.toUpperCase(),
-    ).replaceAll(
-      RegExp(r'[^A-Z0-9\s]'),
-      ' ',
-    );
+    final normalized = _removeAccents(raw.toUpperCase())
+        .replaceAll(RegExp(r'[^A-Z0-9\s]'), ' ');
 
     final words = normalized
         .split(RegExp(r'\s+'))
@@ -378,9 +349,7 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
 
     var prefix = words.first.substring(
       0,
-      words.first.length >= 3
-          ? 3
-          : words.first.length,
+      words.first.length >= 3 ? 3 : words.first.length,
     );
 
     if (prefix.length < 3 && words.length > 1) {
@@ -391,10 +360,7 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
 
         final remaining = 3 - prefix.length;
 
-        prefix += word.substring(
-          0,
-          remaining.clamp(0, word.length),
-        );
+        prefix += word.substring(0, remaining.clamp(0, word.length));
       }
     }
 
@@ -416,9 +382,7 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
         .replaceAll('Ñ', 'N');
   }
 
-  Future<int> _getNextProductSequence(
-    String prefix,
-  ) async {
+  Future<int> _getNextProductSequence(String prefix) async {
     final products = await _db.getAllProducts();
 
     var max = 0;
@@ -426,15 +390,11 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
     for (final product in products) {
       final code = product['code']?.toString().trim() ?? '';
 
-      final match = RegExp(
-        '^${RegExp.escape(prefix)}-(\\d{3})\$',
-      ).firstMatch(code);
+      final match = RegExp('^${RegExp.escape(prefix)}-(\\d{3})\$')
+          .firstMatch(code);
 
       if (match != null) {
-        final number = int.tryParse(
-              match.group(1) ?? '',
-            ) ??
-            0;
+        final number = int.tryParse(match.group(1) ?? '') ?? 0;
 
         if (number > max) {
           max = number;
@@ -443,15 +403,11 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
         continue;
       }
 
-      final legacyMatch = RegExp(
-        '^${RegExp.escape(prefix)}(\\d{3})\$',
-      ).firstMatch(code);
+      final legacyMatch = RegExp('^${RegExp.escape(prefix)}(\\d{3})\$')
+          .firstMatch(code);
 
       if (legacyMatch != null) {
-        final number = int.tryParse(
-              legacyMatch.group(1) ?? '',
-            ) ??
-            0;
+        final number = int.tryParse(legacyMatch.group(1) ?? '') ?? 0;
 
         if (number > max) {
           max = number;
@@ -462,9 +418,7 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
     return max + 1;
   }
 
-  Future<String> _generateProductCode(
-    int categoryId,
-  ) async {
+  Future<String> _generateProductCode(int categoryId) async {
     Map<String, dynamic>? category;
 
     for (final item in _categories) {
@@ -476,16 +430,12 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
 
     final prefix = _buildCategoryPrefix(category);
 
-    final sequence = await _getNextProductSequence(
-      prefix,
-    );
+    final sequence = await _getNextProductSequence(prefix);
 
     return '$prefix-${sequence.toString().padLeft(3, '0')}';
   }
 
-  Future<void> _onCategoryChanged(
-    int? value,
-  ) async {
+  Future<void> _onCategoryChanged(int? value) async {
     setState(() {
       _selectedCategoryId = value;
     });
@@ -633,125 +583,6 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
       },
     );
   }
-
-  // ===========================================================================
-  // SYNC GLOBAL POST-GUARDADO (Opción A)
-  // ===========================================================================
-  //
-  // Se llama DESPUÉS de guardar exitosamente en LocalDb + sync_queue.
-  //
-  // Flujo:
-  //   1. Abre SyncProgressDialog.
-  //   2. Corre SyncOrchestrator.syncAll (sube el sync_queue pendiente).
-  //   3. Muestra showSyncResultDialog con el resumen.
-  //   4. Cierra esta pantalla con pop(true).
-  //
-  // Si la sesión no es válida o está offline, se salta el modal
-  // y simplemente se cierra la pantalla. El sync_queue queda
-  // pendiente para reintentar después.
-
-  Future<void> _syncAfterSave() async {
-    final companyId = await AppStorage().getEmpresaId() ?? 0;
-    final userId = await AppStorage().getUserId() ?? 0;
-
-    if (companyId <= 0 || userId <= 0) {
-      // Sesión inválida: cerramos sin sync. La cola queda pendiente.
-      if (mounted) Navigator.of(context).pop(true);
-      return;
-    }
-
-    // Si estamos offline, no disparamos el modal:
-    // el sync_queue se procesará cuando haya red.
-    final offline = await AppStorage().isOfflineSession();
-
-    if (offline) {
-      if (mounted) Navigator.of(context).pop(true);
-      return;
-    }
-
-    final rawBusinessDate = await AppStorage().getServerBusinessDate();
-    final businessDate =
-        DateTime.tryParse(rawBusinessDate ?? '') ?? DateTime.now();
-
-    if (!mounted) return;
-
-    // ============================================================
-    // DIÁLOGO DE PROGRESO
-    // ============================================================
-
-    final progressNotifier = ValueNotifier<String>(
-      'Sincronizando catálogo...',
-    );
-
-    NavigatorState? progressNavigator;
-
-    unawaited(
-      showDialog<void>(
-        context: context,
-        barrierDismissible: false,
-        builder: (ctx) {
-          progressNavigator = Navigator.of(ctx, rootNavigator: true);
-
-          return SyncProgressDialog(
-            progressNotifier: progressNotifier,
-            title: 'Sincronizando catálogo',
-          );
-        },
-      ),
-    );
-
-    await Future.delayed(const Duration(milliseconds: 120));
-
-    try {
-      final report = await SyncOrchestrator().syncAll(
-        companyId: companyId,
-        userId: userId,
-        businessDate: businessDate,
-        onProgress: (stage, message) {
-          progressNotifier.value = message;
-        },
-      );
-
-      if (progressNavigator != null && progressNavigator!.canPop()) {
-        progressNavigator!.pop();
-      }
-
-      progressNotifier.dispose();
-
-      if (!mounted) return;
-
-      // ============================================================
-      // RESULTADO
-      // ============================================================
-
-      // Cerrar la pantalla ANTES de mostrar el diálogo de resultado,
-      // para que el snack/dialog aparezca sobre el listado del catálogo.
-      // ignore: use_build_context_synchronously
-      Navigator.of(context).pop(true);
-
-      // Esperar a que se complete el pop antes de mostrar el resultado.
-      await Future.delayed(const Duration(milliseconds: 250));
-
-      if (!context.mounted) return;
-      await showSyncResultDialog(
-      // ignore: use_build_context_synchronously
-        context,
-        report: report,
-      );
-    } catch (error) {
-      if (progressNavigator != null && progressNavigator!.canPop()) {
-        progressNavigator!.pop();
-      }
-
-      progressNotifier.dispose();
-
-      if (!mounted) return;
-
-      // Aun si falla, el guardado local ya quedó.
-      Navigator.of(context).pop(true);
-    }
-  }
-
   // ===========================================================================
   // SAVE
   // ===========================================================================
@@ -770,9 +601,7 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
     if (widget.isProduct && _selectedCategoryId == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text(
-            'Selecciona una categoría para el producto.',
-          ),
+          content: Text('Selecciona una categoría para el producto.'),
         ),
       );
 
@@ -789,9 +618,7 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
       // =======================================================================
 
       if (widget.isProduct) {
-        final price = _toDouble(
-          _priceController.text,
-        );
+        final price = _toDouble(_priceController.text);
 
         /*
          * El stock se mantiene independiente de
@@ -826,9 +653,7 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
         var code = _codeController.text.trim();
 
         if (code.isEmpty && _selectedCategoryId != null) {
-          code = await _generateProductCode(
-            _selectedCategoryId!,
-          );
+          code = await _generateProductCode(_selectedCategoryId!);
 
           _codeController.text = code;
         }
@@ -837,13 +662,10 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
         int? serverId;
 
         if (_isEditing) {
-          localId = _toInt(
-            widget.item!['id'],
-          );
+          localId = _toInt(widget.item!['id']);
 
           serverId = _nullableInt(
-            widget.item!['server_id'] ??
-                widget.item!['serverId'],
+            widget.item!['server_id'] ?? widget.item!['serverId'],
           );
 
           await _db.updateProduct(
@@ -907,11 +729,9 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
          */
         LocalDb.notifySalesChanged();
       }
-
       // =======================================================================
       // CLIENTE
       // =======================================================================
-
       else if (widget.isClient) {
         final data = <String, dynamic>{
           'email': _emailController.text.trim(),
@@ -936,15 +756,11 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
           );
         }
       }
-
       // =======================================================================
       // CATEGORÍAS / OTROS CATÁLOGOS
       // =======================================================================
-
       else {
-        final rate = _toDouble(
-          _rateController.text,
-        );
+        final rate = _toDouble(_rateController.text);
 
         var code = _codeController.text.trim();
 
@@ -955,9 +771,7 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
         // su clave actual.
         if (_isCategory && !_isEditing) {
           if (code.isEmpty) {
-            code = await _db.getNextCategoryCode(
-              name,
-            );
+            code = await _db.getNextCategoryCode(name);
 
             _codeController.text = code;
           }
@@ -968,13 +782,10 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
         int? serverId;
 
         if (_isEditing) {
-          localId = _toInt(
-            widget.item!['id'],
-          );
+          localId = _toInt(widget.item!['id']);
 
           serverId = _nullableInt(
-            widget.item!['server_id'] ??
-                widget.item!['serverId'],
+            widget.item!['server_id'] ?? widget.item!['serverId'],
           );
 
           await _db.updateCatalogItem(
@@ -1010,34 +821,16 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
         return;
       }
 
-      // =======================================================================
-      // SYNC GLOBAL POST-GUARDADO
-      // =======================================================================
-      //
-      // El guardado local + cola ya está completo.
-      //
-      // Ahora disparamos syncAll para subir el sync_queue pendiente
-      // y mostrar el modal de progreso + resultado.
-      //
-      // _syncAfterSave se encarga de:
-      //   1. Verificar sesión + online.
-      //   2. Abrir SyncProgressDialog.
-      //   3. Correr syncAll.
-      //   4. Cerrar esta pantalla y mostrar el resultado.
+      LocalDb.notifySalesChanged();
 
-      await _syncAfterSave();
+      Navigator.of(context).pop(true);
     } catch (e) {
       if (!mounted) {
         return;
       }
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'No se pudo guardar: $e',
-          ),
-        ),
-      );
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('No se pudo guardar: $e')));
     } finally {
       if (mounted) {
         setState(() {
@@ -1082,10 +875,7 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
       return value.toInt();
     }
 
-    return int.tryParse(
-          value?.toString() ?? '',
-        ) ??
-        0;
+    return int.tryParse(value?.toString() ?? '') ?? 0;
   }
 
   int? _nullableInt(dynamic value) {
@@ -1143,7 +933,6 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
               // =================================================================
               // CLAVE AUTOMÁTICA DE CATEGORÍA
               // =================================================================
-
               if (_isCategory)
                 Padding(
                   padding: const EdgeInsets.only(top: 16),
@@ -1159,16 +948,11 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
                             _codeController.text.trim().isEmpty
                                 ? 'Se generará automáticamente'
                                 : _codeController.text.trim(),
-                            style: const TextStyle(
-                              fontWeight: FontWeight.w700,
-                            ),
+                            style: const TextStyle(fontWeight: FontWeight.w700),
                           ),
                         ),
                         if (!_isEditing)
-                          const Icon(
-                            Icons.auto_awesome_rounded,
-                            size: 20,
-                          ),
+                          const Icon(Icons.auto_awesome_rounded, size: 20),
                       ],
                     ),
                   ),
@@ -1179,7 +963,6 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
               // =================================================================
               // CÓDIGO MANUAL PARA OTROS CATÁLOGOS
               // =================================================================
-
               if (!isClient && !isProduct && !_isCategory)
                 TextFormField(
                   controller: _codeController,
@@ -1196,7 +979,6 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
               // =================================================================
               // PRODUCTO
               // =================================================================
-
               if (isProduct) ...[
                 DropdownButtonFormField<int>(
                   initialValue: _selectedCategoryId,
@@ -1210,21 +992,12 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
                         (category) => DropdownMenuItem<int>(
                           value: _toInt(category['id']),
                           child: Text(
-                            _stringValue(
-                              category,
-                              [
-                                'name',
-                                'nombre',
-                              ],
-                            ),
+                            _stringValue(category, ['name', 'nombre']),
                           ),
                         ),
                       )
                       .toList(),
-                  onChanged:
-                      _loadingCategories
-                          ? null
-                          : _onCategoryChanged,
+                  onChanged: _loadingCategories ? null : _onCategoryChanged,
                   validator: (_) {
                     if (_selectedCategoryId == null) {
                       return 'Selecciona una categoría.';
@@ -1237,9 +1010,7 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
                 if (_loadingCategories)
                   Padding(
                     padding: const EdgeInsets.only(top: 8),
-                    child: LinearProgressIndicator(
-                      color: cs.primary,
-                    ),
+                    child: LinearProgressIndicator(color: cs.primary),
                   ),
 
                 if (!_loadingCategories && _categories.isEmpty)
@@ -1248,9 +1019,7 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
                     child: Text(
                       'No hay categorías disponibles. '
                       'Crea una categoría antes de registrar productos.',
-                      style: TextStyle(
-                        color: cs.onSurfaceVariant,
-                      ),
+                      style: TextStyle(color: cs.onSurfaceVariant),
                     ),
                   ),
 
@@ -1264,9 +1033,7 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
                       ),
                       child: Text(
                         _codeController.text.trim(),
-                        style: const TextStyle(
-                          fontWeight: FontWeight.w700,
-                        ),
+                        style: const TextStyle(fontWeight: FontWeight.w700),
                       ),
                     ),
                   ),
@@ -1275,8 +1042,7 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
 
                 TextFormField(
                   controller: _priceController,
-                  keyboardType:
-                      const TextInputType.numberWithOptions(
+                  keyboardType: const TextInputType.numberWithOptions(
                     decimal: true,
                   ),
                   decoration: const InputDecoration(
@@ -1289,9 +1055,7 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
 
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
-                  title: const Text(
-                    'Maneja inventario',
-                  ),
+                  title: const Text('Maneja inventario'),
                   subtitle: const Text(
                     'Permite controlar existencias de este producto.',
                   ),
@@ -1312,8 +1076,7 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
                     padding: const EdgeInsets.only(top: 8),
                     child: TextFormField(
                       controller: _stockController,
-                      keyboardType:
-                          const TextInputType.numberWithOptions(
+                      keyboardType: const TextInputType.numberWithOptions(
                         decimal: true,
                       ),
                       decoration: const InputDecoration(
@@ -1327,7 +1090,6 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
               // =================================================================
               // CLIENTE
               // =================================================================
-
               if (isClient) ...[
                 const SizedBox(height: 16),
 
@@ -1365,14 +1127,12 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
               // =================================================================
               // IMPUESTOS
               // =================================================================
-
               if (widget.table == 'taxes') ...[
                 const SizedBox(height: 16),
 
                 TextFormField(
                   controller: _rateController,
-                  keyboardType:
-                      const TextInputType.numberWithOptions(
+                  keyboardType: const TextInputType.numberWithOptions(
                     decimal: true,
                   ),
                   decoration: const InputDecoration(
@@ -1387,7 +1147,6 @@ class _CatalogEditScreenState extends State<CatalogEditScreen> {
               // =================================================================
               // BOTONES
               // =================================================================
-
               Row(
                 children: [
                   Expanded(

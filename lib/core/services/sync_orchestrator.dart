@@ -606,13 +606,45 @@ class SyncOrchestrator {
     serverChangesOk = true;
 
     // ----------------------------------------------------------
-    // 2.5 — mesas
+    // 2.5 — mesas (solo si están activas para la empresa)
     // ----------------------------------------------------------
     _emit(onProgress, SyncStage.downloadingTables, 'Actualizando mesas...');
 
     try {
-      await _api.getTables();
-      tablesOk = true;
+      // Leer el estado operativo para saber si las mesas están activas.
+      //
+      // El backend rechaza GET /mesas con "Las mesas no están activas
+      // para esta empresa" cuando el módulo está apagado. Por eso,
+      // primero se consulta el estado y solo se llama al endpoint si
+      // realmente están habilitadas.
+      //
+      // Si la consulta falla, se asume false (conservador).
+      bool mesasActivas = false;
+
+      try {
+        final status = await _api.getOperationStatus();
+        mesasActivas = status['mesas_activas'] == true;
+
+        // Guardamos también el estado en storage, ya que lo tenemos fresco.
+        await AppStorage().saveOperationState(status);
+      } catch (e) {
+        debugPrint(
+          '⚠️ No se pudo consultar el estado operativo '
+          'para validar mesas: $e',
+        );
+        // mesasActivas permanece false por seguridad.
+      }
+
+      if (!mesasActivas) {
+        debugPrint(
+          'ℹ️ Mesas desactivadas para esta empresa. '
+          'Saltando descarga.',
+        );
+        tablesOk = true; // no es un fallo, simplemente no aplica
+      } else {
+        await _api.getTables();
+        tablesOk = true;
+      }
     } catch (e) {
       debugPrint('⚠️ Error bajando mesas: $e');
       errors.add(

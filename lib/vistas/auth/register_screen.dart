@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:internet_connection_checker_plus/internet_connection_checker_plus.dart';
 
 // ✅ NUEVO: modal reutilizable de términos
-import '../legal/terms_screen.dart';
+import '../widgets/legal_terms_modal.dart';
 
 import '../../core/services/auth_service.dart';
 // 🆕 UBICACIÓN

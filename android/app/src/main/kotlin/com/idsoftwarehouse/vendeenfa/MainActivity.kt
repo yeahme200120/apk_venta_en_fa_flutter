@@ -1,4 +1,4 @@
-package com.example.punto_venta_flutter
+package com.idsoftwarehouse.vendeenfa
 
 import io.flutter.embedding.android.FlutterActivity
 

@@ -11,14 +11,12 @@ class CartScreen extends StatefulWidget {
     required this.onClear,
     required this.onCheckout,
     this.canCheckout,
+    this.stockProvider,
   });
 
   final ValueNotifier<List<CartItem>> cartNotifier;
 
-  final void Function(
-    int productId,
-    int delta,
-  ) onQuantityChanged;
+  final void Function(int productId, int delta) onQuantityChanged;
 
   final ValueChanged<int> onRemove;
 
@@ -31,6 +29,10 @@ class CartScreen extends StatefulWidget {
   /// Si es `null`, se asume permitido.
   final bool Function()? canCheckout;
 
+  /// Devuelve el stock disponible actual del producto.
+  /// Debe devolver `double.infinity` para productos NO inventariables.
+  final double Function(Product product)? stockProvider;
+
   @override
   State<CartScreen> createState() => _CartScreenState();
 }
@@ -42,18 +44,23 @@ class _CartScreenState extends State<CartScreen> {
   // HELPERS
   // ============================================================
 
-  /// Indica si se puede incrementar la cantidad de un item.
-  ///
-  /// - Si el producto NO es inventariable → sin límite.
-  /// - Si el producto SÍ es inventariable → limitado por stock.
   bool _canIncrease(CartItem item) {
     final product = item.product;
 
+    // Producto no inventariable: sin límite.
     if (!product.isInventoriable) {
       return true;
     }
 
-    return item.quantity < product.stock;
+    // Stock VIVO si hay provider; si no, snapshot del item.
+    final stock = widget.stockProvider?.call(product) ?? product.stock;
+
+    // Si el stock es infinito (no inventariable, caso defensivo), permitir.
+    if (stock == double.infinity) {
+      return true;
+    }
+
+    return item.quantity < stock;
   }
 
   // ============================================================
@@ -78,10 +85,7 @@ class _CartScreenState extends State<CartScreen> {
       body: ValueListenableBuilder<List<CartItem>>(
         valueListenable: widget.cartNotifier,
         builder: (context, items, child) {
-          final total = items.fold(
-            0.0,
-            (sum, item) => sum + item.subtotal,
-          );
+          final total = items.fold(0.0, (sum, item) => sum + item.subtotal);
 
           if (items.isEmpty) {
             return Center(
@@ -123,16 +127,14 @@ class _CartScreenState extends State<CartScreen> {
                             padding: const EdgeInsets.all(16),
                             gridDelegate:
                                 const SliverGridDelegateWithFixedCrossAxisCount(
-                              crossAxisCount: 2,
-                              crossAxisSpacing: 12,
-                              mainAxisSpacing: 12,
-                              childAspectRatio: 2.2,
-                            ),
+                                  crossAxisCount: 2,
+                                  crossAxisSpacing: 12,
+                                  mainAxisSpacing: 12,
+                                  childAspectRatio: 2.2,
+                                ),
                             itemCount: items.length,
-                            itemBuilder: (context, index) => _buildCartItem(
-                              items[index],
-                              isMobile: false,
-                            ),
+                            itemBuilder: (context, index) =>
+                                _buildCartItem(items[index], isMobile: false),
                           )
                         : ListView.separated(
                             padding: const EdgeInsets.all(16),
@@ -145,10 +147,7 @@ class _CartScreenState extends State<CartScreen> {
                             ),
                           ),
                   ),
-                  _buildBottomBar(
-                    total,
-                    items.isNotEmpty,
-                  ),
+                  _buildBottomBar(total, items.isNotEmpty),
                 ],
               );
             },
@@ -162,10 +161,7 @@ class _CartScreenState extends State<CartScreen> {
   // ITEM DEL CARRITO
   // ============================================================
 
-  Widget _buildCartItem(
-    CartItem item, {
-    required bool isMobile,
-  }) {
+  Widget _buildCartItem(CartItem item, {required bool isMobile}) {
     final cs = Theme.of(context).colorScheme;
 
     return Card(
@@ -193,9 +189,7 @@ class _CartScreenState extends State<CartScreen> {
                             const SizedBox(height: 4),
                             Text(
                               '\$${item.product.price.toStringAsFixed(2)} c/u',
-                              style: TextStyle(
-                                color: cs.onSurfaceVariant,
-                              ),
+                              style: TextStyle(color: cs.onSurfaceVariant),
                             ),
                             const SizedBox(height: 4),
                             Text(
@@ -214,10 +208,8 @@ class _CartScreenState extends State<CartScreen> {
                         children: [
                           IconButton(
                             tooltip: 'Disminuir',
-                            onPressed: () => widget.onQuantityChanged(
-                              item.product.id,
-                              -1,
-                            ),
+                            onPressed: () =>
+                                widget.onQuantityChanged(item.product.id, -1),
                             icon: const Icon(Icons.remove_circle_outline),
                             iconSize: 28,
                           ),
@@ -232,9 +224,9 @@ class _CartScreenState extends State<CartScreen> {
                             tooltip: 'Aumentar',
                             onPressed: _canIncrease(item)
                                 ? () => widget.onQuantityChanged(
-                                      item.product.id,
-                                      1,
-                                    )
+                                    item.product.id,
+                                    1,
+                                  )
                                 : null,
                             icon: const Icon(Icons.add_circle_outline),
                             iconSize: 28,
@@ -257,17 +249,13 @@ class _CartScreenState extends State<CartScreen> {
                     flex: 2,
                     child: Text(
                       item.product.name,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w700,
-                      ),
+                      style: const TextStyle(fontWeight: FontWeight.w700),
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
                   Expanded(
                     flex: 1,
-                    child: Text(
-                      '\$${item.product.price.toStringAsFixed(2)}',
-                    ),
+                    child: Text('\$${item.product.price.toStringAsFixed(2)}'),
                   ),
                   Expanded(
                     flex: 1,
@@ -276,25 +264,19 @@ class _CartScreenState extends State<CartScreen> {
                       children: [
                         IconButton(
                           tooltip: 'Disminuir',
-                          onPressed: () => widget.onQuantityChanged(
-                            item.product.id,
-                            -1,
-                          ),
+                          onPressed: () =>
+                              widget.onQuantityChanged(item.product.id, -1),
                           icon: const Icon(Icons.remove_circle_outline),
                         ),
                         Text(
                           '${item.quantity}',
-                          style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                          ),
+                          style: const TextStyle(fontWeight: FontWeight.bold),
                         ),
                         IconButton(
                           tooltip: 'Aumentar',
                           onPressed: _canIncrease(item)
-                              ? () => widget.onQuantityChanged(
-                                    item.product.id,
-                                    1,
-                                  )
+                              ? () =>
+                                    widget.onQuantityChanged(item.product.id, 1)
                               : null,
                           icon: const Icon(Icons.add_circle_outline),
                         ),
@@ -326,10 +308,7 @@ class _CartScreenState extends State<CartScreen> {
   // BARRA INFERIOR
   // ============================================================
 
-  Widget _buildBottomBar(
-    double total,
-    bool hasItems,
-  ) {
+  Widget _buildBottomBar(double total, bool hasItems) {
     final cs = Theme.of(context).colorScheme;
 
     final puedeCobrar = widget.canCheckout?.call() ?? true;
@@ -344,24 +323,15 @@ class _CartScreenState extends State<CartScreen> {
             Container(
               width: double.infinity,
               margin: const EdgeInsets.only(bottom: 12),
-              padding: const EdgeInsets.symmetric(
-                horizontal: 14,
-                vertical: 12,
-              ),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
               decoration: BoxDecoration(
                 color: cs.error.withAlpha(20),
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: cs.error.withAlpha(90),
-                ),
+                border: Border.all(color: cs.error.withAlpha(90)),
               ),
               child: Row(
                 children: [
-                  Icon(
-                    Icons.lock_outline,
-                    size: 22,
-                    color: cs.error,
-                  ),
+                  Icon(Icons.lock_outline, size: 22, color: cs.error),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Column(
@@ -470,9 +440,7 @@ class _CartScreenState extends State<CartScreen> {
     } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error procesando el cobro: $error'),
-          ),
+          SnackBar(content: Text('Error procesando el cobro: $error')),
         );
       }
     } finally {
